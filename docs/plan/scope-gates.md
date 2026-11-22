@@ -1085,44 +1085,65 @@ names as hot, several times per DAV request, and `u8` masks make it one
 `&` and a compare with `writable ⊆ readable` held as an invariant — so
 `rw` implying `ro` is not a branch at every callsite.
 
-### Where to evaluate a facet — two questions
+### Per-request policy vs per-AuthN-phase check
 
-| facet | source | changes mid-credential? | evaluated |
+Two decision points, and placing a check in the wrong one is the easiest
+mistake this design can still make. Both are needed; neither substitutes
+for the other.
+
+| decided at | checks | the question |
+|---|---|---|
+| **AuthN phase** — login, and **re-run at every refresh** | account active · verified email · OPAQUE migration · credential-kind → scope ceiling · forced-reset narrowing | *may this account have a credential at all, and what is it issued for?* Failure means **no session**, not a refused request. |
+| **Per request** | role · anonymity · scope · elevation | *may this caller reach this operation?* Failure is a refused request on a valid session. |
+
+**Verified email is the worked example**, because it looks like it could
+be an axis and is not. The question is whether the account may hold a
+session at all — uniformly, for every operation — which is why the
+exemption is by ROLE (`Owner` bypasses it, admins do not) rather than by
+route. No operation has an opinion about it, so by § Not axes it is not
+an axis.
+
+"AuthN phase" does not mean "once, forever". Refresh re-runs admission
+(`authn-pipeline.md` § Refresh is a re-verification ceremony), and an
+active client refreshes at the access-token lifetime — so an authn-phase
+check is re-evaluated roughly hourly, and the staleness it admits is
+bounded by that rather than by the 7-day refresh window.
+
+Which is what makes the split safe: a per-request check is for facts that
+must bite *immediately*, an authn-phase check for facts that may bite *at
+the next ceremony* — and `authn-pipeline.md`'s rule covers the gap
+("every state change that **tightens** must either revoke sessions or be
+in the per-call read").
+
+### Which per-request axis is evaluated how
+
+| axis | source | changes mid-credential? | evaluated |
 |---|---|---|---|
-| role (`Internal`/`Admin`/`Owner`) | `auth.users`, via `user_flags_cache` | **yes** — promote, demote, guest→internal | per request; already resolved by `auth_middleware` into `CurrentUser.role` |
-| anonymity | the credential | no | per request, field read |
-| credential-kind | the credential | no | per request, field read |
-| DPoP binding | the credential (`cnf.jkt`) | no | per request, `CurrentUser.dpop_jkt` |
+| role (`Internal`/`Admin`/`Owner`) | `auth.users`, via `user_flags_cache` | **yes** — promote, demote, guest→internal | already resolved by `auth_middleware` into `CurrentUser.role` |
+| anonymity | the credential | no | field read |
+| scope | the credential's `ScopeSet`, frozen at mint | no | mask `&` and compare |
+| elevation | `auth.sessions.elevated_at` | yes — it expires | pending the column |
 
 So a root gate layer adds **no lookup** to an authenticated request: the
 one cached read already happens in `auth_middleware`, and the rest are
 field reads — once `CurrentUser` carries `is_external`.
 
-Cost does not decide this; staleness does. The gate-side form of
-`authn-pipeline.md`'s rule ("every state change that **tightens** must
-either revoke sessions or be in the per-call read"):
+Cost does not decide placement; staleness does:
 
-1. **Can the fact change while the credential is alive?**
-   - **No** — it is a property of the credential. Read it from
-     `CurrentUser` per request: free, no staleness, nothing to
-     invalidate. Anonymity, credential-kind and DPoP binding are all
-     here.
-   - **Yes** — question 2.
-2. **Must a TIGHTENING change bite before the session ends?**
+1. **Does any operation have an opinion about it?**
+   - **No** — it is an authn-phase check, uniform across the surface.
+     Verified email, account active, the scope ceiling.
+   - **Yes** — it is an axis; question 2 places it.
+2. **Can the fact change while the credential is alive?**
+   - **No** — read it off the credential per request: free, no
+     staleness, nothing to invalidate. Anonymity and scope are here.
    - **Yes** — per-call read. `user_flags_cache` makes it free and
-     `invalidate_user_flags` closes the TTL window. Role and
-     `is_external` are here.
-   - **No** — it may be evaluated at a ceremony (login, refresh), and it
-     then OWES the obligation above: the change must revoke sessions.
-     Nothing in v1 takes this branch.
+     `invalidate_user_flags` closes the TTL window. Role, `is_external`
+     and elevation are here.
 
 The test an implementor can actually run: *state what happens if this
 fact changes one second after login.* If the answer is "the caller keeps
-something they should have lost", it is per-call or it revokes.
-
-Scope is the counter-example that makes the rule legible: frozen at mint
-is sound there because a scope cannot change under its credential
-(§ Freezing at mint), so question 1 answers "no".
+something they should have lost", it is per-call or the change revokes.
 
 This belongs in `src/AGENTS.md` — § Required: amend.
 
