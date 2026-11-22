@@ -47,9 +47,9 @@ consequences land before the first line here:
 ## Goal
 
 One definition of "may this KIND of caller reach this surface at all",
-callable from a router layer or a service, replacing five hand-wired
+callable from a router layer or a service, replacing the hand-wired
 middleware layers that each decide the same class of question with their
-own fail-open policy.
+own fail-open policy. Five exist; PR 1 folds four (§ Fold in).
 
 A gate has FOUR independent facets — role, credential-kind, anonymity,
 session-binding — and the type is one field per facet. ("Facet" because
@@ -804,7 +804,7 @@ you must remember to write does. So the value is two narrower things:
 
 ## Scope of the change
 
-### Fold in (the five existing layers, plus one hand-rolled check)
+### Fold in (four of the five layers, plus one hand-rolled check)
 
 | Today | Becomes |
 |---|---|
@@ -925,6 +925,18 @@ names as hot, several times per DAV request, and `u8` masks make it one
 `rw` implying `ro` is not a branch at every callsite.
 
 ### Where to evaluate a facet — two questions
+
+| facet | source | changes mid-credential? | evaluated |
+|---|---|---|---|
+| role (`Internal`/`Admin`/`Owner`) | `auth.users`, via `user_flags_cache` | **yes** — promote, demote, guest→internal | per request; already resolved by `auth_middleware` into `CurrentUser.role` |
+| anonymity | the credential | no | per request, field read |
+| credential-kind | the credential | no | per request, field read |
+| DPoP binding | the credential (`cnf.jkt`) | no | per request, `CurrentUser.dpop_jkt` |
+
+So a root gate layer adds **no lookup** to an authenticated request: the
+one cached read already happens in `auth_middleware`, and the rest are
+field reads — given the two fields § Two fields `CurrentUser` must carry
+first adds.
 
 Cost does not decide this; staleness does. The gate-side form of
 `authn-pipeline.md`'s rule ("every state change that **tightens** must
@@ -1613,7 +1625,7 @@ The halves have opposite risk profiles and must not share a green suite:
 
 | PR | change | acceptance |
 |---|---|---|
-| 1 — gates | folds five layers plus the `transfer_ownership` check into `Gate`; adds `NotAppPassword` | **behaviour-preserving** — `external_users.hurl` stays green *unchanged*, which is the whole criterion |
+| 1 — gates | adds `is_external` and credential-kind to `CurrentUser` (§ Two fields), then `Gates` + the facet enums, then folds four layers plus the `transfer_ownership` check into them | **behaviour-preserving** — `external_users.hurl` stays green *unchanged*, which is the whole criterion |
 | 2 — scopes | turns `device_codes.scopes` from an inert column into enforcement | **not** behaviour-preserving; carries every lockout risk below |
 
 Landing them together means PR 2's risk rides in on PR 1's green suite.
