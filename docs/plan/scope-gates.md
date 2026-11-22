@@ -879,26 +879,40 @@ handlers only.
 
 ## Lookup and checking cost
 
-`require_internal_user` calls `auth.get_user_flags(caller_id).await` —
-a DB lookup per request. The live-read decision above means that cost is
-**deliberate and stays**: putting `is_external` on the JWT claims to
-make the check free is the one thing § What a scope is bound to rules
-out, because an upgraded guest would then stay locked out until
-re-login.
+`require_internal_user` calls `auth.get_user_flags(caller_id).await`.
+That is a **cached read, not a query per request**: `user_flags_cache` is
+a moka cache with a 30 s TTL and `try_get_with`, so concurrent callers
+for one user collapse into a single lookup and a user's row is read at
+most twice a minute. The DB appears on a miss.
 
-So the rule is placement, not caching:
+This is the correction that matters most here, because an earlier draft
+called it "a DB lookup per request" and then used that cost to justify
+two separate decisions. It is a concurrent hash lookup in the
+overwhelming majority of cases.
 
-- Ownerless creates and the DAV / admin subtrees are **cold** paths. One
-  lookup there is free in practice. Keep the token and the layers there.
-- Do **not** spread GATE checks onto the hot paths — listing,
-  thumbnails, auth (AGENTS.md § Performance). Those are grant questions
-  anyway, answered by `authz.require` against a resource, and a gate
-  there would be both a per-request query and the wrong check.
+The live-read decision still stands and the cache is what makes it
+affordable: putting `is_external` on the JWT claims is the one thing
+§ What a scope is bound to rules out, because an upgraded guest would
+then stay locked out until re-login. A cache can be invalidated on
+upgrade or demotion; a minted claim cannot — and `invalidate_user_flags`
+is already the mechanism every revocation path uses.
 
-If a gate check ever does become necessary on a hot path, the answer is
-a short-TTL cache in the policy keyed by user id — not a claim on the
-token. A cache can be invalidated on upgrade/demotion; a minted token
-cannot.
+So the rule is placement, and the reason is no longer cost:
+
+- Ownerless creates and the DAV / admin subtrees are cold paths. Keep
+  the token and the layers there.
+- Prefer not to spread GATE checks onto the hot paths — listing,
+  thumbnails, auth (AGENTS.md § Performance) — but the argument is that
+  those are **grant** questions, answered by `authz.require` against a
+  resource. A gate there is the wrong check. It is no longer "and also a
+  per-request query", which it was not.
+
+The 30 s TTL carries a second consequence worth stating: a gate's answer
+can be up to 30 s stale. For `is_external` and role that is the intended
+trade (§ What a scope is bound to), and every path that tightens already
+calls `invalidate_user_flags` so the window closes immediately rather
+than on expiry. A future facet whose staleness is NOT acceptable must
+invalidate on change, not shorten the TTL for everyone.
 
 This paragraph is about **gates only**, and said "scope" before the two
 axes were separated. Scopes resolve the other way round on purpose: they
@@ -914,16 +928,52 @@ way gets one of them wrong.
 | | gate | scope |
 |---|---|---|
 | source | `auth.users`, re-read live | JWT claim, frozen at mint |
-| per check | a DB round trip | pure CPU |
-| paths | cold by design (§ Lookup and checking cost) | **hot** — every `/webdav` request, every `/api/files` listing |
+| per check | cached read — moka, 30 s TTL, single-flight; DB on a miss | pure CPU |
+| staleness | up to the TTL, closed early by `invalidate_user_flags` | none — cannot change under its credential |
+| paths | cold by design, EXCEPT the defaults — see below | **hot** — every `/webdav` request, every `/api/files` listing |
 
-A gate check is dominated by its query, so the representation costs
-nothing either way: reading four fields and iterating a three-element
-slice are both nanoseconds against a round trip measured in microseconds
-at best. Performance does not pick between them, which is precisely why
-the choice is made on **representability** instead — `Gates` makes a
-contradictory pair impossible to construct, while a slice makes it
-impossible to miss only if something checks. § Reduction is per facet.
+Neither axis is dominated by a query, so **representation is not a
+performance question for either of them**, and the choice of `Gates` is
+made on representability alone: it makes a contradictory pair impossible
+to construct, where a slice makes it impossible to miss only if something
+checks. § Reduction is per facet.
+
+The scope masks are still the right call, for their own reason rather
+than by contrast with a round trip: a scope check runs on paths AGENTS.md
+names as hot, several times per DAV request, and `u8` masks make it one
+`&` and a compare with `writable ⊆ readable` held as an invariant — so
+`rw` implying `ro` is not a branch at every callsite.
+
+### The defaults put a gate on EVERY request — reconciled, not assumed
+
+"Cold by design" and § Authentication by default cannot both be taken at
+face value. Deny-by-default facets only bite if something universal
+applies them: `AnonymityGate::Denied` and `AppPasswordGate::Denied` as
+`Default` are meaningless unless every route is gated, which is the root
+choke point that section argues for. So the design does put a gate check
+on listing and on thumbnails.
+
+That is affordable because of the cache, not despite the hot-path rule —
+a moka hit per request on a path that already does a DB listing query is
+noise. But it is a claim to MEASURE before PR 1 wires a root layer, and
+the thing to measure is not steady-state hit cost:
+
+> `examples/bench_auth_herd.rs` exists because the sibling cache
+> (`AppPasswordService`, TTL 300 s) was once a plain get/insert, so a
+> sync client holding K parallel connections hit an expired entry and all
+> K missed at once, each issuing its own query. `user_flags_cache` uses
+> `try_get_with`, which is the fix — the measurement is that it HOLDS at
+> the 30 s boundary under K concurrent requests for one user, which is
+> exactly a sync client's shape.
+
+Benches run against the test database on **5433**, never the dev
+instance on 5432.
+
+Note that § Rejected: default-deny across all of `/api` rejects a root
+`RoleGate::Internal` for an unrelated reason — the external-user
+exemption list would cover most of `/api` — which is about correctness,
+not cost. The two rejections are independent and should not be read as
+one.
 
 A scope check has no query to hide behind. It runs on paths AGENTS.md
 names as hot (listing, thumbnails, auth), on every DAV request a sync
