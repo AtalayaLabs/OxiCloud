@@ -20,6 +20,27 @@ Status: **Gate and Grant are enforced today. Scope is not** — the device
 flow collects scopes and displays them, but nothing checks them. See
 `docs/plan/scope-gates.md`.
 
+## A fourth thing, which is not an axis: integrity
+
+Three checks on the request path answer **"is this request authentic?"**
+— a precondition to authorization rather than a part of it:
+
+| check | asks | failure |
+|---|---|---|
+| JWT signature + expiry | did we issue this token, is it still valid? | `401` |
+| DPoP proof (RFC 9449) | does the holder of this bound session possess the key? | `401` + `WWW-Authenticate: DPoP error="invalid_dpop_proof"` |
+| CSRF double-submit | did this state-changing request come from our own page? | `403` |
+
+They are not axes because the **operation has no opinion**: DPoP is
+applied uniformly to all 8 protected nests and CSRF to 7, and what varies
+is `OXICLOUD_DPOP_MODE` — configuration, not routing. A failure means
+*this request* cannot be trusted, not that *this caller* is the wrong
+kind.
+
+The distinction matters when adding a check: if every operation would
+declare the same value, it is integrity and belongs once at the root. If
+operations genuinely differ, it is an axis.
+
 ## Gate vs grant — the distinction that matters
 
 The two are easy to blur because both can answer "no" to the same
@@ -85,16 +106,21 @@ A top-level create is a **gate** question wearing a grant's clothes.
 │     └── last_seen.touch(sid)         ⚡ DashMap upsert, no I/O
 │                └─ batched UNNEST UPDATE every 30 s
 │
-├─[2] route layers — five hand-wired gates                  ── GATE ──
+├─[2] require_dpop_layer                            ── INTEGRITY ──
+│        bound session ⇒ valid proof. Uniform across all 8 nests;
+│        varies by OXICLOUD_DPOP_MODE, never by route. Failure is
+│        401 invalid_dpop_proof — the REQUEST is untrustworthy, not
+│        the caller. Same category as CSRF and signature checks.
+│
+├─[3] route layers — the hand-wired gates                   ── GATE ──
 │     ├── require_internal_user_layer  → get_user_flags again (same ⚡)
-│     ├── require_dpop_layer                            (if session bound)
-│     ├── require_no_password_change_pending_layer
+│     ├── require_no_password_change_pending_layer   (a scope narrowing)
 │     └── anonymous_allowlist_layer                  (needs MatchedPath)
 │
-├─[3] handler — extracts AuthUser / CurrentUserId from extensions
+├─[4] handler — extracts AuthUser / CurrentUserId from extensions
 │                NO authz here, by rule
 │     ↓
-├─[4] service — authz.require(User(caller), Read, File(id))  ── GRANT ──
+├─[5] service — authz.require(User(caller), Read, File(id))  ── GRANT ──
 │     │   ⚡ owner_cache           300 s   (owner is immutable)
 │     │   ⚡ drive_role_cache       30 s   (invalidated on membership change)
 │     │   ⚡ drive_policies_cache   30 s
@@ -102,7 +128,7 @@ A top-level create is a **gate** question wearing a grant's clothes.
 │     │      └─ MISS → PG recursive grant resolution
 │     │   denial → audit `authz.denied`, then 403 (has Read) / 404 (anti-enum)
 │     ↓
-└─[5] repository — the data query
+└─[6] repository — the data query
 ```
 
 Three things worth reading off the diagram:

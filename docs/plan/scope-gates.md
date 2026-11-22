@@ -40,7 +40,7 @@ consequences land before the first line here:
   snippets here.
 - **`CurrentUser` carries `token: PresentedToken`**, so `sid` is on the
   caller. That retires the choice § `sid` is no longer deferrable framed,
-  and it is the prerequisite the session facet's `Elevated` was waiting for.
+  and it is the prerequisite `Elevation` was waiting for.
 - **`require_no_password_change_pending_layer` cannot be deleted by this
   plan** — the mechanism meant to replace it did NOT land. See the
   fold-in table.
@@ -50,7 +50,8 @@ consequences land before the first line here:
 One definition of "may this KIND of caller reach this surface at all",
 callable from a router layer or a service, replacing the hand-wired
 middleware layers that each decide the same class of question with their
-own fail-open policy. Five exist; PR 1 folds four (§ Fold in).
+own fail-open policy. Five exist; PR 1 folds THREE (§ Fold in) — of the
+other two, one is a scope narrowing and one is an integrity check.
 
 One field per axis, in two shapes: `Requires` is what an implementor
 writes (partial — `None` means "I say nothing"), `Policy` is what the
@@ -74,8 +75,8 @@ pub struct Requires {
     pub role: Option<RoleGate>,
     pub app_password: Option<AppPasswordGate>,
     pub anonymous: Option<AnonymityGate>,
-    pub session: Option<SessionGate>,
     pub scope: Option<(Scope, Access)>,
+    // pub elevation: Option<Elevation>,   // with auth.sessions.elevated_at
 }
 
 /// What the engine EVALUATES: a `Requires` chain folded root→leaf. Total
@@ -91,8 +92,7 @@ pub struct Policy {
     pub app_password: AppPasswordGate,
     /// Anonymity facet. § Authentication by default.
     pub anonymous: AnonymityGate,
-    /// Session-binding facet. `None` = unbound credentials accepted.
-    pub session: Option<SessionGate>,
+    // pub elevation: Option<Elevation>,   // with auth.sessions.elevated_at
     /// Resolved scope requirement. Scope is a different AXIS, not a gate
     /// facet: client-requestable and frozen at mint, so it is checked
     /// against the credential's `ScopeSet` rather than the user row.
@@ -133,16 +133,14 @@ pub enum AnonymityGate {
     Allowed,
 }
 
-pub enum SessionGate {
-    /// DPoP-bound credential required.
-    Bound,
-    // Not v1: no elevation state in the schema yet. Designed in
-    // `session-elevation.md`, which adds `auth.sessions.elevated_at`.
-    // Its `CurrentUser` prerequisite is DONE — the caller carries
-    // `token: PresentedToken`, so this reads `caller.token.session_id`.
-    // Lands as a variant here with no reshaping.
-    // Elevated,
-}
+/// NOT a v1 axis — there is no elevation state in the schema yet.
+/// Designed in `session-elevation.md`, which adds
+/// `auth.sessions.elevated_at`. Its `CurrentUser` prerequisite is DONE:
+/// the caller carries `token: PresentedToken`, so this reads
+/// `caller.token.session_id`.
+///
+/// DPoP binding is deliberately NOT here — § Not axes: integrity checks.
+// pub enum Elevation { Required }
 
 /// `const` constructors — one per axis, each setting ONE field and
 /// leaving the rest `None`. So a declaration says exactly what it says,
@@ -161,9 +159,8 @@ impl Requires {
     /// The whole app-password attack surface, greppable:
     /// § Credential-kind gating.
     pub const fn permit_app_password(self) -> Self;
-    pub const fn dpop_bound(self) -> Self;
     pub const fn scope(s: Scope, a: Access) -> Self;
-    // pub const fn elevated(self) -> Self;   // with the session facet
+    // pub const fn elevated(self) -> Self;   // with auth.sessions.elevated_at
 }
 ```
 
@@ -326,7 +323,7 @@ every gate to be user-bound.
 `email`, `role` (**from the JWT claim**, hence stale-prone, hence
 `decide_live_role`), `dpop_jkt` — and now `token: PresentedToken`, the
 `sid` and `iat` the credential presented. **This question is closed; the
-field is in.** the session facet's `Elevated` can read `caller.token.session_id`
+field is in.** `Elevation` can read `caller.token.session_id`
 without reshaping `require`.
 
 It carries the whole `PresentedToken` rather than a bare `sid` because
@@ -697,7 +694,7 @@ revocation, which also does not exist: `/api/admin/sessions` is
 3. It appears on consent screens if ever requested, instead of failing
    with an unexplained rejection.
 
-**the session facet's `Elevated` is the second factor, and this is its first real
+**`Elevation` is the second factor, and this is its first real
 consumer.** Holding `security:rw` is necessary and not sufficient: a
 mutation also needs a recently re-authenticated session, the admin
 sudo-mode state designed in `docs/plan/session-elevation.md`. Scope answers
@@ -776,9 +773,10 @@ The current `SCOPELESS` list, each entry with its reason:
     used to seize a session from a client that already bound.
 
   A session may therefore be required to carry DPoP while holding no
-  right whatever to change the password. Those are different questions:
-  `SessionGate::Bound` asks how strongly this credential is held,
-  `Scope::Security` asks what it was issued to do.
+  right whatever to change the password. Those are different questions,
+  and not even the same KIND of question: the DPoP proof is an integrity
+  check (§ Not axes), `Scope::Security` is what the credential was issued
+  to do.
 - **`/api/auth/logout`** — ends the caller's own session. Any credential
   may do that; refusing would leave no way to put a key beyond use.
 - **`/api/rt/ticket`** — message-bus ticket issuance, DPoP-gated and
@@ -904,20 +902,51 @@ you must remember to write does. So the value is two narrower things:
 
 ## Scope of the change
 
-### Fold in (four of the five layers, plus one hand-rolled check)
+### Fold in (three of the five layers, plus one hand-rolled check)
 
 | Today | Becomes |
 |---|---|
-| `require_internal_user_layer` | `a compiled `Policy` requiring `RoleGate::Internal`` |
-| admin middleware on `/api/admin/*` | `a compiled `Policy` requiring `RoleGate::Admin`` |
-| `require_no_password_change_pending_layer` | **left alone by PR 1** — see the deadlock below |
-| `require_dpop_layer` | `the session facet` |
-| hand-rolled owner check in `transfer_ownership` | `RoleGate::Owner` |
-| `anonymous_allowlist_layer` | `the anonymity facet at its default` + keeps its allowlist — and is the mechanism § Authentication by default would promote to the root |
+| `require_internal_user_layer` (11 sites) | `Requires::role(RoleGate::Internal)` |
+| admin middleware on `/api/admin/*` (3 sites) | `Requires::role(RoleGate::Admin)` |
+| hand-rolled owner check in `transfer_ownership` | `Requires::role(RoleGate::Owner)` |
+| `anonymous_allowlist_layer` (1 site) | `Requires::anonymous_allowed()` on the allowlisted routes; keeps the allowlist itself, and is the mechanism § Authentication by default would promote to the root |
+| `require_no_password_change_pending_layer` (8 sites) | **untouched** — a scope narrowing, deleted later by `authn-pipeline.md` part B. Below. |
+| `require_dpop_layer` (8 sites) | **untouched** — an integrity check, not an axis. § Not axes: integrity checks |
 
 `anonymous_allowlist_layer` is the loose fit — it carries a route
 allowlist and must stay `route_layer` (it needs `MatchedPath`). Fold the
 *decision* and leave the allowlist where it is.
+
+### Not axes: integrity checks
+
+A separate category, and keeping it separate is what stops the axis list
+growing without limit. These ask **"is this request authentic?"** — a
+precondition to authorization, not a part of it:
+
+| check | asks |
+|---|---|
+| JWT signature + expiry | was this token issued by us, and is it still valid? |
+| DPoP proof (RFC 9449) | does the holder of this bound session possess the key? |
+| CSRF double-submit | did this state-changing request come from our own page? |
+
+Three properties they share, none of which a declarable axis has:
+
+- **the operation has no opinion.** `require_dpop_layer` is applied to
+  all 8 nests identically, and `csrf_middleware` to 7; what varies is
+  `OXICLOUD_DPOP_MODE` — an env var, not a route.
+- **`None` is meaningless.** "This route does not care whether a bound
+  session proved possession" is not a sentence anyone wants to write.
+- **failure means the REQUEST is untrustworthy**, not that the caller is
+  the wrong kind. The response says so: `401` +
+  `WWW-Authenticate: DPoP error="invalid_dpop_proof"`, never a 403.
+
+So `require_dpop_layer` is not folded. It belongs at the root choke point
+§ Authentication by default creates, beside CSRF — declared once for the
+whole surface rather than per operation.
+
+What survives of the session axis is **elevation**, which does vary per
+operation (`/admin/sessions/*` needs it, most routes do not) and where
+`None` means something. It waits on `auth.sessions.elevated_at`.
 
 **The password-change layer is not a gate at all** — it is a SCOPE
 narrowing, so it never needed a facet. Admission narrows a forced-reset
@@ -1471,7 +1500,7 @@ verb alone" is satisfied without giving up automatic coverage.
 ### The array is AND
 
 `security(("bearerAuth" = ["role:admin", "elevated"]))` requires
-`RoleGate::Admin` **and** the session facet's `Elevated`. OpenAPI puts conjunction inside
+`RoleGate::Admin` **and** `Elevation`. OpenAPI puts conjunction inside
 one requirement object and disjunction between objects, and the two
 forms look nearly identical:
 
@@ -1488,11 +1517,11 @@ conjunction belongs in a method name, where it cannot be misread:
 ```rust
 // One call, and the conjunction is in the value rather than in the
 // reader's head. `.elevated()` joins the builders in § Goal when the
-// session facet gains its variant — not v1.
+// elevation axis exists — not v1.
 policy.require(compiled, caller).await?;   // Requires::role(Admin) + Requires::elevated()
 
 // Two calls are EQUIVALENT here, and that is a property of the facets
-// being independent: `role` and the session facet cannot overwrite one
+// being independent: `role` and `elevation` cannot overwrite one
 // another, so sequencing two requires composes rather than conflicts.
 // The single call is preferred for being one audit line, not because
 // the pair is wrong.
@@ -1512,7 +1541,7 @@ is. Conjunction is the right default for every entry.
 **Elevation is not an admin feature.** `session-elevation.md` is named for
 its first consumer, and the name is now too narrow: elevation is a
 property of any session, and an ordinary user needs it for the same
-reason an admin does. Three consumer classes, so the session facet's `Elevated` is not
+reason an admin does. Three consumer classes, so `Elevation` is not
 speculative:
 
 | needs elevation | audience | because |
@@ -1793,9 +1822,8 @@ change:
 
 `CurrentUser` carries `token: PresentedToken`, whose `session_id` is the
 JWT `sid` (merged with `authn-pipeline.md` part A). So `security` gets
-the per-session form rather than ceiling-only, and the session facet's
-`Elevated` reads `caller.token.session_id` once
-`auth.sessions.elevated_at` exists.
+the per-session form rather than ceiling-only, and `Elevation` reads
+`caller.token.session_id` once `auth.sessions.elevated_at` exists.
 
 It must live on the caller, not in request extensions: a gate is handed
 `&CurrentUser` and nothing else, so extensions can serve a handler but
