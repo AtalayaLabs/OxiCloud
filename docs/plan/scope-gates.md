@@ -23,7 +23,7 @@ document — see the two § Required sections.
 | Policy engine — `Requires`, the compile step, the operation table | **not started** — PR 1, and 2 and 3 below depend on it |
 | Credential scopes — `Scope`, `ScopeSet`, the 235-operation map | **not started** — PR 2 |
 | Authentication by default (`NotAnonymous` inverted) | **not started** — needs the fold |
-| A password-change facet | **will not ship with PR 1** — deadlocked on `authn-pipeline.md` part B; § Fold in |
+| A password-change facet | **never** — it is a scope narrowing, not a gate; the layer is deleted by `authn-pipeline.md` part B after PR 2. § Fold in |
 | `authorization-axes.md` | **written** — gate/grant distinction, request diagram, enforcement points; scope section marks itself unenforced |
 | `src/AGENTS.md` rule | **not started** |
 
@@ -919,21 +919,24 @@ you must remember to write does. So the value is two narrower things:
 allowlist and must stay `route_layer` (it needs `MatchedPath`). Fold the
 *decision* and leave the allowlist where it is.
 
-**PR 1 does not touch the password-change layer.** Its intended
-replacement — forced-reset as a scope narrowed to `{security}` at mint —
-is `authn-pipeline.md` part B, which is *not started* and whose status
-line reads "needs `scope-gates.md`". Each plan assigned the removal to
-the other; no narrowing exists at the mint today.
+**The password-change layer is not a gate at all** — it is a SCOPE
+narrowing, so it never needed a facet. Admission narrows a forced-reset
+session to `{security}`; anything outside that scope is refused, and the
+FE redirects to password settings rather than showing an error.
 
-So the eleven references stay, no password-change facet exists, and the
-removal belongs to whichever plan lands second. Folding it as a facet
-meanwhile would be a third home for the check, built to be deleted,
-against an acceptance criterion of unchanged behaviour.
+Hence the order, with no cycle:
 
-Distinct from `authn-pipeline.md` § The forced-reset deadlock, which is a
-runtime risk inside part B (a `{security}`-narrowed session needs
-elevation via the password it must change) and only exists once narrowing
-does.
+1. **PR 1** leaves the layer's eight mount points untouched. No
+   `PasswordChangeSettled` facet is built — it would be a third home for
+   a check that is about to disappear.
+2. **PR 2** ships `Scope` and its enforcement.
+3. **`authn-pipeline.md` part B** then narrows at admission and deletes
+   the layer. Its "needs `scope-gates.md`" means needs PR 2, and PR 2
+   needs nothing from it.
+
+(`authn-pipeline.md` § The forced-reset deadlock is a different, runtime
+concern: a `{security}`-narrowed session needs elevation via the password
+it is being forced to change. It only exists once step 3 does.)
 
 ### Keep as layers, not extractors
 
