@@ -841,6 +841,21 @@ does.
 a layer is both natural and cheaper there. Extractors are for REST
 handlers only.
 
+### Two fields `CurrentUser` must carry first
+
+Every facet is a field read only if the caller actually carries it. Two
+do not, and both block a facet rather than merely slowing it:
+
+| field | why | today |
+|---|---|---|
+| `is_external` | `RoleGate::Internal` has nothing to read | `UserFlags` has it, but `LiveRole::Active(SmolStr)` returns only the role, so `require_internal_user` calls `get_user_flags` a SECOND time per request |
+| credential-kind | `AppPasswordGate::Denied` cannot be evaluated at all | the Basic-auth branch knows (`origin = "app_password"`) and discards it |
+
+Both resolve in the pass that already holds the flags, and both follow
+`token: PresentedToken` (`9a42e4299`): the middleware knows the fact,
+drops it, and a consumer re-derives it or cannot ask. Adding
+`is_external` also removes the duplicate lookup.
+
 ### Per-route gates to retire
 
 - `routes.rs` — the two `contacts_create` / `music_create` sub-routers
@@ -908,6 +923,36 @@ than by contrast with a round trip: a scope check runs on paths AGENTS.md
 names as hot, several times per DAV request, and `u8` masks make it one
 `&` and a compare with `writable ⊆ readable` held as an invariant — so
 `rw` implying `ro` is not a branch at every callsite.
+
+### Where to evaluate a facet — two questions
+
+Cost does not decide this; staleness does. The gate-side form of
+`authn-pipeline.md`'s rule ("every state change that **tightens** must
+either revoke sessions or be in the per-call read"):
+
+1. **Can the fact change while the credential is alive?**
+   - **No** — it is a property of the credential. Read it from
+     `CurrentUser` per request: free, no staleness, nothing to
+     invalidate. Anonymity, credential-kind and DPoP binding are all
+     here.
+   - **Yes** — question 2.
+2. **Must a TIGHTENING change bite before the session ends?**
+   - **Yes** — per-call read. `user_flags_cache` makes it free and
+     `invalidate_user_flags` closes the TTL window. Role and
+     `is_external` are here.
+   - **No** — it may be evaluated at a ceremony (login, refresh), and it
+     then OWES the obligation above: the change must revoke sessions.
+     Nothing in v1 takes this branch.
+
+The test an implementor can actually run: *state what happens if this
+fact changes one second after login.* If the answer is "the caller keeps
+something they should have lost", it is per-call or it revokes.
+
+Scope is the counter-example that makes the rule legible: frozen at mint
+is sound there because a scope cannot change under its credential
+(§ Freezing at mint), so question 1 answers "no".
+
+This belongs in `src/AGENTS.md` — § Required: amend.
 
 ### The defaults put a gate on every request
 
