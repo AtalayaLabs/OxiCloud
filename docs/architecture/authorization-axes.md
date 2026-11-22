@@ -20,6 +20,30 @@ Status: **Gate and Grant are enforced today. Scope is not** — the device
 flow collects scopes and displays them, but nothing checks them. See
 `docs/plan/scope-gates.md`.
 
+## Glossary
+
+Used strictly, because several of these words were doing double duty
+before the design settled.
+
+| word | means | does NOT mean |
+|---|---|---|
+| **axis** | one of the three questions above — Gate / Scope / Grant | a field of a policy — those are *conditions* |
+| **condition** | one dimension a request-time policy checks: minimum role, anonymity, scope, elevation | an axis; a policy spans two axes, so its fields cannot be axes |
+| **grant** | may this caller touch THIS resource — service layer, `authz.require` | a policy or a condition |
+| **integrity** | signature, DPoP proof, CSRF — is the REQUEST authentic | an axis or a condition (below) |
+| **authn phase** | login, refresh — where admission is decided | "session phase": an app password creates no session yet still runs phases on every request |
+| **admission** | may this account hold a credential at all, and what for | a per-request check |
+
+Retired as TYPE names: **"gate"** (it named the axis, any caller-kind
+check, and a router layer) and **"facet"** (superseded by *condition*).
+"Gate axis" and "Gate-axis check" remain correct — Gate IS one of the
+three axes.
+
+The planned request-time engine in `docs/plan/scope-gates.md` adds
+`Requires` (what an operation declares), `Policy` (the compiled result),
+and two traits split by moment — `RequestPolicy` and `AdmissionPolicy`.
+Those are not implemented; the Gate axis is still five hand-wired layers.
+
 ## A fourth thing, which is not an axis: integrity
 
 Three checks on the request path answer **"is this request authentic?"**
@@ -62,7 +86,7 @@ Two consequences follow, and both are rules rather than preferences:
   (`src/AGENTS.md` § Authorization). Handlers authenticate and pass
   `caller_id` in; the service decides. This keeps every door to a method
   — REST, WebDAV, NextCloud, CalDAV — on one policy.
-- **A gate check belongs in the router**, because there is no resource to
+- **A Gate-axis check belongs in the router**, because there is no resource to
   name and therefore nothing for `authz.require` to be called *about*.
   `require_internal_user_layer` and the admin middleware are gates; they
   are not "authz in the wrong place".
@@ -72,7 +96,7 @@ parent resource, so there is nothing to `authz.require` on — and the
 grant rule alone yields no check at all. `create_calendar` /
 `create_address_book` / `create_playlist` each stamp the caller as owner
 and seed themselves a grant, so handler, service and router each read as
-though another held the gate. That is how external users could own
+though another held the check. That is how external users could own
 playlists over REST while the CardDAV door to the same method was gated.
 A top-level create is a **gate** question wearing a grant's clothes.
 
@@ -142,7 +166,7 @@ Three things worth reading off the diagram:
   what makes it safe is `invalidate_*` on change rather than the TTL: a
   tightening change closes the window immediately instead of waiting for
   expiry.
-- **A DB failure in the gate answers 503, never a denial.** A transient
+- **A DB failure in a Gate-axis check answers 503, never a denial.** A transient
   fault must not read as "you are not an admin" — see `auth-model.md`.
 
 ## Where each axis is enforced, and why
