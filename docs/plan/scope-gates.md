@@ -20,7 +20,7 @@ document — see the two § Required sections.
 
 | item | status |
 |---|---|
-| Gates fold — `Gate`, `ScopePolicy`, the three consumers | **not started** — PR 1, and 2 and 3 below depend on it |
+| Policy engine — `Requires`, the compile step, the operation table | **not started** — PR 1, and 2 and 3 below depend on it |
 | Credential scopes — `Scope`, `ScopeSet`, the 235-operation map | **not started** — PR 2 |
 | Authentication by default (`NotAnonymous` inverted) | **not started** — needs the fold |
 | A password-change facet | **will not ship with PR 1** — deadlocked on `authn-pipeline.md` part B; § Fold in |
@@ -52,35 +52,51 @@ callable from a router layer or a service, replacing the hand-wired
 middleware layers that each decide the same class of question with their
 own fail-open policy. Five exist; PR 1 folds four (§ Fold in).
 
-A gate has FOUR independent facets — role, credential-kind, anonymity,
-session-binding — and the type is one field per facet. ("Facet" because
-this document uses *axis* for Gate-vs-Scope-vs-Grant, § Three axes.)
+One field per axis, in two shapes: `Requires` is what an implementor
+writes (partial — `None` means "I say nothing"), `Policy` is what the
+engine evaluates (total — every axis resolved by the compile step).
+§ Declare, compile, evaluate.
 
-A slice would let `[NotAppPassword, PermitAppPassword]` be constructed
-and need catching at startup; one field per facet cannot hold it. That is
-§ Maximise deny-by-default's "won't compile" over "won't start".
+Within the Gate axis there are four independent **facets** — role,
+credential-kind, anonymity, session-binding. ("Facet" because this
+document uses *axis* for Gate-vs-Scope-vs-Grant, § Three axes.) Each is
+a field, so `[NotAppPassword, PermitAppPassword]` cannot be constructed
+at all — § Maximise deny-by-default's "won't compile" over "won't start".
 
 ```rust
 // application/ports/scope_ports.rs
 
-/// Properties of the CALLER. Never client-requestable — § Three axes.
-///
-/// Every facet defaults to its SAFE value, so `Gates::default()` is the
-/// strictest gate rather than the loosest: an authenticated internal
-/// user, no app password, no anonymity. A route widens by naming what it
-/// permits, never by omission.
+/// What an operation DECLARES. Partial: `None` = "this requirement says
+/// nothing about that axis", which is why a child can add elevation
+/// without re-asserting — and thereby revoking — a parent's opt-in.
 #[derive(Default)]
-pub struct Gates {
-    /// Role facet. `None` = any authenticated principal. A conjunction
-    /// reduces to the MAXIMUM, which is a field assignment, not a
-    /// lattice walk — § Reduction is per facet.
+pub struct Requires {
+    pub role: Option<RoleGate>,
+    pub app_password: Option<AppPasswordGate>,
+    pub anonymous: Option<AnonymityGate>,
+    pub session: Option<SessionGate>,
+    pub scope: Option<(Scope, Access)>,
+}
+
+/// What the engine EVALUATES: a `Requires` chain folded root→leaf. Total
+/// — the compile step resolves every axis, so no `Option` survives and
+/// the check is field reads.
+///
+/// Properties of the CALLER. Never client-requestable — § Three axes.
+pub struct Policy {
+    /// `None` = any authenticated principal. Folds by MAXIMUM; a
+    /// declaration that would widen is a boot error.
     pub role: Option<RoleGate>,
     /// Credential-kind facet. § Credential-kind gating.
     pub app_password: AppPasswordGate,
     /// Anonymity facet. § Authentication by default.
     pub anonymous: AnonymityGate,
     /// Session-binding facet. `None` = unbound credentials accepted.
-    pub dpop: Option<DpopGate>,
+    pub session: Option<SessionGate>,
+    /// Resolved scope requirement. Scope is a different AXIS, not a gate
+    /// facet: client-requestable and frozen at mint, so it is checked
+    /// against the credential's `ScopeSet` rather than the user row.
+    pub scope: Option<(Scope, Access)>,
 }
 
 /// From the USER row, re-read live per request. ORDERED: each variant
@@ -117,7 +133,8 @@ pub enum AnonymityGate {
     Allowed,
 }
 
-pub enum DpopGate {
+pub enum SessionGate {
+    /// DPoP-bound credential required.
     Bound,
     // Not v1: no elevation state in the schema yet. Designed in
     // `session-elevation.md`, which adds `auth.sessions.elevated_at`.
@@ -127,14 +144,17 @@ pub enum DpopGate {
     // Elevated,
 }
 
-/// `const` builders, so a route declares its gate as one expression and
-/// the whole thing is a compile-time constant at the mount point.
+/// `const` constructors — one per axis, each setting ONE field and
+/// leaving the rest `None`. So a declaration says exactly what it says,
+/// and chaining adds without disturbing:
 ///
-/// Each returns `Self` with the named facet set and every other facet at
-/// its SAFE default, so widening is always explicit and always local to
-/// the callsite — `Gates::anonymous_allowed()` says exactly one thing and
-/// cannot accidentally relax the app-password facet too.
-impl Gates {
+///   Requires::role(RoleGate::Internal).permit_app_password()   // /webdav
+///   Requires::elevated()                                       // adds only this
+///   Requires::scope(Scope::Security, Access::ReadWrite)
+///
+/// `const` so a declaration is a compile-time constant and the compile
+/// step folds constants, not runtime values.
+impl Requires {
     pub const fn role(r: RoleGate) -> Self;
     /// The whole public surface, greppable: § Authentication by default.
     pub const fn anonymous_allowed() -> Self;
@@ -142,12 +162,15 @@ impl Gates {
     /// § Credential-kind gating.
     pub const fn permit_app_password(self) -> Self;
     pub const fn dpop_bound(self) -> Self;
-    // pub const fn elevated(self) -> Self;  // with the session facet
+    pub const fn scope(s: Scope, a: Access) -> Self;
+    // pub const fn elevated(self) -> Self;   // with the session facet
 }
 ```
 
-`/webdav` then mounts as
-`Gates::role(RoleGate::Internal).permit_app_password()`.
+Adding an axis means one `Option` field, one constructor and one fold
+rule. It cannot change how the existing axes fold, and it cannot change
+any existing declaration — which is the property that makes this worth
+building rather than hand-wiring the next check too.
 
 No password-change facet — § Fold in.
 
@@ -175,33 +198,109 @@ pub struct ScopeSet {
 }
 
 pub trait ScopePolicy {
-    /// ONE method, not a `require` / `require_all` pair. A single gate is
-    /// a `Gates` with one facet set, so the pair was an artefact of the
-    /// slice: `require_all` existed to normalise what a slice could
-    /// misrepresent, and the struct cannot misrepresent it.
+    /// ONE method. A single requirement is a `Policy` with one field set,
+    /// so a `require` / `require_all` pair would be an artefact of
+    /// representing requirements as a list.
     ///
     /// Takes the CALLER CONTEXT, not a bare user id — § What a scope is
     /// bound to.
-    async fn require(&self, gates: Gates, caller: &CurrentUser)
-        -> Result<(), AppError>;
-    /// Separate because Scope is a different AXIS, not another facet:
-    /// client-requestable, frozen at mint, and checked on hot paths with
-    /// no DB round trip to hide behind. § Checking cost.
-    async fn require_scope(&self, need: Scope, access: Access, caller: &CurrentUser)
+    async fn require(&self, policy: &Policy, caller: &CurrentUser)
         -> Result<(), AppError>;
 }
 ```
 
-Three consumers, picked by what the gate protects:
+## Declare, compile, evaluate
 
-- **`InternalCaller` capability token** — for a top-level create. The
-  only deny-by-default form: forgetting it does not compile. § Why 2.
-- **`gate_layer(state, Gates::role(RoleGate::Internal))`** — for a protocol subtree
-  (`/webdav`, `/caldav`, `/carddav`, `/api/admin/*`), where the denial
-  is the surface rather than one method.
-- **`InternalUser` / `AdminUser` extractors** — for a REST handler with
-  no service method of its own. Weakest (forgetting = open), so prefer
-  the token wherever a service stamps ownership.
+Three stages, because the two things wanted of this design pull in
+different directions: declaring a requirement must be easy, and deciding
+one must be cheap and total.
+
+### 1. Declare — `Requires`, partial
+
+An implementor says only what they constrain. One method per axis:
+
+```rust
+/admin              Requires::role(RoleGate::Admin)
+/admin/sessions/*   Requires::elevated()              // inherits Admin
+/admin/fake-route   Requires::role(RoleGate::Owner)   // tightens role only
+/api/auth/password  Requires::scope(Scope::Security)
+```
+
+`Requires` is `Option` per axis, and `None` means **"I say nothing about
+this"** — distinct from "I require the safe value". That distinction is
+the whole point of the type: without it a child that only wants to add
+elevation also re-asserts `AppPasswordGate::Denied`, silently revoking a
+parent's `permit_app_password()` opt-in.
+
+A new axis is a new `Option` field plus a constructor. It cannot change
+how existing axes fold, which is what makes the engine extensible
+without a rewrite.
+
+### 2. Compile — fold root→leaf, once at startup
+
+Per axis, **tighten-only**:
+
+| axis | fold | widening attempt |
+|---|---|---|
+| role | `max` (`Owner > Admin > Internal`) | **boot error** |
+| app-password | `Denied` wins | needs an explicit `Override` |
+| anonymity | `Denied` wins | needs an explicit `Override` — this is what `anonymous_allowlist_layer` already is |
+| scope | union of what is required | — |
+
+The result is a `Policy`: **total**, every axis resolved, no `Option`
+left. One per operation.
+
+### 3. Evaluate — one `Policy`, one check
+
+Field reads only. Role's cached read already happened in
+`auth_middleware` (§ Lookup and checking cost), so a policy check adds
+nothing per request — and it runs **once**, not once per nesting level.
+
+## Keyed by operation, not by route
+
+A `Policy` cannot hang off an axum route, because on three of the four
+surfaces a route is not the unit of authorization:
+
+| surface | axum routes | operation identity |
+|---|---|---|
+| REST | 279, one per operation | (method, path) — a layer works |
+| WebDAV / CalDAV / CardDAV | **one** `any` handler each | the DAV method (PROPFIND, MKCOL, MOVE…) |
+| WS bus | **one** route, `/api/rt/ws` | the `rt.*` method name |
+| collab data plane | the same single route | the binary frame kind (`0x01`, `0x02`, SYNC) |
+
+So the compiled table is keyed by operation identity, and the axum layer
+is **one lookup site among several**. The DAV dispatcher,
+`handle_text_frame` and `handle_binary_frame` each look up the same table
+with their own key.
+
+This is not a generalisation for its own sake — it is where the bugs
+were. The AWARENESS frame kind (`36c8c6a37`) and the CardDAV door to
+`create_address_book` were both ungated precisely because neither has a
+route to put a layer on.
+
+It also corrects an earlier reading of the three `.require(...)` calls in
+`rt_ws.rs`: they are **not** misplaced grant checks that belong in a
+service. `handle_subscribe`, `handle_collab_capabilities` and
+`handle_collab_flush` are method dispatch inside one route, so no layer
+can reach them. They are the WS surface's policy checks written by hand
+because this mechanism does not exist yet, and they become table lookups.
+
+### Both surfaces are already enumerated
+
+`resources/gen/openapi.json` lists 279 REST operations;
+`resources/gen/asyncapi.json` lists the `rt.*` methods. So the table is
+cross-checkable in both directions: every operation in either spec must
+have a compiled policy, and every policy must name a live operation. An
+ungated frame kind fails that check as readily as an ungated route.
+
+### Consumers that are not a lookup
+
+- **`InternalCaller` capability token** — for a top-level create, which
+  has no parent resource and therefore no grant to check. The only
+  deny-by-default form where forgetting does not compile. § Why 2.
+- **Extractors** (`InternalUser` / `AdminUser`) — weakest, since
+  forgetting leaves the route open. Prefer the token wherever a service
+  stamps ownership.
 
 ## What a scope is bound to
 
@@ -324,7 +423,7 @@ refusal for neighbours like `/api/users/{id}`, `/api/groups/search` and
 `/api/auth/app-passwords`.
 
 So this row folds in rather than appearing: per § Fold in,
-`anonymous_allowlist_layer` becomes `gate_layer(Gates::default())`
+`anonymous_allowlist_layer` becomes `the anonymity facet at its default`
 and keeps its allowlist.
 
 Neither the scope nor the grant substitutes for the other, and that is the
@@ -678,7 +777,7 @@ The current `SCOPELESS` list, each entry with its reason:
 
   A session may therefore be required to carry DPoP while holding no
   right whatever to change the password. Those are different questions:
-  `DpopGate::Bound` asks how strongly this credential is held,
+  `SessionGate::Bound` asks how strongly this credential is held,
   `Scope::Security` asks what it was issued to do.
 - **`/api/auth/logout`** — ends the caller's own session. Any credential
   may do that; refusing would leave no way to put a key beyond use.
@@ -809,12 +908,12 @@ you must remember to write does. So the value is two narrower things:
 
 | Today | Becomes |
 |---|---|
-| `require_internal_user_layer` | `gate_layer(Gates::role(RoleGate::Internal))` |
-| admin middleware on `/api/admin/*` | `gate_layer(Gates::role(RoleGate::Admin))` |
+| `require_internal_user_layer` | `a compiled `Policy` requiring `RoleGate::Internal`` |
+| admin middleware on `/api/admin/*` | `a compiled `Policy` requiring `RoleGate::Admin`` |
 | `require_no_password_change_pending_layer` | **left alone by PR 1** — see the deadlock below |
-| `require_dpop_layer` | `gate_layer(Gates::default().dpop_bound())` |
+| `require_dpop_layer` | `the session facet` |
 | hand-rolled owner check in `transfer_ownership` | `RoleGate::Owner` |
-| `anonymous_allowlist_layer` | `gate_layer(Gates::default())` + keeps its allowlist — and is the mechanism § Authentication by default would promote to the root |
+| `anonymous_allowlist_layer` | `the anonymity facet at its default` + keeps its allowlist — and is the mechanism § Authentication by default would promote to the root |
 
 `anonymous_allowlist_layer` is the loose fit — it carries a route
 allowlist and must stay `route_layer` (it needs `MatchedPath`). Fold the
@@ -914,7 +1013,7 @@ way gets one of them wrong.
 | paths | cold by design, EXCEPT the defaults — see below | **hot** — every `/webdav` request, every `/api/files` listing |
 
 Neither axis is dominated by a query, so **representation is not a
-performance question for either of them**, and the choice of `Gates` is
+performance question for either of them**, and the choice of one field per axis is
 made on representability alone: it makes a contradictory pair impossible
 to construct, where a slice makes it impossible to miss only if something
 checks. § Reduction is per facet.
@@ -1000,7 +1099,7 @@ scope could silently reinterpret an existing credential.
 ## Rejected: default-deny across all of `/api`
 
 The tempting reading of "secure by default" is
-`gate_layer(Gates::role(RoleGate::Internal))` on the whole protected `/api` router plus
+`a compiled `Policy` requiring `RoleGate::Internal`` on the whole protected `/api` router plus
 an allowlist of what externals may reach. Rejected, for a reason worth
 recording so it isn't re-proposed:
 
@@ -1211,10 +1310,10 @@ The rule to add, under § AuthZ enforcement points:
 
 > **Every route declares all three axes explicitly. There is no default.**
 >
-> - **Gate** — which KIND of caller may reach this surface, as a `Gates`
+> - **Gate** — which KIND of caller may reach this surface, as a `Requires`
 >   value naming the facets it needs (role, credential-kind, anonymity,
 >   session-binding). Declared even when the answer is "any
->   authenticated caller", which is `Gates::default()` and still written
+>   authenticated caller", which is an empty `Requires` and still written
 >   down.
 > - **Scope** — what the CREDENTIAL was issued for
 >   (`oxicloud:<area>:<ro|rw>`), or an explicit `SCOPELESS` entry with
@@ -1287,7 +1386,7 @@ cross-referenced rather than duplicated:
   declaration rides in the spec rather than a side table, and
   `openapi-spec-drift` keeps it fresh by construction.
 - **"OpenAPI has no field for a minimum role… use a pseudo-scope
-  (`["role:admin"]`)."** Gates therefore declare as `role:` pseudo-scopes
+  (`["role:admin"]`)."** Gate requirements therefore declare as `role:` pseudo-scopes
   alongside the real `oxicloud:` ones. The `oxicloud:` prefix (§ Wire
   format) is what keeps the two unambiguous in one array — a
   client-requestable scope and a non-requestable gate can share the
@@ -1387,15 +1486,15 @@ conjunction belongs in a method name, where it cannot be misread:
 // One call, and the conjunction is in the value rather than in the
 // reader's head. `.elevated()` joins the builders in § Goal when the
 // session facet gains its variant — not v1.
-policy.require(Gates::role(RoleGate::Admin).elevated(), caller).await?;
+policy.require(compiled, caller).await?;   // Requires::role(Admin) + Requires::elevated()
 
 // Two calls are EQUIVALENT here, and that is a property of the facets
 // being independent: `role` and the session facet cannot overwrite one
 // another, so sequencing two requires composes rather than conflicts.
 // The single call is preferred for being one audit line, not because
 // the pair is wrong.
-policy.require(Gates::role(RoleGate::Admin), caller).await?;
-policy.require(Gates::default().elevated(), caller).await?;
+// Declared separately, folded by the compile step into ONE `Policy`:
+//   /admin  Requires::role(Admin)   +   /admin/sessions  Requires::elevated()
 ```
 
 No gate combination in this design means "either". If one ever appears
@@ -1542,7 +1641,7 @@ ReBAC remaining the deep dive for Grant.
 
 Written ahead of the fold because the gate/grant distinction and the
 request path are true TODAY; what is not yet enforced says so. Still
-owed once PR 1 and PR 2 land: the `Gates` type, the scope vocabulary
+owed once PR 1 and PR 2 land: the `Requires` / `Policy` types, the scope vocabulary
 table, and elevation.
 
 
@@ -1632,7 +1731,7 @@ The halves have opposite risk profiles and must not share a green suite:
 
 | PR | change | acceptance |
 |---|---|---|
-| 1 — gates | adds `is_external` and credential-kind to `CurrentUser` (§ Two fields), then `Gates` + the facet enums, then folds four layers plus the `transfer_ownership` check into them | **behaviour-preserving** — `external_users.hurl` stays green *unchanged*, which is the whole criterion |
+| 1 — gates | `is_external` + credential-kind on `CurrentUser` (§ Two fields); `Requires` / `Policy` + the facet enums; the compile step and the operation table; then fold four layers plus the `transfer_ownership` check | **behaviour-preserving**, and provable rather than hoped: the compiled table before and after the fold must be IDENTICAL, with `external_users.hurl` green *unchanged* |
 | 2 — scopes | turns `device_codes.scopes` from an inert column into enforcement | **not** behaviour-preserving; carries every lockout risk below |
 
 Landing them together means PR 2's risk rides in on PR 1's green suite.
