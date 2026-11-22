@@ -23,7 +23,7 @@ document — see the two § Required sections.
 | Gates fold — `Gate`, `ScopePolicy`, the three consumers | **not started** — PR 1, and 2 and 3 below depend on it |
 | Credential scopes — `Scope`, `ScopeSet`, the 235-operation map | **not started** — PR 2 |
 | Authentication by default (`NotAnonymous` inverted) | **not started** — needs the fold |
-| `Gate::PasswordChangeSettled` | **will not ship with PR 1** — deadlocked on `authn-pipeline.md` part B; § Fold in |
+| A password-change facet | **will not ship with PR 1** — deadlocked on `authn-pipeline.md` part B; § Fold in |
 | `src/AGENTS.md` rule + `authorization-axes.md` | **not started** |
 
 The companion document's work — `authn-pipeline.md` part A — is MERGED
@@ -39,7 +39,7 @@ consequences land before the first line here:
   snippets here.
 - **`CurrentUser` carries `token: PresentedToken`**, so `sid` is on the
   caller. That retires the choice § `sid` is no longer deferrable framed,
-  and it is the prerequisite `Gate::Elevated` was waiting for.
+  and it is the prerequisite the session facet's `Elevated` was waiting for.
 - **`require_no_password_change_pending_layer` cannot be deleted by this
   plan** — the mechanism meant to replace it did NOT land. See the
   fold-in table.
@@ -51,42 +51,118 @@ callable from a router layer or a service, replacing five hand-wired
 middleware layers that each decide the same class of question with their
 own fail-open policy.
 
+A gate has FOUR independent facets, and the type is one field per facet
+rather than a flat enum in a slice. "Facet" rather than "axis" because
+this document already uses axis for Gate-vs-Scope-vs-Grant (§ Three
+axes); these are the sub-dimensions inside the Gate axis alone.
+
+Independence is the whole reason: a caller is anonymous-or-not AND
+app-password-or-not AND some role, and those answers constrain each other
+not at all. A `Vec<Gate>` can hold `[NotAppPassword, PermitAppPassword]`,
+so the contradiction has to be caught — at startup, in the best case. One
+field per facet cannot hold it, so there is nothing to catch. § Maximise
+deny-by-default ranks "won't compile" above "won't start", and this is
+that ranking applied to the gate type itself.
+
 ```rust
 // application/ports/scope_ports.rs
+
 /// Properties of the CALLER. Never client-requestable — § Three axes.
-pub enum Gate {
-    // ── from the USER row, re-read live per request ──
-    Internal,                // not is_external
-    Admin,                   // role.at_least(Admin); Owner satisfies it
-    Owner,                   // UserRole::Owner, NOT storage.grant_role
-    /// NOT IMPLEMENTED, and not by PR 1 either. The intended successor —
-    /// forced-reset as a scope narrowed to `{security}` at mint — is
-    /// `authn-pipeline.md` part B, which has not started. Until then
-    /// `require_no_password_change_pending_layer` keeps the check and
-    /// this variant stays a name in a table. § Fold in.
-    PasswordChangeSettled,
-    // ── from HOW the caller authenticated ──
-    /// Applied by DEFAULT to every route; a static Basic-auth app
-    /// password is refused unless the mount declares the opt-in below.
-    NotAppPassword,
-    /// The explicit opt-in, and the only one of the pair at a callsite —
-    /// so `grep PermitAppPassword` prints the whole app-password attack
-    /// surface. § Credential-kind gating.
-    PermitAppPassword,
-    /// Also DEFAULT — § Authentication by default. The positive marker
-    /// is declared by the handful of genuinely public routes.
-    NotAnonymous,
-    AnonymousAllowed,
-    // ── from the SESSION / credential ──
-    DpopBound,
+///
+/// Every facet defaults to its SAFE value, so `Gates::default()` is the
+/// strictest gate rather than the loosest: an authenticated internal
+/// user, no app password, no anonymity. A route widens by naming what it
+/// permits, never by omission.
+#[derive(Default)]
+pub struct Gates {
+    /// Role facet. `None` = any authenticated principal. A conjunction
+    /// reduces to the MAXIMUM, which is a field assignment, not a
+    /// lattice walk — § Reduction is per facet.
+    pub role: Option<RoleGate>,
+    /// Credential-kind facet. § Credential-kind gating.
+    pub app_password: AppPasswordGate,
+    /// Anonymity facet. § Authentication by default.
+    pub anonymous: AnonymityGate,
+    /// Session-binding facet. `None` = unbound credentials accepted.
+    pub dpop: Option<DpopGate>,
+}
+
+/// From the USER row, re-read live per request. ORDERED: each variant
+/// implies the one before it, which is what makes the reduction a `max`.
+///
+/// `Admin ⇒ Internal` is provable from the `users_external_not_privileged`
+/// CHECK constraint rather than conventional, so dropping `Internal`
+/// beside `Admin` is sound. A test pins that dependency — removing the
+/// constraint would quietly make the reduction wrong.
+pub enum RoleGate {
+    Internal,   // not is_external
+    Admin,      // role.at_least(Admin); Owner satisfies it
+    Owner,      // UserRole::Owner, NOT storage.grant_role
+}
+
+/// Deny-by-default: `Denied` is the `Default`, so a static Basic-auth app
+/// password is refused on every route that does not say otherwise.
+/// `Permitted` is the only variant that appears at a callsite, so
+/// `grep Permitted` prints the whole app-password attack surface.
+#[derive(Default)]
+pub enum AppPasswordGate {
+    #[default]
+    Denied,
+    Permitted,
+}
+
+/// Deny-by-default likewise — § Authentication by default. The handful of
+/// genuinely public routes declare `Allowed`; publicness stops being
+/// inferred from which router a handler was mounted on.
+#[derive(Default)]
+pub enum AnonymityGate {
+    #[default]
+    Denied,
+    Allowed,
+}
+
+pub enum DpopGate {
+    Bound,
     // Not v1: no elevation state in the schema yet. Designed in
     // `session-elevation.md`, which adds `auth.sessions.elevated_at`.
-    // The `CurrentUser` half of its prerequisite is DONE — the caller
-    // carries `token: PresentedToken`, so this gate reads
-    // `caller.token.session_id`. Lands with no reshaping.
+    // Its `CurrentUser` prerequisite is DONE — the caller carries
+    // `token: PresentedToken`, so this reads `caller.token.session_id`.
+    // Lands as a variant here with no reshaping.
     // Elevated,
 }
 
+/// `const` builders, so a route declares its gate as one expression and
+/// the whole thing is a compile-time constant at the mount point.
+///
+/// Each returns `Self` with the named facet set and every other facet at
+/// its SAFE default, so widening is always explicit and always local to
+/// the callsite — `Gates::anonymous_allowed()` says exactly one thing and
+/// cannot accidentally relax the app-password facet too.
+impl Gates {
+    pub const fn role(r: RoleGate) -> Self;
+    /// The whole public surface, greppable: § Authentication by default.
+    pub const fn anonymous_allowed() -> Self;
+    /// The whole app-password attack surface, greppable:
+    /// § Credential-kind gating.
+    pub const fn permit_app_password(self) -> Self;
+    pub const fn dpop_bound(self) -> Self;
+    // pub const fn elevated(self) -> Self;  // with the session facet
+}
+```
+
+Composition reads as a chain, and the chain is the audit trail — the
+`/webdav` mount is `Gates::role(RoleGate::Internal).permit_app_password()`,
+which states both that it is internal-only and that it is one of the few
+surfaces a sync client's app password may reach.
+
+**No `PasswordChangeSettled` facet.** It was a variant in the flat enum
+"for the fold-in table only"; as a facet it would be a field every route
+has an opinion about, for a check PR 1 does not move. The intended
+successor — forced-reset as a scope narrowed to `{security}` at mint — is
+`authn-pipeline.md` part B, which has not started, so
+`require_no_password_change_pending_layer` keeps the check. § Fold in.
+
+```rust
 /// What the CREDENTIAL was issued for. Client-requestable, frozen at
 /// mint. NOT named `Resource`, which the GRANT axis owns — and whose
 /// variants carry an id, so `Resource::Calendar(Uuid)` is *one*
@@ -110,14 +186,18 @@ pub struct ScopeSet {
 }
 
 pub trait ScopePolicy {
+    /// ONE method, not a `require` / `require_all` pair. A single gate is
+    /// a `Gates` with one facet set, so the pair was an artefact of the
+    /// slice: `require_all` existed to normalise what a slice could
+    /// misrepresent, and the struct cannot misrepresent it.
+    ///
     /// Takes the CALLER CONTEXT, not a bare user id — § What a scope is
     /// bound to.
-    async fn require(&self, gate: Gate, caller: &CurrentUser) -> Result<(), AppError>;
-    /// Conjunction. Normalised first: subsumption collapses implied
-    /// gates, opt-ins cancel their defaults, a contradiction fails at
-    /// startup. § `require_all` normalises.
-    async fn require_all(&self, gates: &[Gate], caller: &CurrentUser)
+    async fn require(&self, gates: Gates, caller: &CurrentUser)
         -> Result<(), AppError>;
+    /// Separate because Scope is a different AXIS, not another facet:
+    /// client-requestable, frozen at mint, and checked on hot paths with
+    /// no DB round trip to hide behind. § Checking cost.
     async fn require_scope(&self, need: Scope, access: Access, caller: &CurrentUser)
         -> Result<(), AppError>;
 }
@@ -127,7 +207,7 @@ Three consumers, picked by what the gate protects:
 
 - **`InternalCaller` capability token** — for a top-level create. The
   only deny-by-default form: forgetting it does not compile. § Why 2.
-- **`gate_layer(state, Gate::Internal)`** — for a protocol subtree
+- **`gate_layer(state, Gates::role(RoleGate::Internal))`** — for a protocol subtree
   (`/webdav`, `/caldav`, `/carddav`, `/api/admin/*`), where the denial
   is the surface rather than one method.
 - **`InternalUser` / `AdminUser` extractors** — for a REST handler with
@@ -158,7 +238,7 @@ every gate to be user-bound.
 `email`, `role` (**from the JWT claim**, hence stale-prone, hence
 `decide_live_role`), `dpop_jkt` — and now `token: PresentedToken`, the
 `sid` and `iat` the credential presented. **This question is closed; the
-field is in.** `Gate::Elevated` can read `caller.token.session_id`
+field is in.** the session facet's `Elevated` can read `caller.token.session_id`
 without reshaping `require`.
 
 It carries the whole `PresentedToken` rather than a bare `sid` because
@@ -209,9 +289,18 @@ password scoped `files:ro` administers nothing — not because the scope
 says "not admin", but because `/api/admin` requires the `Admin` gate and
 no scope string can supply it.
 
+**Vocabulary, because this document needs two words and had one.** The
+three rows above are the **axes** — three different questions, answered
+from three different sources, enforced in three different layers. Inside
+the Gate axis there are four independent **facets**: role,
+credential-kind, anonymity, session-binding. A caller has a value for
+every facet at once, which is why `Gates` carries one field per facet
+(§ Goal) and why reduction never crosses between them (§ Reduction is
+per facet). Axes are separate types; facets are fields of one type.
+
 Consequences, both agreed:
 
-- **`/api/admin/*` is a role check, not a scope.** `Gate::Admin`, read
+- **`/api/admin/*` is a role check, not a scope.** `RoleGate::Admin`, read
   live. It never appears in the scope vocabulary, so `scope=admin` has
   nothing to parse into.
 - **`/api/dedup` is no longer admin.** `check_hash`,
@@ -225,14 +314,17 @@ All three axes, on one request:
 
 | axis | check | where |
 |---|---|---|
-| Gate | `Gate::NotAnonymous` — enforced today by `anonymous_allowlist_layer` | router layer |
+| Gate | the anonymity facet at its default `Denied` — enforced today by `anonymous_allowlist_layer` | router layer |
 | Scope | `oxicloud:sharing:rw` | router layer / extractor |
 | Grant | `authz.require(Subject::User(caller), Permission::Share, resource)` — owners short-circuit | `grant_handler.rs` |
 
-The gate is `NotAnonymous`, **not** `Internal` — and the difference is
-easy to blur. An external user has an `auth.users` row and legitimately
-re-shares what was shared with them (§ Rejected: default-deny). An
-anonymous public-link visitor has no user row at all: `UserRole::Anonymous`
+The facet is ANONYMITY, **not** role — and the difference is easy to
+blur. `AnonymityGate::Denied` refuses a visitor with no user row;
+`RoleGate::Internal` refuses an external USER, who has one.
+
+An external user has an `auth.users` row and legitimately re-shares what
+was shared with them (§ Rejected: default-deny). An anonymous
+public-link visitor has no user row at all: `UserRole::Anonymous`
 "is never stored in `auth.users`… it exists only on a session and its
 JWT". So there is no subject to record as `granted_by`, and permitting it
 would turn a read-only link into an access-granting capability — anyone
@@ -246,7 +338,7 @@ refusal for neighbours like `/api/users/{id}`, `/api/groups/search` and
 `/api/auth/app-passwords`.
 
 So this row folds in rather than appearing: per § Fold in,
-`anonymous_allowlist_layer` becomes `gate_layer(Gate::NotAnonymous)`
+`anonymous_allowlist_layer` becomes `gate_layer(Gates::default())`
 and keeps its allowlist.
 
 Neither the scope nor the grant substitutes for the other, and that is the
@@ -335,7 +427,7 @@ protect nothing while implying it did. That is the test a scope must
 pass: withholding it has to withhold something.
 
 Deliberately absent: `/api/admin/*` and `/api/groups` mutations are
-`Gate::Admin`; `/api/search` and `/api/rt/ws` read across areas and are
+`RoleGate::Admin`; `/api/search` and `/api/rt/ws` read across areas and are
 filtered by what the caller already holds; credential management and
 account-security routes are in `security`; login, public and ops routes
 are scopeless (§ Deliberately scopeless).
@@ -503,7 +595,7 @@ would hand the dangerous half to an rclone credential.
 
 Plus 2FA/TOTP when it lands — none exists yet — and self-service session
 revocation, which also does not exist: `/api/admin/sessions` is
-`Gate::Admin`, not `security`.
+`RoleGate::Admin`, not `security`.
 
 **Why a named scope rather than an exception list**, on three counts:
 
@@ -520,7 +612,7 @@ revocation, which also does not exist: `/api/admin/sessions` is
 3. It appears on consent screens if ever requested, instead of failing
    with an unexplained rejection.
 
-**`Gate::Elevated` is the second factor, and this is its first real
+**the session facet's `Elevated` is the second factor, and this is its first real
 consumer.** Holding `security:rw` is necessary and not sufficient: a
 mutation also needs a recently re-authenticated session, the admin
 sudo-mode state designed in `docs/plan/session-elevation.md`. Scope answers
@@ -600,7 +692,7 @@ The current `SCOPELESS` list, each entry with its reason:
 
   A session may therefore be required to carry DPoP while holding no
   right whatever to change the password. Those are different questions:
-  `Gate::DpopBound` asks how strongly this credential is held,
+  `DpopGate::Bound` asks how strongly this credential is held,
   `Scope::Security` asks what it was issued to do.
 - **`/api/auth/logout`** — ends the caller's own session. Any credential
   may do that; refusing would leave no way to put a key beyond use.
@@ -649,12 +741,12 @@ column on `auth.users` (widened by
 property of the caller with no resource to name — exactly parallel to
 `Admin`. Its live callsite already exists:
 `POST /api/admin/transfer-ownership` answers 403 "Only the current owner
-may transfer ownership", which becomes `Gate::Owner` instead of a
+may transfer ownership", which becomes `RoleGate::Owner` instead of a
 hand-rolled check.
 
 Two implementation notes, because both are traps:
 
-- **`Gate::Admin` is `role.at_least(Admin)`, not `role == Admin`.** The
+- **`RoleGate::Admin` is `role.at_least(Admin)`, not `role == Admin`.** The
   entity doc is explicit that Owner "outranks `Admin`, so it satisfies
   every admin gate without those gates naming it". An implementer who
   writes equality locks the instance owner out of the admin panel.
@@ -731,12 +823,12 @@ you must remember to write does. So the value is two narrower things:
 
 | Today | Becomes |
 |---|---|
-| `require_internal_user_layer` | `gate_layer(Gate::Internal)` |
-| admin middleware on `/api/admin/*` | `gate_layer(Gate::Admin)` |
+| `require_internal_user_layer` | `gate_layer(Gates::role(RoleGate::Internal))` |
+| admin middleware on `/api/admin/*` | `gate_layer(Gates::role(RoleGate::Admin))` |
 | `require_no_password_change_pending_layer` | **left alone by PR 1** — see the deadlock below |
-| `require_dpop_layer` | `gate_layer(Gate::DpopBound)` |
-| hand-rolled owner check in `transfer_ownership` | `Gate::Owner` |
-| `anonymous_allowlist_layer` | `gate_layer(Gate::NotAnonymous)` + keeps its allowlist — and is the mechanism § Authentication by default would promote to the root |
+| `require_dpop_layer` | `gate_layer(Gates::default().dpop_bound())` |
+| hand-rolled owner check in `transfer_ownership` | `RoleGate::Owner` |
+| `anonymous_allowlist_layer` | `gate_layer(Gates::default())` + keeps its allowlist — and is the mechanism § Authentication by default would promote to the root |
 
 `anonymous_allowlist_layer` is the loose fit — it carries a route
 allowlist and must stay `route_layer` (it needs `MatchedPath`). Fold the
@@ -749,8 +841,8 @@ instead". That plan's narrowing is part B, which is *not started* and
 whose own status line reads "needs `scope-gates.md`". Each plan deferred
 the removal to the other, and no narrowing exists at the mint today.
 
-So: the eleven references stay exactly as they are, `Gate::PasswordChangeSettled`
-is not implemented, and the layer's removal belongs to whichever of the
+So: the eleven references stay exactly as they are, no password-change
+facet exists, and the layer's removal belongs to whichever of the
 two lands second — by which time one of them really will have the
 replacement. Folding it as a gate instead would be worse than leaving it:
 it would be a third home for the check, built to be deleted, and PR 1's
@@ -764,7 +856,7 @@ likely to have moved. Verify Y shipped before planning around it.
 **Not the same thing as `authn-pipeline.md` § The forced-reset deadlock**,
 despite both being about this layer. That one is a RUNTIME risk inside
 part B's own design: a session narrowed to `{security}` needs
-`Gate::Elevated` to discharge the reset, and elevation uses the very
+the session facet's `Elevated` to discharge the reset, and elevation uses the very
 password being changed — so if elevation ever demands something a
 narrowed session cannot get, a forced reset bricks the account. It is
 live only once narrowing exists. This one is a PLANNING deadlock: two
@@ -825,10 +917,13 @@ way gets one of them wrong.
 | per check | a DB round trip | pure CPU |
 | paths | cold by design (§ Lookup and checking cost) | **hot** — every `/webdav` request, every `/api/files` listing |
 
-A gate check is dominated by its query, so the set representation is
-irrelevant: iterating a three-element slice costs nanoseconds against a
-round trip measured in microseconds at best. That is why `require_all`
-takes `&[Gate]` — clarity is the only axis in play.
+A gate check is dominated by its query, so the representation costs
+nothing either way: reading four fields and iterating a three-element
+slice are both nanoseconds against a round trip measured in microseconds
+at best. Performance does not pick between them, which is precisely why
+the choice is made on **representability** instead — `Gates` makes a
+contradictory pair impossible to construct, while a slice makes it
+impossible to miss only if something checks. § Reduction is per facet.
 
 A scope check has no query to hide behind. It runs on paths AGENTS.md
 names as hot (listing, thumbnails, auth), on every DAV request a sync
@@ -846,7 +941,7 @@ scope could silently reinterpret an existing credential.
 ## Rejected: default-deny across all of `/api`
 
 The tempting reading of "secure by default" is
-`gate_layer(Gate::Internal)` on the whole protected `/api` router plus
+`gate_layer(Gates::role(RoleGate::Internal))` on the whole protected `/api` router plus
 an allowlist of what externals may reach. Rejected, for a reason worth
 recording so it isn't re-proposed:
 
@@ -873,7 +968,7 @@ plan is otherwise balanced. Ranked, because not all denial is equal:
 | 1. **Won't compile** | the omission is a type error | `InternalCaller` token — `auth_user.id` stops type-checking on an ownerless create |
 | 2. **Won't start** | boot panics on a misconfiguration | an unknown job name in `OXICLOUD_JOBS_SCHEDULED` already does this; the scope parser rejecting an unknown resource is the same posture |
 | 3. **Won't pass CI** | the omission fails a test | exhaustiveness test — a route in neither the scope map nor `SCOPELESS` |
-| 4. **Fails closed at runtime** | the default answer is refusal | `Gate::NotAppPassword` applied by the root layer; ceilings as allowlists; `CurrentUser::role` resolving an unknown value to `Anonymous`, "the *least* privileged answer" |
+| 4. **Fails closed at runtime** | the default answer is refusal | `AppPasswordGate::Denied` as the facet default; ceilings as allowlists; `CurrentUser::role` resolving an unknown value to `Anonymous`, "the *least* privileged answer" |
 | 5. **Merely visible** | a reviewer must notice | an extractor on a handler — forget it and the route is open. Use only where 1-4 do not fit |
 
 Prefer the lowest number available. Where this plan chose 4 over 1 it
@@ -895,26 +990,38 @@ callsite to constrain), not because 4 is good enough.
   *grandfathering* rule with a defined end: once no pre-enforcement
   token can still be valid, absent becomes empty.
 
-### `require_all` normalises, per axis
+### Reduction is per facet
 
-Composed gates must flatten, because the default `NotAppPassword` plus
-an explicit `PermitAppPassword` is a contradiction the router would
-otherwise carry to runtime, and `[Internal, Admin, Owner]` is three
-lookups answering one question.
+This section argued its way to the `Gates` type in § Goal; what follows
+is the reasoning, kept because it is the justification for the shape
+rather than a separate proposal.
 
-**Reduction is per axis, not global.** The axes are independent — a
-principal-kind gate says nothing about a credential-kind one — so
-`[Internal, Admin, Owner]` reduces to `[Owner]` on the role axis while
-`NotAppPassword` survives untouched on its own. Collapsing across axes
-would silently drop a gate.
+Composed gates must reduce, because `[Internal, Admin, Owner]` is three
+lookups answering one question, and the default `NotAppPassword` beside
+an explicit `PermitAppPassword` is a contradiction a router would
+otherwise carry to runtime.
 
-Which suggests the type: one field per axis rather than a `Vec<Gate>`,
-so a contradiction is unrepresentable and the reduction is a field
-assignment instead of a lattice walk. `Admin ⇒ Internal` is provable
-from the `users_external_not_privileged` CHECK, so dropping `Internal`
-beside `Admin` is sound rather than a convention — a test should pin
-that dependency, since removing the constraint would quietly make the
-reduction wrong.
+**Reduction is per facet, never global.** The facets are independent — a
+role gate says nothing about a credential-kind one — so a role
+conjunction collapses to its maximum while the app-password facet stays
+untouched. Reducing across facets would silently drop a gate.
+
+One field per facet turns both problems into non-problems rather than
+into checks:
+
+- the contradictory pair is **unrepresentable**, so no startup validation
+  has to exist, and none can be forgotten;
+- the role reduction is a field assignment (`max`), not a lattice walk.
+
+`Admin ⇒ Internal` is what makes that `max` sound, and it is provable
+from the `users_external_not_privileged` CHECK constraint rather than
+conventional — so a test pins the dependency, because removing the
+constraint would quietly make the reduction wrong.
+
+The cost argument does NOT decide this, and § Checking cost says so: a
+gate check is dominated by its DB round trip, so four field reads and a
+three-element slice are indistinguishable. Representability is the only
+reason to prefer one, which is why it is the stated one.
 
 ### Authentication by default
 
@@ -1032,10 +1139,11 @@ between a credential being verified and a session existing — is
 - **Scope is minted there, enforced here.** The login phase derives a
   `ScopeSet` from `(method, credential) ∩ ceiling` and may narrow it
   further for a restricted account; this document only ever reads it.
-- **`Gate::PasswordChangeSettled` is deleted by it.** The forced-reset
-  state becomes a scope narrowed to `{security}` at mint, so
-  `require_no_password_change_pending_layer` and its five mount points
-  go away rather than folding into a gate.
+- **The password-change check is deleted by it.** The forced-reset state
+  becomes a scope narrowed to `{security}` at mint, so
+  `require_no_password_change_pending_layer` and its five mount points go
+  away rather than becoming a facet. Until part B lands, PR 1 leaves the
+  layer untouched — § Fold in.
 - **The two fail-open arms fold into it.** Their resolution is 503 on a
   transient failure (§ The two fail-open arms), which needs a transient
   error kind — and part A is where `admit()` first has to distinguish
@@ -1062,10 +1170,11 @@ The rule to add, under § AuthZ enforcement points:
 
 > **Every route declares all three axes explicitly. There is no default.**
 >
-> - **Gate** — which KIND of caller may reach this surface
->   (`Gate::Internal`, `Admin`, `Owner`, `NotAnonymous`, `DpopBound`,
->   `PasswordChangeSettled`). Declared even when the answer is "any
->   authenticated caller".
+> - **Gate** — which KIND of caller may reach this surface, as a `Gates`
+>   value naming the facets it needs (role, credential-kind, anonymity,
+>   session-binding). Declared even when the answer is "any
+>   authenticated caller", which is `Gates::default()` and still written
+>   down.
 > - **Scope** — what the CREDENTIAL was issued for
 >   (`oxicloud:<area>:<ro|rw>`), or an explicit `SCOPELESS` entry with
 >   the reason. "No scope" is a decision that gets written down, never an
@@ -1102,7 +1211,7 @@ only in a plan file:
 > 3. **Won't pass CI** — the omission fails a test, as a route absent
 >    from both the scope map and `SCOPELESS` does.
 > 4. **Fails closed at runtime** — the default answer is refusal
->    (`Gate::NotAppPassword` on the root layer; ceilings as allowlists;
+>    (`AppPasswordGate::Denied` as the facet default; ceilings as allowlists;
 >    `CurrentUser::role` resolving an unknown value to `Anonymous`).
 > 5. **Merely visible** — a reviewer must notice. An extractor on a
 >    handler is this: forget it and the route is open. Use only where
@@ -1219,7 +1328,7 @@ verb alone" is satisfied without giving up automatic coverage.
 ### The array is AND
 
 `security(("bearerAuth" = ["role:admin", "elevated"]))` requires
-`Gate::Admin` **and** `Gate::Elevated`. OpenAPI puts conjunction inside
+`RoleGate::Admin` **and** the session facet's `Elevated`. OpenAPI puts conjunction inside
 one requirement object and disjunction between objects, and the two
 forms look nearly identical:
 
@@ -1234,11 +1343,18 @@ session to admin mutations**: any user who re-authenticated at
 conjunction belongs in a method name, where it cannot be misread:
 
 ```rust
-policy.require_all(&[Gate::Admin, Gate::Elevated], caller).await?;
+// One call, and the conjunction is in the value rather than in the
+// reader's head. `.elevated()` joins the builders in § Goal when the
+// session facet gains its variant — not v1.
+policy.require(Gates::role(RoleGate::Admin).elevated(), caller).await?;
 
-// Equivalent, and what a pair of layers composes to anyway:
-policy.require(Gate::Admin, caller).await?;
-policy.require(Gate::Elevated, caller).await?;
+// Two calls are EQUIVALENT here, and that is a property of the facets
+// being independent: `role` and the session facet cannot overwrite one
+// another, so sequencing two requires composes rather than conflicts.
+// The single call is preferred for being one audit line, not because
+// the pair is wrong.
+policy.require(Gates::role(RoleGate::Admin), caller).await?;
+policy.require(Gates::default().elevated(), caller).await?;
 ```
 
 No gate combination in this design means "either". If one ever appears
@@ -1253,7 +1369,7 @@ is. Conjunction is the right default for every entry.
 **Elevation is not an admin feature.** `session-elevation.md` is named for
 its first consumer, and the name is now too narrow: elevation is a
 property of any session, and an ordinary user needs it for the same
-reason an admin does. Three consumer classes, so `Gate::Elevated` is not
+reason an admin does. Three consumer classes, so the session facet's `Elevated` is not
 speculative:
 
 | needs elevation | audience | because |
@@ -1317,11 +1433,11 @@ definition of a gate.
 
 ### Deny by default, permit explicitly
 
-`Gate::NotAppPassword` is applied by the root layer, so **every** route
+`AppPasswordGate::Denied` is the facet DEFAULT, so **every** route
 refuses a Basic-auth app password until something says otherwise. Mounts
-that legitimately accept one declare `Gate::PermitAppPassword`.
+that legitimately accept one declare `.permit_app_password()`.
 
-Positive opt-in rather than `remove(Gate::NotAppPassword)`, for a reason
+Positive opt-in rather than a `remove`-style subtraction, for a reason
 beyond taste: `grep PermitAppPassword` then prints the **complete**
 app-password attack surface in one command. A subtractive form cannot be
 audited that way — you would be grepping for an absence, and a route
@@ -1533,7 +1649,7 @@ session would pass. Neither is needed. `CurrentUser` carries
 `authn-pipeline.md` part A.
 
 So `security` gets the stronger, per-session form for free, and
-`Gate::Elevated` can read `caller.token.session_id` when
+the session facet's `Elevated` can read `caller.token.session_id` when
 `auth.sessions.elevated_at` exists.
 
 Worth noting WHY it landed there, because the reasoning constrains any
