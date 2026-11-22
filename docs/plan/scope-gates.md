@@ -250,6 +250,33 @@ Per axis, **tighten-only**:
 The result is a `Policy`: **total**, every axis resolved, no `Option`
 left. One per operation.
 
+### 2b. Compile-time validation — the reason the split pays
+
+A fold has to walk every declaration anyway, so it can refuse to produce
+a `Policy` that no caller could satisfy or that contradicts itself. These
+are **boot errors**: "won't start", the second tier of § Maximise
+deny-by-default, and unreachable today because a stack of independent
+layers has no moment where all the declarations are in one place.
+
+| refused at boot | why |
+|---|---|
+| `anonymous_allowed()` **+ any role** | structurally unsatisfiable: `UserRole::Anonymous` is "**never stored in `auth.users`**… it exists only on a session and its JWT, and `from_stored` deliberately cannot produce it" (`user.rs:21`). No role can ever be satisfied, so the route is unreachable and one of the two declarations is a lie. |
+| `anonymous_allowed()` **+ elevation** | elevation is a human re-proving themselves against an account. There is no account. |
+| `anonymous_allowed()` **+ a scope** | a share-ring visitor carries no `ScopeSet`; the requirement can never be met. |
+| a role declaration that **widens** its parent's | `Owner` nest, `Internal` child: the fold is `max`, so the child's intent is silently discarded. Better to refuse than to ignore. |
+| an operation with **no** policy | from the spec cross-check below. Deny-by-default means an undeclared operation is a boot failure, not an open door. |
+| a policy naming **no live operation** | a gate left behind by a deleted route, which would otherwise sit unmatched forever. |
+
+The first row is the one worth having. An implementor writing
+`anonymous_allowed()` on a route under `/admin` means *"make this
+public"*, while the nest says *"admins only"* — and whichever wins, the
+other declaration was wrong. Stacked layers resolve that to
+"unreachable" in silence; the compile step makes someone decide.
+
+Note what is NOT a contradiction: an admin whose credential is scoped
+`files:ro`. Role and scope intersect by design (§ Three axes) — the
+admin simply cannot use *that credential* for admin work.
+
 ### 3. Evaluate — one `Policy`, one check
 
 Field reads only. Role's cached read already happened in
