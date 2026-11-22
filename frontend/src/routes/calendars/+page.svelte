@@ -41,6 +41,7 @@
 	import { confirmDialog, promptDialog } from '$lib/stores/dialogs.svelte';
 	import { t } from '$lib/i18n/index.svelte';
 	import { ui } from '$lib/stores/ui.svelte';
+	import { lazyComponent } from '$lib/composables/lazyComponent.svelte';
 
 	let calendars = $state<CalendarInfo[]>([]);
 	let calendarsLoaded = $state(false);
@@ -60,6 +61,16 @@
 	let editing = $state<CalendarEvent | null>(null);
 	let dialogDate = $state(new Date());
 	let dialogCalendarId = $state('');
+
+	const shareDialog = lazyComponent(() => import('$lib/components/ShareDialog.svelte'));
+	let shareOpen = $state(false);
+	let shareTarget = $state<{ id: string; name: string; kind: 'calendar' } | null>(null);
+
+	async function onShareCalendar(calendar: CalendarInfo): Promise<void> {
+		shareTarget = { id: calendar.id, name: calendar.name, kind: 'calendar' };
+		await shareDialog.load();
+		shareOpen = true;
+	}
 
 	const viewData = $derived.by(() => {
 		if (view === 'month') {
@@ -375,6 +386,16 @@
 								</button>
 								<button
 									type="button"
+									class="icon-btn icon-btn--xs"
+									data-testid={`calendar-share-${calendar.id}`}
+									title={t('calendar.share_calendar', 'Share calendar')}
+									aria-label={t('calendar.share_calendar', 'Share calendar')}
+									onclick={() => void onShareCalendar(calendar)}
+								>
+									<Icon name="share-alt" />
+								</button>
+								<button
+									type="button"
 									class="icon-btn icon-btn--xs icon-btn--danger"
 									title={t('calendar.delete_calendar', 'Delete calendar')}
 									aria-label={t('calendar.delete_calendar', 'Delete calendar')}
@@ -502,6 +523,11 @@
 	ondelete={removeEvent}
 	onclose={() => (dialogOpen = false)}
 />
+
+{#if shareDialog.component}
+	{@const ShareDialog = shareDialog.component}
+	<ShareDialog bind:open={shareOpen} item={shareTarget} allowLinks={false} />
+{/if}
 
 <style>
 	.calendar-page {

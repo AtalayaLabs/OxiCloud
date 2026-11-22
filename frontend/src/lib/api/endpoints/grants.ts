@@ -17,6 +17,9 @@ import type { ResourceBody, ResourcePage } from './resources';
  */
 export type GrantResourceType = ItemType | 'drive';
 
+/** What the share dialog can target: a grant resource or a calendar. */
+export type GrantTargetType = GrantResourceType | 'calendar';
+
 const JSON_HEADERS = { 'Content-Type': 'application/json' };
 
 export type SubjectType = 'user' | 'group' | 'email' | 'token';
@@ -79,14 +82,14 @@ export interface CreateGrantResponse {
 // `expiryToIso` / `todayIso` moved to `$lib/utils/dateInput.ts` —
 // they're generic date-picker helpers, not grant-specific.
 
-export function fetchGrantsForResource(type: GrantResourceType, id: string): Promise<Grant[]> {
+export function fetchGrantsForResource(type: GrantTargetType, id: string): Promise<Grant[]> {
 	const params = new URLSearchParams({ resource_type: type, resource_id: id });
 	return apiJson<Grant[]>(`/api/grants?${params}`, { credentials: 'same-origin' });
 }
 
 export async function createGrant(
 	subject: GrantSubjectInput,
-	resource: { type: GrantResourceType; id: string },
+	resource: { type: GrantTargetType; id: string },
 	role: ShareRole,
 	expiresAt?: string | null
 ): Promise<CreateGrantResponse> {
@@ -102,7 +105,7 @@ export async function createGrant(
 
 export async function updateGrantRole(
 	subject: GrantSubject,
-	resource: { type: GrantResourceType; id: string },
+	resource: { type: GrantTargetType; id: string },
 	role: ShareRole,
 	expiresAt?: string | null
 ): Promise<void> {
