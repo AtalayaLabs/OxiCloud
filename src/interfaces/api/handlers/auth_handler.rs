@@ -56,6 +56,11 @@ pub fn auth_protected_routes() -> Router<Arc<AppState>> {
         .route("/change-password", put(change_password))
         .route("/upgrade-to-internal", post(upgrade_to_internal))
         .route("/logout", post(logout))
+        // Self-service session management — the user-scoped mirror of
+        // /api/admin/sessions. Protected, so the caller is already
+        // authenticated and the scope is their own id by construction.
+        .route("/sessions", get(list_own_sessions))
+        .route("/sessions/{id}", axum::routing::delete(revoke_own_session))
         // Self-service OIDC identity linking — see
         // docs/plan/oidc-account-linking.md.
         .route("/oidc/link/start", post(oidc_link_start))
@@ -531,7 +536,7 @@ pub async fn login(
                 // administrator") instead of the generic "Invalid
                 // credentials" we return for bad passwords. 403 matches
                 // the other post-credential-match policy refusals
-                // above. See `AuthApplicationService::ensure_user_is_active`
+                // above. See `auth_application_service::check_user_is_active`
                 // for the ordering that keeps a wrong-password attempt
                 // on a deactivated account indistinguishable from a
                 // wrong-password attempt on an active one.
@@ -637,7 +642,7 @@ pub async fn refresh_token(
     };
 
     // Refresh rotates the session row — capture current IP + UA so the
-    // NEW row's `ip_address`/`user_agent` reflect the latest observed
+    // NEW row's `created_ip`/`user_agent` reflect the latest observed
     // client (see `sessions.rotate_session`). Old row keeps its own
     // capture from creation time.
     let client_ip = client_ip_from_parts(&headers, Some(peer), false);
@@ -1088,6 +1093,106 @@ pub async fn update_user_image(
         Ok(_) => StatusCode::OK.into_response(),
         Err(e) => AppError::from(e).into_response(),
     }
+}
+
+/// GET /api/auth/sessions — the caller's own sessions.
+///
+/// The self-service half of `GET /api/admin/sessions`, and the same rows
+/// through the same DTO — `SessionSummaryDto` already withholds what a
+/// user must not see (`dto_never_leaks_oidc_sid` pins that the IdP
+/// correlation handle stays out of the wire shape, not even a prefix), so
+/// no second projection is needed and none is introduced.
+#[utoipa::path(
+    get,
+    path = "/api/auth/sessions",
+    responses(
+        (status = 200, body = Object, description = "The caller's sessions"),
+        (status = 401, description = "Not authenticated", body = crate::interfaces::errors::ApiErrorBody),
+    ),
+    security(("bearerAuth" = [])),
+    tag = "auth"
+)]
+pub async fn list_own_sessions(
+    State(state): State<Arc<AppState>>,
+    auth_user: AuthUser,
+    Query(query): Query<crate::application::dtos::settings_dto::ListOwnSessionsQueryDto>,
+) -> Result<impl IntoResponse, AppError> {
+    let auth = state
+        .auth_service
+        .as_ref()
+        .ok_or_else(|| AppError::internal_error("Auth service not configured"))?;
+
+    let limit = query.limit.unwrap_or(100).min(500);
+    let offset = query.offset.unwrap_or(0);
+    let include_revoked = query.include_revoked.unwrap_or(false);
+
+    // The thumbprint is what lets the DTO flag `is_current` — "this is
+    // the browser you are reading this in". More load-bearing here than
+    // on the admin surface: a user revoking their own sessions needs to
+    // know which row logs them out.
+    let caller = crate::application::dtos::session_dto::SessionCaller {
+        id: auth_user.id,
+        dpop_jkt: auth_user.dpop_jkt.as_deref(),
+        session_id: auth_user.token.session_id,
+    };
+
+    let sessions = auth
+        .auth_application_service
+        .list_own_sessions(caller, include_revoked, limit, offset)
+        .await
+        .map_err(AppError::from)?;
+
+    Ok(Json(serde_json::json!({
+        "sessions": sessions,
+        "limit": limit,
+        "offset": offset,
+    })))
+}
+
+/// DELETE /api/auth/sessions/{id} — revoke one of the caller's own
+/// sessions.
+///
+/// 404 both when the session does not exist and when it belongs to
+/// someone else: see `revoke_own_session`, which decides that and audits
+/// the real reason.
+#[utoipa::path(
+    delete,
+    path = "/api/auth/sessions/{id}",
+    params(("id" = String, Path, description = "Session UUID")),
+    responses(
+        (status = 200, body = Object, description = "Session revoked"),
+        (status = 400, description = "Invalid UUID", body = crate::interfaces::errors::ApiErrorBody),
+        (status = 401, description = "Not authenticated", body = crate::interfaces::errors::ApiErrorBody),
+        (status = 404, description = "No such session for this caller", body = crate::interfaces::errors::ApiErrorBody),
+    ),
+    security(("bearerAuth" = [])),
+    tag = "auth"
+)]
+pub async fn revoke_own_session(
+    State(state): State<Arc<AppState>>,
+    auth_user: AuthUser,
+    axum::extract::Path(id): axum::extract::Path<String>,
+) -> Result<impl IntoResponse, AppError> {
+    let session_id = Uuid::parse_str(&id).map_err(|_| AppError::bad_request("Invalid UUID"))?;
+    let auth = state
+        .auth_service
+        .as_ref()
+        .ok_or_else(|| AppError::internal_error("Auth service not configured"))?;
+
+    let caller = crate::application::dtos::session_dto::SessionCaller {
+        id: auth_user.id,
+        dpop_jkt: auth_user.dpop_jkt.as_deref(),
+        session_id: auth_user.token.session_id,
+    };
+    auth.auth_application_service
+        .revoke_own_session(caller, session_id)
+        .await
+        .map_err(AppError::from)?;
+
+    Ok((
+        StatusCode::OK,
+        Json(serde_json::json!({ "message": "Session revoked" })),
+    ))
 }
 
 /// Revoke the current session and clear auth cookies.

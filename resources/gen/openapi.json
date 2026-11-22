@@ -6572,6 +6572,111 @@
         "security": []
       }
     },
+    "/api/auth/sessions": {
+      "get": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "GET /api/auth/sessions — the caller's own sessions.",
+        "description": "The self-service half of `GET /api/admin/sessions`, and the same rows\nthrough the same DTO — `SessionSummaryDto` already withholds what a\nuser must not see (`dto_never_leaks_oidc_sid` pins that the IdP\ncorrelation handle stays out of the wire shape, not even a prefix), so\nno second projection is needed and none is introduced.",
+        "operationId": "list_own_sessions",
+        "responses": {
+          "200": {
+            "description": "The caller's sessions",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not authenticated",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
+    },
+    "/api/auth/sessions/{id}": {
+      "delete": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "DELETE /api/auth/sessions/{id} — revoke one of the caller's own\nsessions.",
+        "description": "404 both when the session does not exist and when it belongs to\nsomeone else: see `revoke_own_session`, which decides that and audits\nthe real reason.",
+        "operationId": "revoke_own_session",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Session UUID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Session revoked",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid UUID",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not authenticated",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such session for this caller",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
+    },
     "/api/auth/upgrade-to-internal": {
       "post": {
         "tags": [
@@ -18267,39 +18372,56 @@
       },
       "DeviceInfoDto": {
         "type": "object",
-        "description": "DTO for listing authorized devices in the user's profile.",
+        "description": "One CONNECTED device, projected from its session row.\n\nTwo fields of the `device_codes`-era shape are gone, and their\nabsence is the point:\n\n* `scopes` — recorded on the `device_codes` row, which `poll()`\n  deletes once the tokens are collected, so a connected device's\n  approved scopes are not retrievable. They are also not enforced\n  yet (`scope-gates.md`); the field returns when a session carries a\n  `ScopeSet` and the value is real.\n* `authorized_at` — would duplicate `created_at`, since the session\n  row IS created at the moment of approval. The device's own earlier\n  request time lived on the deleted row.",
         "required": [
           "id",
           "client_name",
-          "scopes",
           "status",
           "created_at",
-          "expires_at"
+          "expires_at",
+          "last_seen_at",
+          "is_bound"
         ],
         "properties": {
-          "authorized_at": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
           "client_name": {
             "type": "string"
           },
           "created_at": {
-            "type": "string"
+            "type": "string",
+            "description": "When the device was AUTHORISED — the approval moment."
+          },
+          "created_ip": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Where the human approved it from. The device never reaches the\napproval endpoint, so this is the approver's browser."
           },
           "expires_at": {
             "type": "string"
           },
           "id": {
-            "type": "string"
+            "type": "string",
+            "description": "The SESSION id — what `DELETE /api/auth/device/devices/{id}`\ntakes. Previously a `device_codes` id, which named a row that no\nlonger existed for any device that had actually connected."
           },
-          "scopes": {
-            "type": "string"
+          "is_bound": {
+            "type": "boolean",
+            "description": "Whether the session is DPoP-bound. Device-flow sessions are\nunbound by design (CLI and TV clients have no WebCrypto), so a\n`true` here would be surprising and worth surfacing."
+          },
+          "last_seen_at": {
+            "type": "string",
+            "description": "Genuine liveness, maintained per request. This is the field that\nmakes the list answer \"is this thing still talking to me?\",\nwhich the old one could not."
+          },
+          "last_seen_ip": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Where the device is actually being used from, to within the\nlast-seen flush interval. A mismatch against `created_ip` is\nworth an operator's attention."
           },
           "status": {
-            "type": "string"
+            "type": "string",
+            "description": "`active`, or `expired` for a row past `expires_at` that nobody\nrevoked. Revoked sessions are not listed at all."
           }
         }
       },
@@ -22833,6 +22955,13 @@
             "type": "string",
             "format": "date-time"
           },
+          "created_ip": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "IP the session was CREATED from: the login IP, or for\n`origin = device` the approver's browser IP. Inherited across\nrotation, so it stays the family's authorisation point rather\nthan drifting to \"where it last refreshed\"."
+          },
           "dpop_jkt_prefix": {
             "type": [
               "string",
@@ -22847,12 +22976,6 @@
           "id": {
             "type": "string",
             "format": "uuid"
-          },
-          "ip_address": {
-            "type": [
-              "string",
-              "null"
-            ]
           },
           "is_active": {
             "type": "boolean",
@@ -22878,6 +23001,13 @@
             "type": "string",
             "format": "date-time",
             "description": "Wall-clock time this session was last observed serving an\nauthenticated request. Moved forward per request by the\nin-process [`LastSeenTracker`](crate::infrastructure::services::last_seen_tracker)\nvia a batched UPDATE every 30 s — so this value trails the\ntrue \"last seen\" by at most one flush interval on a running\nserver. On DB read it always converges after a graceful\nshutdown flush. Distinct from `created_at`: that only moves\non session rotation (silent refresh), so its resolution is\ncapped at the access-token TTL. The admin table renders a\n\"last seen X ago\" column off this field."
+          },
+          "last_seen_ip": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "IP the session was last USED from, to within the last-seen\nflush interval. `None` until it serves a request.\n\nRendered beside `created_ip` because **the mismatch is the\nsignal**: a session authorised from one address and now used\nfrom another is the shape of a stolen credential, which neither\ncolumn shows alone."
           },
           "origin": {
             "$ref": "#/components/schemas/SessionOrigin",

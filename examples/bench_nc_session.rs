@@ -130,6 +130,7 @@ fn fixture_user(id: uuid::Uuid) -> CurrentUser {
         email: Arc::from("alice.longname@example.com"),
         role: smol_str::SmolStr::new_static("user"),
         dpop_jkt: None,
+        token: Default::default(),
     }
 }
 

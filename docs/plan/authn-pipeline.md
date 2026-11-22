@@ -5,8 +5,81 @@ Branch: `feat/scope-and-session-elevation`. Companion to
 Grant). This document owns the **login phase**: what happens between a
 credential being verified and a session existing.
 
-Status: **DRAFT** — audit complete, design agreed in review, nothing
-implemented.
+## Status
+
+**Part A is COMPLETE and green against a live server**; part B has not
+started. Keep this table current — it is the first thing a reader
+checks, and a plan that still says "nothing implemented" after the work
+has shipped is worse than no status at all.
+
+| item | status | commits |
+|---|---|---|
+| Fail-open arms answer 503 | **done** | `ed427185e` `a15455f14` |
+| One admission check, all nine doors | **done** | `2f9101138` `c2d6045cc` |
+| `AdmittedCaller` required by `Session::new` — every door | **done** | `2f9101138` `ab109e66a` |
+| Revocation — user-wide `iat` cutoff | **done** | `fe12a4739` |
+| Revocation — per-session (`revoked_at`) | **done** | `ae956005b` |
+| `auth-model.md` documentation — phases, admission, revocation | **done** | see § Required: documentation |
+| Session IP pair — `created_ip` / `last_seen_ip` | **done** | `b299f184f` `5a31e1f29` |
+| Connected-device list + revoke reading `auth.sessions` | **done** | `5c3da3ac7` |
+| WebSocket revocation — both upgrade paths + open-socket re-check | **done** | `75c806b5a` `57a506a85` |
+| `CurrentUser` carries the presented token (`sid` + `iat`) | **done** | `9a42e4299` |
+| OIDC backchannel logout applies immediately | **done** | `0228c1433` |
+| Scope narrowing, obligations (part B) | **not started** | needs `scope-gates.md` |
+
+Verified at the wire, not only in unit tests: the deactivated-account
+refusal on every door (`e3ead258c` `52b2179a9`, OPAQUE's in
+`opaque-hurl-helper` at `4355aec71`) and both revocation forms
+(`6a857cc20`), and the session IP pair with spoofed addresses
+(`b953ec174`), and the verified-email policy in its own server pass
+(`9abe7b742`, `301606a5d`). The device list and its revoke are covered by the
+pre-existing `device_auth_flow.hurl`, updated to assert the new fields
+and that a device which COLLECTED its tokens is still listed — its
+absence was the defect.
+
+**OIDC backchannel logout is verified by scope, not just by effect**
+(`c6342486d`, green). `tests/oidc/run.sh` builds three live sessions and
+pins which ones each branch may touch: a `sid` logout kills the session
+it names and leaves the same subject's OTHER session alive, a sub-only
+logout then kills that one too, and a second user's session survives
+both. Two self-checks keep the fixture honest — the two sids are asserted
+to differ (a reused OP session would collapse them and every scoping
+assertion would pass while proving nothing) and the captured sid is
+asserted to be a string (the control endpoint returns null before any
+login, so a failed capture would silently take the sub-only branch).
+Getting a matching sid needed the mock IdP to record the claim off its
+own token-endpoint response, because the sid is minted inside
+node-oidc-provider and OxiCloud never echoes it — `dto_never_leaks_oidc_sid`
+pins that the session DTO must not carry it, not even a prefix.
+
+That run also retired a note in the same suite that had documented the
+old limitation as permanent: "the still-valid in-memory access token
+would let /me return 200 until its natural expiry (~1 h default) … BCL
+fully evicts within one access-token TTL". True when written, false once
+per-session revocation landed. The note is quoted in place rather than
+deleted, so a reader learns the premise changed rather than just finding
+a new assertion.
+
+Two defects the RUNS found, which neither `cargo` nor clippy could see —
+the reason the wire pins were worth writing:
+
+- the Basic-auth path had **no** live account check and served a 300 s
+  cached verification, so a deactivated account kept WebDAV for up to
+  five minutes (`102af56b3`);
+- the NextCloud surface has its **own** middleware, which ignored
+  `active`, used a cached role and failed open on a lookup error
+  (`9add3034b`). That surface accepts no Bearer credential, so nothing
+  else would have caught it.
+
+One thing is deliberately NOT done: the device-flow service check,
+because middleware refuses a deactivated caller first and a wire test
+there would assert the wrong layer (§ Test plan).
+
+The WebSocket blind spot is CLOSED — both upgrade paths carry the claims,
+and open sockets are re-checked on the keepalive tick. An eviction signal
+was considered and deferred: the bus is in-process, so it would silently
+fail across nodes. See `docs/architecture/auth-model.md` § Revocation for
+the upgrade path.
 
 ## Goal
 
@@ -49,15 +122,17 @@ Which path applies which:
 | OIDC | ✓ `:5795` | own logic from IdP claims | ✗ |
 | **app password** | ✓ (≤30 s cache) | **✗** | ✗ |
 | **device approve/poll** | **✗** | **✗** | ✗ |
-| NC login v2 | ✓ `verify_credentials` | ✗ | ✗ |
+| NC login v2 | ✓ `verify_credentials`, but **pre-credential** | ✗ | ✗ |
 | **refresh** | ✓ `:2346` | **✗** | ✗ |
+| **refresh grace replay** | ✓ hand-copied | **✗** | ✗ |
 | **per call** | ✓ `LiveRole` | **✗** | layer-dependent |
 
 ### Findings
 
-1. **Email verification is enforced on 1 of 8 paths and never per
-   call.** OPAQUE, app passwords, the device flow, NC login v2 and
-   refresh all bypass `require_verified_email`.
+1. **Email verification is enforced on 2 of 9 paths and never per
+   call** — `login()` and, by its own claim logic, OIDC. OPAQUE, app
+   passwords, the device flow, NC login v2, refresh and the grace
+   replay all bypass `require_verified_email`.
 2. **`refresh` undoes the one path that does check.** It re-mints
    without re-evaluating, so a session established once outlives the
    requirement indefinitely.
@@ -71,7 +146,69 @@ Which path applies which:
 5. **The cause is structural, not a missing `if`.** The gate lives
    *inside* `login()`, while `mint_session_for_authenticated_user` was
    factored out "so the OPAQUE login handler" could reuse it — reusing
-   the minting and leaving the gate behind. A ninth path will repeat it.
+   the minting and leaving the gate behind. A tenth path will repeat it.
+6. **The grace replay is a door nobody counts.** `try_grace_replay`
+   re-issues an access token without rotating, and hand-rolls
+   `is_active` under the comment "the user has to pass the same gates a
+   normal refresh applies" — so it verifies one of the two gates it
+   claims to mirror. Only a sweep of every `generate_access_token`
+   caller finds it; it is reachable by anyone holding a
+   just-superseded refresh token.
+7. **NC login v2 checks `active` before the password verify**, and
+   answers "Account deactivated" to a caller who has proven nothing —
+   so a prober learns the username exists AND is deactivated.
+   `ensure_user_is_active`'s own doc calls that the weaker posture. The
+   flow ends by handing the client an app password, so it owes a
+   session mint's checks.
+
+### Resolved
+
+`check_account_admission` is the single definition; `ensure_admissible`
+reaches it inside the service, and the two services holding no
+`AuthApplicationService` (device, app password) call it directly. Every
+door calls the **composed** check, never the individual ones — asking
+them one at a time per door is how they drifted, and a rule added later
+would otherwise land in `admit` and miss `refresh`.
+
+`AdmittedCaller` makes it unforgeable at the **entity**, which is what
+closes finding 5 for good: `Session::new` requires one, its fields are
+private with no public constructor, and only `admit` produces it. So
+every session row in the codebase — present and future — comes from an
+admitted account, and a tenth door that forgets the checks does not
+compile rather than shipping a bypass. `user_id` comes from the proof
+rather than beside it, so "admitted user A, session for user B" is
+unrepresentable too.
+
+That is the strongest rank in `scope-gates.md` § Maximise
+deny-by-default — *won't compile* — and it is there because the weaker
+ranks demonstrably failed on this exact surface twice: OPAQUE reached
+the mint with a bare `User`, and the device flow did the same
+afterwards. Both read as correct code.
+
+Introducing the type found a latent ordering bug immediately:
+`oidc_callback` ran its admission check AFTER constructing the session.
+Harmless, since nothing was persisted yet — but a proof cannot be
+produced later than the thing that needs it.
+
+`Session::from_raw` deliberately requires no proof: rehydrating an
+existing row is not admitting anyone, and demanding one there would mean
+re-running login checks in order to READ a session.
+
+Two carve-outs are deliberate and pinned:
+
+- **Only the Owner is exempt from the email rule** — not `at_least(Admin)`.
+  It is enforced at login, so the exempt account is the one that could
+  otherwise never log in to fix its own address; one such account is
+  enough, and there is exactly one Owner.
+- **`login` keeps a separate early `active` check** before the
+  OPAQUE-migrated branch, so a deactivated migrated user is told
+  "deactivated" rather than "use the OPAQUE endpoint". App-password
+  verify keeps its early check too, as a pre-filter that saves an
+  Argon2 hash and leaks nothing.
+
+No lockout risk from uniform enforcement:
+`OXICLOUD_REQUIRE_VERIFIED_EMAIL` already exists and defaults to
+`false`.
 
 ## The phases, and when each runs
 
@@ -96,9 +233,10 @@ restricted account could be granted more than its credential allows.
 
 ### Which phases run, and when
 
-Canonical home once § Required: documentation is discharged is
-`docs/architecture/auth-model.md` § Phases; the copy below is the
-draft it is cut from.
+**Canonical home: `docs/architecture/auth-model.md` § Phases.** That
+page is the one a reader debugging a login reaches for, and it is kept
+current against the code; the copy below is the draft it was cut from
+and will drift. Prefer the architecture page.
 
 | entry point | 1 creds | 2 scope | 3 admit | 4 mint | notes |
 |---|---|---|---|---|---|
@@ -139,12 +277,25 @@ creates no session row; there is no `AppPassword` variant in
 
 - it is the credential that most needs `admit()`, because the gap found
   in § The audit is executed thousands of times rather than once;
-- admission must sit behind the existing 30 s result cache, caching the
-  `AdmittedCaller` rather than only the flags. Re-running Argon2id and
-  three account checks per request is not an option — the cache is why
-  this path is affordable at all, and its documented bound ("expiry and
-  deactivation are bounded by the TTL") becomes the bound on admission
-  too.
+- the caching question is the whole design, and this draft got the
+  answer WRONG. It proposed caching the `AdmittedCaller` alongside the
+  credential result, so "deactivation is bounded by the TTL" would have
+  become the bound on admission too.
+
+  **That is the bug, not the fix.** The cache is keyed on
+  `blake3(username + ":" + password)` and lives 300 s, not 30; its
+  account check runs only on a MISS, which a client that just
+  authenticated never produces. Caching admission beside it means a
+  disabled account keeps the whole DAV surface for five minutes — which
+  is exactly what was found on this path once a wire test existed
+  (`102af56b3`).
+
+  What shipped instead: the credential cache holds ONLY
+  credential→identity, and the live account state is read per request
+  from the `UserFlags` cache, which is eagerly invalidated on
+  deactivation and role change. Argon2id is still skipped — that is the
+  cache's real job — while the refusal is immediate. Cost is one moka
+  hit, the same one every Bearer request already pays.
 
 ## Login phase
 
@@ -207,7 +358,7 @@ mint_session_for_authenticated_user(caller: AdmittedCaller, …)
 ```
 
 `AdmittedCaller` is constructible only by `admit()`. OPAQUE's current
-code stops compiling, and a ninth path cannot repeat finding 5. Rank 1
+code stops compiling, and a tenth path cannot repeat finding 5. Rank 1
 of `scope-gates.md` § Maximise deny-by-default — won't compile — rather
 than rank 5, a check a reviewer must notice.
 
@@ -285,131 +436,121 @@ mechanism `set_force_password_change` already uses.
 > Every state change that **tightens** must either revoke sessions or be
 > in the per-call read.
 
-Satisfied today by accident rather than by design, and written nowhere —
-so the next `force_*` flag will get it wrong:
+Satisfied today by accident, and written nowhere — so the next `force_*`
+flag will get it wrong:
 
 | change | revokes sessions? |
 |---|---|
 | `change_password` | ✓ |
 | `set_force_password_change` | ✓ (`:4413`) |
-| deactivation (`set_user_active`) | ✗ — relies on per-call `LiveRole`, and the flags cache is invalidated (`:4577`) |
+| deactivation (`set_user_active`) | ✗ — relies on per-call `LiveRole`; flags cache invalidated (`:4577`) |
 | OIDC backchannel logout | ✓ — a third revocation source |
 | email change | n/a — not user-mutable |
 | **new obligation published** | **must choose**, per § Mandatory actions |
 
 ### There is no true revocation today
 
-`revoke_all_user_sessions` runs
-`UPDATE auth.sessions SET revoked = true WHERE user_id = $1`. The
-session row carries the **refresh token**, so revocation prevents
-*renewal*. `auth_middleware` reads `claims.sid` only to feed the
-last-seen tracker — explicitly "no I/O on this hot path" — and never
-checks whether the session is revoked.
+`revoke_all_user_sessions` sets `revoked = true` on the session row, and
+that row carries the **refresh token** — so it prevents *renewal*.
+`auth_middleware` reads `claims.sid` only to feed the last-seen tracker
+("no I/O on this hot path") and never checks whether the session is
+revoked. The access token therefore keeps working for its remaining
+lifetime, and `DELETE /api/admin/sessions/{id}` means "stop this session
+renewing", not "stop this session".
 
-So revoking leaves the access token working for its remaining lifetime,
-and the admin panel's `DELETE /api/admin/sessions/{id}` is "stop this
-session renewing", not "stop this session".
+### Device revocation is broken at the data source
 
+Four facts that only bite in combination:
 
-### Revocation must target the record that grants access
-
-The admin panel's `DELETE /api/admin/sessions/{id}` is the revoke-one
-case above, and `Gate::Elevated` already covers it — it is a non-safe
-method under `/api/admin/*` (`scope-gates.md` § Declaring session
-elevation). Two neighbours are less well served.
-
-**Device revocation is broken at the data source.** Four facts that only
-bite in combination:
-
-1. `approve()` creates a `Session::new(…)` — the durable record of a
-   connected device, with `origin = Device`.
-2. `poll()` deletes the `auth.device_codes` row once the tokens are
-   collected, deliberately: "prevents plain-text tokens from lingering
-   in the database".
-3. `list_user_devices` reads `FROM auth.device_codes WHERE user_id = $1`,
-   unfiltered by status.
+1. `approve()` creates a `Session::new(…)` with `origin = Device` — the
+   durable record of a connected device.
+2. `poll()` deletes the `auth.device_codes` row once tokens are
+   collected, deliberately: "prevents plain-text tokens from lingering".
+3. `list_user_devices` reads `FROM auth.device_codes`, unfiltered.
 4. `revoke_device` deletes a `device_codes` row.
 
 So `GET /api/auth/device/devices` lists **uncollected authorizations**,
-not connected devices, and `DELETE /api/auth/device/devices/{id}` can
-only cancel a pending one. A device that has actually connected is
-absent from its own list and unrevokable from it. Its only record is the
-session row — admin-only, and today that stops renewal rather than
-access.
+and `DELETE …/{id}` can only cancel a pending one. A device that has
+actually connected is absent from its own list and unrevokable from it.
 
-The fix follows the data: device listing and revocation belong on
-`auth.sessions WHERE origin = 'device'`, which also supplies the
-last-seen and IP columns the admin panel already renders. The
-`device_codes` table then means what its name says — in-flight
-authorizations — and pending-cancel stays a separate, smaller action.
+The fix follows the data: list and revoke from
+`auth.sessions WHERE origin = 'device'`. `device_codes` then means what
+its name says — in-flight authorizations — and pending-cancel is a
+separate, smaller action.
 
-#### The connected-device list, and two IP columns
+**The list needs no new columns**: `user_agent` carries
+`device:{client_name}`, and `last_seen_at`, `created_at`, `expires_at`,
+`revoked` and `dpop_jkt` are all on the row. It is a query change that
+turns a list of things which are *not* connected into a list of things
+that are.
 
-Almost everything the list needs is already on the session row, because
-`approve()` stashes it:
-
-| column | renders as | note |
-|---|---|---|
-| `origin = 'device'` | the filter | `SessionOrigin::Device` |
-| `user_agent` | client name | written as `device:{client_name}`, so the prefix doubles as a marker |
-| `last_seen_at` | genuine liveness | already maintained by the last-seen tracker, keyed on `claims.sid` |
-| `created_at`, `expires_at` | connected since / valid until | |
-| `revoked`, `dpop_jkt` | state, binding | |
-
-So the listing itself is a query change, and it turns a list of things
-that are *not* connected into a list of things that are.
-
-**One small migration, though: two IP columns rather than one.**
-`ip_address` today is commented "approver's browser IP" — where the
-human authorised the device, not where the device is. Overloading or
-relabelling one column loses information that is worth keeping
-separately:
+**But two IP columns rather than one.** `ip_address` is commented
+"approver's browser IP" — where the human authorised, not where the
+device is:
 
 | column | written | means |
 |---|---|---|
-| `ip_approved` | once, at `approve()` | where a human authorised this device. Immutable, forensic — "who let this in" |
-| `ip_seen` | on the existing last-seen write | where the credential is actually being used |
+| `ip_approved` | once, at `approve()` | where a human authorised this device — immutable, forensic |
+| `ip_seen` | on the existing last-seen write | where the credential is actually used |
 
-**A mismatch between them is itself a signal**, which is the reason to
-keep both rather than pick one: a device approved from a home address
-and now seen from elsewhere is exactly the shape of a stolen refresh
-token, and no single column can express it.
-
-`ip_seen` is close to free. The last-seen tracker already writes that
-row on a batched 10 s interval (`main.rs` ~200,
-`with_interval(Duration::from_secs(10))`, with a flush on shutdown), so
-the IP rides an UPDATE that is already happening — same row, same
-statement, no extra round trip. Note the corollary: `ip_seen` is
-accurate to within the flush interval, not instantaneous, and the
-display should not imply otherwise.
-
-This applies to every session origin, not only devices — a browser
-session gains the same pair, and the admin panel's IP column becomes
-unambiguous for all of them.
+A mismatch between them is itself a theft signal, which no single column
+can express. `ip_seen` is nearly free — the tracker already writes that
+row on a batched 10 s interval (`main.rs` ~200), so the IP rides an
+UPDATE that is already happening; the corollary is that it is accurate
+to within that interval, and the display should not imply otherwise.
+Applies to every origin, so the admin panel's IP column becomes
+unambiguous for browser sessions too.
 
 ### True revocation, at no per-call cost
 
-`UserFlags` is already read per call and already cached, with eager
-invalidation on mutation. Both forms ride that read:
+`UserFlags` is already read per call and cached with eager invalidation.
+Both forms ride that read:
 
-- **Revoke-all** — add `sessions_valid_from: TIMESTAMPTZ` to the user
-  row. Revoking sets it to `now()`; the middleware rejects any token
-  whose `iat` precedes it. One comparison, no new query.
+- **Revoke-all** — `sessions_valid_from: TIMESTAMPTZ` on the user row.
+  Revoking sets it to `now()`; the middleware rejects any token whose
+  `iat` precedes it. One comparison, no new query.
 - **Revoke-one** — a bounded `revoked_sids` set in the same cached row.
-  Bounded because a revoked `sid` only needs remembering until its
-  access token would have expired anyway (~1 h), so the set self-prunes.
-  `sid` is already on `JwtClaims`, present "precisely so the auth
-  middleware can act per-session without a DB round trip".
+  Bounded because a revoked `sid` need only be remembered until its
+  access token would have expired (~1 h). `sid` is already on
+  `JwtClaims` "precisely so the auth middleware can act per-session
+  without a DB round trip".
 
-Latency is the flags-cache TTL (30 s) unless the revoking call
-invalidates eagerly — and that path already exists
-(`user_flags_cache.invalidate`), so revocation becomes immediate by
-calling it.
+  **It does not self-prune yet: `auth.sessions` has no `revoked_at`.**
+  The column is a bare `revoked BOOLEAN`, so there is nothing to bound
+  the set BY. Filtering on `expires_at` instead bounds it by the REFRESH
+  expiry (7 days default), not the access-token hour — and that set is
+  carried inside a hot-path cache entry, so a user cycling sessions
+  across several devices could put hundreds of UUIDs there.
 
-This keeps the per-call budget flat: one cached read, now answering
-"still admitted, and is *this session* still valid" instead of only the
-former.
+  So revoke-one needs `ALTER TABLE auth.sessions ADD COLUMN revoked_at
+  TIMESTAMPTZ` first, after which the plan's design works as written and
+  the set is a handful of rows. Revoke-all needed no such column, which
+  is why it shipped first (`fe12a4739`).
 
+Latency is the 30 s cache TTL unless the revoking call invalidates
+eagerly — `user_flags_cache.invalidate` already exists, so calling it
+makes revocation immediate. The per-call budget stays flat: one cached
+read, now answering "still admitted, **and is this session still
+valid**".
+
+#### Why revoke-one is the only way to close the password-change window
+
+`change_password` keeps the caller's session alive on purpose, so the
+SPA can finish the OPAQUE envelope re-registration on the cookie it
+already holds. A cutoff is one `iat` watermark for the whole user, so
+stamping it there would invalidate the kept session too.
+
+The tempting escape hatch does not exist. `/api/auth/refresh` carries no
+`auth_middleware`, so a cutoff cannot block a refresh — which suggests
+stamping it anyway and letting the SPA turn the caller's 401 into a
+transparent refresh-and-retry. But `/api/auth/opaque/` sits on the
+`AUTH_PRIMITIVES` bypass list in `frontend/src/lib/api/transport.ts`,
+where a 401 is deliberately genuine and never retried, so the sync would
+hard-fail and leave the envelope on the OLD password.
+
+Hence the residual window — the other devices cannot renew, but their
+already-issued access tokens work until they expire — closes only with
+per-session revocation, and therefore only after `revoked_at`.
 ## Anonymous sessions do not pass through `admit()`
 
 A public-link session has no `auth.users` row — `share_service.rs` ~476,
@@ -424,21 +565,25 @@ grant, stage 3 is skipped, and the resulting principal fails
 the explicit arm, someone calls `admit()` on it and gets a `NotFound`
 resolved by whichever fail-open arm they land on.
 
-## Dependency: the two fail-open arms
+## The two fail-open arms
 
-Collapsing per-call account state to a single question makes one
-existing bug load-bearing. `src/AGENTS.md`:
+`require_internal_user` admits on any `get_user_flags` error;
+`decide_live_role` resurrects the claim role on a transient one. The
+resolution is in `scope-gates.md` § The two fail-open arms, and it is
+short: a transient lookup failure is a server fault, so answer **503**
+rather than yes or no. `NotFound` stays a definitive deny.
 
-> **An auth helper's `_ =>` arm must DENY.** Two fail-open gates exist
-> and are bugs, not patterns to copy: `require_internal_user` admits the
-> caller on *any* `get_user_flags` error, and `decide_live_role`
-> resurrects the claim role on a transient DB error.
+Two consequences for this document:
 
-Today several checks sit in different places, which partly masks it.
-Under this design there is **one** per-call account check reading **one**
-cache — so a fail-open arm there is the entire per-call account gate
-failing open at once. `scope-gates.md` § Maximise deny-by-default
-already decided the fold fixes these; this is why it is not optional.
+- **It needs a transient error kind.** `ErrorKind` has no such variant
+  and `Timeout` maps to 408, which means the client was slow. Part A
+  adds it, since part A is where `admit()` makes the first
+  distinction between "this account is refused" and "I cannot tell".
+- **The arms' stated defence was "login/refresh already enforce `active`
+  at the canonical layer", and § The audit found that false** — OPAQUE's
+  `ke3` never checks it, nor does device approval. Part A makes the
+  premise true. That is worth knowing but no longer changes the
+  ordering, because 503 is right either way.
 
 ## Audit events
 
@@ -462,9 +607,64 @@ transitions need stable `event` / `reason` keys, inside the existing
   bypass a compile error, and this pins that nobody re-introduces a
   `user_id`-taking variant.
 - Hurl: the audit matrix inverted — OPAQUE login, app-password auth,
-  device token and refresh each **refused** for an unverified email
-  where classic login is refused. These four are the current bypasses,
-  so they are the regression pins.
+  device token, NC login v2, refresh and the grace replay each
+  **refused** for an unverified email where classic login is refused.
+  These six are the current bypasses, so they are the regression pins.
+
+  **Split them by which half you are pinning.** The deactivated-account
+  half needs nothing special and is a plain regression pin per door
+  (OPAQUE's lives in `opaque-hurl-helper`, because OPRF blinding cannot
+  sit in a `.hurl` body).
+
+  The unverified-email half **cannot run in the current suite**, and the
+  reason is structural rather than a missing fixture:
+
+  - `OXICLOUD_REQUIRE_VERIFIED_EMAIL` is start-up config, not a runtime
+    setting, so one server cannot have it off for the rest of the suite
+    and on for this scenario. `/api/config` exposes it, so a test can
+    read the policy but not change it.
+  - Admin-created users get `email_verified_at = NOW()` ("admin fiat
+    counts"), so the fixture cannot come from `POST /api/admin/users`.
+  - And with the flag ON, an unverified user can never acquire a
+    credential to test with: the OPAQUE register endpoints sit behind
+    `auth_middleware`, app passwords are minted from a session, and
+    every login door now refuses them. The only reachable state is a
+    credential issued BEFORE the flag was turned on.
+
+  **Covered** — `tests/api/auth_email_verified_required.hurl`, green, in
+  its own server pass (`run.sh` phase 8).
+
+  This section previously said it was not worth building, on the
+  reasoning that it needed a second server with its own config file. Two
+  parts of that were wrong. `--config` does NOT beat the environment —
+  `load_config_file` uses `dotenvy::from_filename`, and the precedence is
+  defaults < file < environment — so no second file is needed; and the
+  pass costs about twenty lines because `run.sh` already restarts nothing
+  else and can reuse the same postgres.
+
+  The override is a per-command env prefix at the launch line:
+
+  ```sh
+  OXICLOUD_REQUIRE_VERIFIED_EMAIL=true "$OXICLOUD_BIN" --config server.env &
+  ```
+
+  Explicitly NOT a blanket passthrough of the caller's `OXICLOUD_*`,
+  which was the first design and would have let a developer's exported
+  `OXICLOUD_DATABASE_URL` or `OXICLOUD_STORAGE_PATH` aim a test run at
+  their sandbox. An explicit prefix reads nothing ambient, and `--config`
+  keeps suppressing the repo-root `.env` probe.
+
+  The scenario asserts the refusal AND both exemptions, since a policy
+  that refused everyone would satisfy the refusal alone: the Owner logs
+  in (first, because without it an operator enabling the flag would have
+  bricked the instance), an admin-created account logs in (verified by
+  fiat), a self-registered one is refused with `EmailNotVerified`, and a
+  magic link then makes the same password login work.
+
+  One product observation came out of writing it, recorded in the file:
+  the refused login auto-sends a verification link but attaches no
+  binding cookie, so that link is always a cross-browser redemption —
+  even in the browser that just attempted the login.
 - Hurl: forced-reset discharge end to end — login with the flag set
   yields a `{security}`-scoped session, elevation succeeds with the
   current password, the change succeeds, and the *new* session is
@@ -557,8 +757,8 @@ whether it binds every credential or only interactive ones, and expect
 
 - **The path matrix.** Assert the new condition on *every* authn entry
   point — classic, OPAQUE, magic-link, OIDC, app password, device,
-  NC login v2, refresh. This is the pin that the audit above would have
-  caught: eight paths, one enforcement.
+  NC login v2, refresh, grace replay. This is the pin that the audit
+  above would have caught: nine doors, one enforcement.
 - **Refresh re-evaluates it.** Otherwise the condition is bypassable by
   waiting an hour.
 - **Discharge works, and does not deadlock** — if you narrowed.
@@ -606,7 +806,19 @@ the marks that carry meaning rather than decoration: app password
 approver`, anonymous share `3 skipped`. A paraphrase loses exactly
 those three, which are the non-obvious rows.
 
-Once it lives in `auth-model.md`, **this plan's copy is the stale one**.
+**Discharged.** `auth-model.md` now carries § Phases (with the diagram
+and the when-each-runs table), § Admission (the stages, reject-vs-narrow,
+and the tightening invariant), § Revocation (both mechanisms and what
+they do not reach), the per-door admission matrix under § Login paths,
+and the five new events under § Audit events. This plan's copies are now
+the stale ones.
+
+Two corrections went in with it, because the page described behaviour
+that had since changed: § Anti-enumeration claimed `/api/auth/login`
+answers uniformly for a deactivated account, which is true only for a
+WRONG password — the Gap-3 pin in `admin_user_ops.hurl` asserts a
+distinct `AccountDeactivated` for the right one; and NC Login Flow v2's
+303-to-generic-page behaviour was undocumented.
 Plans record why a change was made and get archived; architecture docs
 record how the system works and are maintained. So the plan should then
 point at the page rather than restate it — the same single-source rule
@@ -634,7 +846,6 @@ answer "which phases does a refresh run" from that page alone. If
 either only exists in this plan file, the next contributor adding a
 login path has no way to know what their path must check or when.
 
-
 ### Hurl is mandatory for everything observable at the wire
 
 This is security work, so the acceptance bar is not "a unit test exists".
@@ -646,7 +857,7 @@ Mandatory Hurl coverage, by subject:
 
 | subject | pin |
 |---|---|
-| the audit matrix inverted | OPAQUE, app-password, device and refresh each refused for an unverified email where classic login is refused — these four are the current bypasses |
+| the audit matrix inverted | the verified-email half is covered for classic login in its own server pass (`auth_email_verified_required.hurl`); the per-door variants would each need the same pass and are not built |
 | admission reject | an inactive account gets no session from **any** path, and the response shape is identical across paths (anti-enumeration) |
 | admission narrow | a forced-reset login yields a `{security}`-scoped session: the discharge endpoint works, everything else 403s |
 | forced-reset discharge | login → elevate → change → **new** session is full-scope. The deadlock pin |
@@ -681,6 +892,47 @@ plumbing changed.
 - Login sets a cookie, so a session captured in one request persists;
   assert the credential being tested rather than inheriting one.
 - Do not start the suite casually. It is the shared-database one.
+
+## Implementation order
+
+This document first, and specifically the half of it that has **no scope
+dependency** — because that half closes five of the seven live defects
+and needs nothing from `scope-gates.md`.
+
+The pipeline splits cleanly:
+
+| part | needs scopes? | contents |
+|---|---|---|
+| **A** | no | `admit()` with the *reject* arm only, `AdmittedCaller` required by the session mint, true revocation, the connected-device list and its two IP columns |
+| **B** | yes | narrowing (forced reset → `{security}`), obligations |
+
+Part A closes defects 3-7: OPAQUE logging in deactivated accounts, email
+verification reaching two paths in nine, refresh undoing it, revoke
+meaning "cannot renew", and device revocation being unreachable.
+
+Suggested sequence:
+
+1. **Pipeline part A.** Highest live-defect density, contained — one new
+   function plus a signature change at five or six call sites. No
+   routing restructure, no migration beyond the two IP columns.
+
+   Current state is in § Status at the top — one home for it, so the
+   two cannot disagree.
+
+2. **`scope-gates.md` PR 1** — the gates fold. Behaviour-preserving, so
+   its acceptance criterion is existing pins green *unchanged*.
+3. **`scope-gates.md` PR 2** — credential scopes. First
+   non-behaviour-preserving step; carries the lockout risk and needs the
+   grandfathering table.
+4. **Pipeline part B** — narrowing and obligations, which need the
+   `ScopeSet` from step 3.
+5. **`scope-gates.md` PR 3** — authentication-by-default. Restructures
+   how auth is mounted, so it goes last and alone.
+
+Why not scopes first: every scope decision is reversible in a way an
+open account check is not. A wrong ceiling locks a user out and is
+visible within minutes; OPAQUE admitting a deactivated account has been
+silently true for as long as OPAQUE has existed.
 ## Non-goals
 
 - Does not change `authz.require` or any grant check — that is the third

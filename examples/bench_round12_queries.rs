@@ -314,7 +314,7 @@ async fn create_session_txn(pool: &PgPool, user_id: Uuid) -> Uuid {
         r#"
         INSERT INTO auth.sessions (
             id, user_id, refresh_token, expires_at,
-            ip_address, user_agent, created_at, revoked, family_id
+            created_ip, user_agent, created_at, revoked, family_id
         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
         "#,
     )
@@ -563,7 +563,7 @@ async fn section_rotation(pool: &PgPool) {
             r#"
             INSERT INTO auth.sessions (
                 id, user_id, refresh_token, expires_at,
-                ip_address, user_agent, created_at, revoked, family_id
+                created_ip, user_agent, created_at, revoked, family_id
             ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
             "#,
         )

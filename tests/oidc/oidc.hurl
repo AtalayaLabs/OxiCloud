@@ -320,16 +320,20 @@ jsonpath "$.full.user.username" == "oidc_user"
 #           NEVER leaks the raw IdP `sid`. The oidc_user was JIT-
 #           provisioned admin by its `groups` claim (see Step 6),
 #           so /api/admin/sessions is reachable with the current
-#           cookies. Also asserts `access_token_expiry_secs` is
-#           served so the SPA can render the revoke-lag notice.
+#           cookies.
 #
 #           Regressions this pins:
 #             * origin column drops back to "unknown" on refresh
 #               (would break the panel filter for OIDC-only view);
 #             * DTO reintroduces `oidc_sid` (the anti-leak fix from
-#               dto_never_leaks_oidc_sid in session_dto.rs);
-#             * handler stops publishing the TTL (would silently
-#               kill the revoke-lag notice on the admin page).
+#               dto_never_leaks_oidc_sid in session_dto.rs).
+#
+#           This step also used to pin `access_token_expiry_secs`,
+#           which fed a "revoke takes effect within N seconds" notice
+#           on the admin page. Both the notice and the field are gone:
+#           per-session revocation made the lag it described untrue,
+#           so the pin was protecting a promise the server had stopped
+#           needing to make.
 # ─────────────────────────────────────────────────────────────
 GET {{base_url}}/api/admin/sessions?limit=25
 
@@ -343,9 +347,10 @@ HTTP 200
 # elsewhere in the SessionSummaryDto shape, which by construction it
 # doesn't.
 body contains "\"origin\":\"oidc\""
-# TTL surfaces for the SPA's revoke-lag notice.
-jsonpath "$.access_token_expiry_secs" isInteger
-jsonpath "$.access_token_expiry_secs" > 0
+# And the field that fed the revoke-lag notice is GONE, not merely
+# unused — a client that still reads it should find nothing rather
+# than a number implying a delay that no longer exists.
+body not contains "access_token_expiry_secs"
 # The raw IdP sid must never appear in the wire shape — not the key,
 # not even a prefix (see dto_never_leaks_oidc_sid unit test).
 body not contains "oidc_sid"
@@ -908,15 +913,275 @@ HTTP 200
 jsonpath "$.full.user.username" == "oidc_user"
 
 
+# ═════════════════════════════════════════════════════════════
+# Steps 13c-* — BCL SCOPING FIXTURE: three live sessions, so each
+#            branch can be shown to revoke exactly its own set
+#            rather than merely "something".
+#
+#            Every BCL step here used to post `{}`, which the
+#            control endpoint defaults to sub-only — so only
+#            `revoke_user_sessions_by_federation_subject` was ever
+#            exercised, and only against the one cookie session.
+#            Two things were therefore unproven: that the `sid`
+#            branch (the shape Keycloak, Entra and Okta actually
+#            send) revokes ONE session, and that a subject-wide
+#            revoke does not reach ANOTHER USER.
+#
+#            The fixture:
+#
+#              bob_main_token   — Bob, session 1. Dies on the sid
+#                                 logout that names it.
+#              bob_second_token — Bob, session 2. MUST survive the
+#                                 sid logout, then die on the
+#                                 sub-only one.
+#              admin_token      — a different user entirely
+#                                 (Step 12A, password login, so
+#                                 NOT federated). MUST survive
+#                                 both: a BCL keyed on
+#                                 federation_issuer +
+#                                 federation_subject cannot match
+#                                 a local account.
+#
+#            Probed by Bearer, not cookie: Hurl keeps ONE cookie
+#            jar per file, so only the newest login is reachable
+#            that way, and the middleware tries Bearer first
+#            ("── 1. Try Bearer JWT ──") so an explicit header
+#            wins over whatever the jar holds.
+#
+#            Bob's two sessions need DISTINCT `auth.sessions.oidc_sid`
+#            values, or a sid-scoped revoke is indistinguishable
+#            from a subject-wide one. The sid comes from the OP
+#            session, so each login is preceded by `/control/set-sub`,
+#            which clears the OP session cookies and thus forces a
+#            fresh OP session. 13c-6 asserts the two sids actually
+#            differ — without that the fixture could silently
+#            collapse and the scoping assertions would prove
+#            nothing.
+# ═════════════════════════════════════════════════════════════
+# Step 13c-1 — Pin the sub to Bob AND clear the OP session, so the
+#            login below mints a brand-new `sid`.
 # ─────────────────────────────────────────────────────────────
-# Step 13c — IdP-driven logout. The fake IdP's control endpoint
-#            mints a spec-compliant logout_token (RS256-signed,
-#            correct iss/aud, events claim, sub, jti, fresh iat)
-#            and POSTs it to OxiCloud as
-#            application/x-www-form-urlencoded per BCL §2.5.
-#            OxiCloud MUST accept it and revoke every session
-#            belonging to the OIDC subject — a 200 response with
-#            oxicloud_status=200 in the forwarding echo proves it.
+POST {{oidc_issuer}}/control/set-sub
+Content-Type: application/json
+{ "sub": "oidc-test-user" }
+
+HTTP 200
+
+
+# ─────────────────────────────────────────────────────────────
+# Step 13c-2/3/4 — Bob's FIRST session. Same three-step dance as
+#            Steps 3-5; only the captures differ.
+# ─────────────────────────────────────────────────────────────
+GET {{base_url}}/api/auth/oidc/authorize
+[Options]
+location: false
+
+HTTP 307
+[Captures]
+bob_main_idp_url: header "Location"
+
+
+GET {{bob_main_idp_url}}
+[Options]
+location: true
+location-trusted: true
+
+HTTP 200
+[Captures]
+bob_main_code: url regex "oidc_code=([a-f0-9]+)"
+
+
+POST {{base_url}}/api/auth/oidc/exchange
+Content-Type: application/json
+{ "code": "{{bob_main_code}}" }
+
+HTTP 200
+[Captures]
+bob_main_token: jsonpath "$.access_token"
+[Asserts]
+jsonpath "$.user.full.user.username" == "oidc_user"
+
+
+# ─────────────────────────────────────────────────────────────
+# Step 13c-5 — The sid the IdP just put in Bob's id_token, which
+#            OxiCloud persisted on `auth.sessions.oidc_sid`. The
+#            fake IdP records it off the token-endpoint response
+#            (an id_token is a plain JWT, so this reads the wire,
+#            not a library internal). Captured NOW because the
+#            next login overwrites it.
+#
+#            `isString` is load-bearing: it returns null before any
+#            login, so a capture that silently failed would
+#            otherwise send `sid: null` and quietly take the
+#            sub-only branch — passing for the wrong reason.
+# ─────────────────────────────────────────────────────────────
+GET {{oidc_issuer}}/control/last-sid
+
+HTTP 200
+[Captures]
+bob_main_sid: jsonpath "$.sid"
+[Asserts]
+jsonpath "$.sid" isString
+
+
+# ─────────────────────────────────────────────────────────────
+# Step 13c-6 — Clear the OP session again (same sub) so Bob's
+#            SECOND login lands on a different OP session, hence a
+#            different sid.
+# ─────────────────────────────────────────────────────────────
+POST {{oidc_issuer}}/control/set-sub
+Content-Type: application/json
+{ "sub": "oidc-test-user" }
+
+HTTP 200
+
+
+# ─────────────────────────────────────────────────────────────
+# Step 13c-7/8/9 — Bob's SECOND session. A fresh login does not
+#            revoke the first (nothing in the exchange path does),
+#            so both are live from here.
+# ─────────────────────────────────────────────────────────────
+GET {{base_url}}/api/auth/oidc/authorize
+[Options]
+location: false
+
+HTTP 307
+[Captures]
+bob_second_idp_url: header "Location"
+
+
+GET {{bob_second_idp_url}}
+[Options]
+location: true
+location-trusted: true
+
+HTTP 200
+[Captures]
+bob_second_code: url regex "oidc_code=([a-f0-9]+)"
+
+
+POST {{base_url}}/api/auth/oidc/exchange
+Content-Type: application/json
+{ "code": "{{bob_second_code}}" }
+
+HTTP 200
+[Captures]
+bob_second_token: jsonpath "$.access_token"
+[Asserts]
+jsonpath "$.user.full.user.username" == "oidc_user"
+
+
+# ─────────────────────────────────────────────────────────────
+# Step 13c-10 — The fixture's own self-check. If the OP reused its
+#            session the two sids would be equal, both of Bob's
+#            sessions would carry the same `oidc_sid`, and every
+#            scoping assertion below would pass while proving
+#            nothing. Fail here instead, where the cause is
+#            obvious.
+# ─────────────────────────────────────────────────────────────
+GET {{oidc_issuer}}/control/last-sid
+
+HTTP 200
+[Asserts]
+jsonpath "$.sid" isString
+jsonpath "$.sid" != "{{bob_main_sid}}"
+
+
+# ─────────────────────────────────────────────────────────────
+# Step 13c-11 — All three sessions are live before anything is
+#            revoked. Without this the assertions after the logout
+#            cannot distinguish "was live, got revoked" from
+#            "never worked".
+# ─────────────────────────────────────────────────────────────
+GET {{base_url}}/api/auth/me
+Authorization: Bearer {{bob_main_token}}
+
+HTTP 200
+
+
+GET {{base_url}}/api/auth/me
+Authorization: Bearer {{bob_second_token}}
+
+HTTP 200
+
+
+GET {{base_url}}/api/auth/me
+Authorization: Bearer {{admin_token}}
+
+HTTP 200
+
+
+# ═════════════════════════════════════════════════════════════
+# Step 13c-12 — `sid` + `sub` logout token: the PER-SESSION branch,
+#            naming Bob's FIRST session.
+#
+#            `backchannel_logout` branches on sid presence FIRST:
+#
+#              if let Some(sid) = claims.sid  → revoke_sessions_by_oidc_sid
+#              else if let Some(sub)          → revoke_user_sessions_by_federation_subject
+#
+#            so with a sid present the subject arm must not run at
+#            all. The three assertions that follow are what pin
+#            that: if someone ever collapses these arms into a
+#            fallback chain, a single-device logout silently
+#            becomes a sign-out-everywhere, and 13c-14 turns red.
+# ═════════════════════════════════════════════════════════════
+POST {{oidc_issuer}}/control/backchannel-logout
+Content-Type: application/json
+{
+  "sub": "oidc-test-user",
+  "sid": "{{bob_main_sid}}"
+}
+
+HTTP 200
+[Asserts]
+jsonpath "$.oxicloud_status" == 200
+
+
+# ─────────────────────────────────────────────────────────────
+# Step 13c-13 — Bob's FIRST session is dead. The sid named it.
+# ─────────────────────────────────────────────────────────────
+GET {{base_url}}/api/auth/me
+Authorization: Bearer {{bob_main_token}}
+
+HTTP 401
+
+
+# ─────────────────────────────────────────────────────────────
+# Step 13c-14 — Bob's SECOND session SURVIVES. Same user, same
+#            federation subject, different sid — the one assertion
+#            that separates per-session revocation from
+#            subject-wide revocation.
+# ─────────────────────────────────────────────────────────────
+GET {{base_url}}/api/auth/me
+Authorization: Bearer {{bob_second_token}}
+
+HTTP 200
+[Asserts]
+jsonpath "$.full.user.username" == "oidc_user"
+
+
+# ─────────────────────────────────────────────────────────────
+# Step 13c-15 — Another user is untouched. The admin signed in
+#            with a password, so it has no federation_subject for
+#            a logout token to match.
+# ─────────────────────────────────────────────────────────────
+GET {{base_url}}/api/auth/me
+Authorization: Bearer {{admin_token}}
+
+HTTP 200
+
+
+# ─────────────────────────────────────────────────────────────
+# Step 13c-ter — IdP-driven logout, `sub` only: the revoke-ALL
+#            branch. The fake IdP's control endpoint mints a
+#            spec-compliant logout_token (RS256-signed, correct
+#            iss/aud, events claim, sub, jti, fresh iat) and POSTs
+#            it to OxiCloud as application/x-www-form-urlencoded
+#            per BCL §2.5. Empty body `{}` → the control endpoint
+#            defaults to sub-only (`parsed.sub ?? TEST_USER_SUB`),
+#            so OxiCloud MUST now revoke what the sid logout
+#            deliberately spared.
 # ─────────────────────────────────────────────────────────────
 POST {{oidc_issuer}}/control/backchannel-logout
 Content-Type: application/json
@@ -928,22 +1193,67 @@ jsonpath "$.oxicloud_status" == 200
 
 
 # ─────────────────────────────────────────────────────────────
-# Step 13d — Refresh MUST fail. This is the load-bearing "BCL
-#            actually kicked the user" proof.
+# Step 13c-quater — Bob's SECOND session is NOW dead. It survived
+#            the sid logout and fell to the subject one, which is
+#            the whole difference between the two branches.
+# ─────────────────────────────────────────────────────────────
+GET {{base_url}}/api/auth/me
+Authorization: Bearer {{bob_second_token}}
+
+HTTP 401
+
+
+# ─────────────────────────────────────────────────────────────
+# Step 13c-quinquies — The other user STILL survives. A
+#            subject-wide revoke is wide across one subject's
+#            sessions, not across users.
+# ─────────────────────────────────────────────────────────────
+GET {{base_url}}/api/auth/me
+Authorization: Bearer {{admin_token}}
+
+HTTP 200
+
+
+# ─────────────────────────────────────────────────────────────
+# Step 13d — The ACCESS token must stop working too, not just the
+#            refresh path. Asserted before the refresh below so it
+#            isolates what BCL itself did: Step 13e's 403 also
+#            triggers reuse-detection and revokes the session
+#            family, which would otherwise confound this.
 #
-#            Note on why we assert on /refresh and NOT /api/auth/me:
-#            OxiCloud access tokens are stateless JWTs — the auth
-#            middleware validates signature + expiry in-memory and
-#            does NOT consult `sessions.revoked` on every request.
-#            BCL flipped `sessions.revoked=true` (see audit log
-#            `oidc.backchannel_logout_by_sub` — 3 sessions revoked)
-#            which kills the refresh path immediately, but the
-#            still-valid in-memory access token would let /me
-#            return 200 until its natural expiry (~1 h default).
-#            That is the standard JWT trade-off: BCL fully evicts
-#            within one access-token TTL. The refresh 401 below is
-#            what proves the eviction landed; once the access
-#            token expires the user can't mint a new one.
+#            This assertion was previously documented as
+#            impossible, and the note is worth keeping because the
+#            reasoning was sound at the time: "access tokens are
+#            stateless JWTs — the auth middleware validates
+#            signature + expiry in-memory and does NOT consult
+#            `sessions.revoked` on every request … the still-valid
+#            in-memory access token would let /me return 200 until
+#            its natural expiry (~1 h default). That is the
+#            standard JWT trade-off: BCL fully evicts within one
+#            access-token TTL."
+#
+#            The middleware now DOES consult it. Per-session
+#            revocation stamps `auth.sessions.revoked_at` and
+#            carries the revoked sids on the cached `UserFlags`, so
+#            `decide_live_role` refuses a revoked session's access
+#            token on the next request — and `backchannel_logout`
+#            drops the flags cache so "next request" means now
+#            rather than within the 30 s TTL.
+#
+#            401, not 403: `LiveRole::Revoked` on the cookie branch
+#            falls through to the unauthenticated arm so a browser
+#            gets the login redirect.
+# ─────────────────────────────────────────────────────────────
+GET {{base_url}}/api/auth/me
+
+HTTP 401
+
+
+# ─────────────────────────────────────────────────────────────
+# Step 13e — Refresh MUST fail. The original load-bearing "BCL
+#            actually kicked the user" proof; still valuable
+#            because it pins the renewal path independently of the
+#            access-token check above.
 # ─────────────────────────────────────────────────────────────
 POST {{base_url}}/api/auth/refresh
 Content-Type: application/json

@@ -205,7 +205,7 @@ impl std::fmt::Display for FederationKind {
 /// up to 512 KiB — which per-request guards (`require_internal_user`,
 /// `require_admin_user`, the NC Basic Auth external check) must never pay
 /// for just to read a boolean or a role.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UserFlags {
     pub role: UserRole,
     pub is_external: bool,
@@ -219,6 +219,39 @@ pub struct UserFlags {
     /// `admin_reset_password` (flip to TRUE) and `change_password`
     /// (flip to FALSE) so the gate lifts within one round-trip.
     pub force_password_change: bool,
+    /// Mirrors `auth.users.sessions_valid_from`. Tokens issued before
+    /// this instant are rejected; `None` means nothing has been revoked.
+    ///
+    /// This is what makes revocation take effect NOW rather than at the
+    /// next refresh: the session row carries the refresh token, so
+    /// flipping `revoked` on it only stops renewal. Carried here because
+    /// these flags are already read and cached per request, so the check
+    /// is one timestamp comparison rather than a query.
+    pub sessions_valid_from: Option<chrono::DateTime<chrono::Utc>>,
+    /// Sessions of this user revoked recently enough that a token
+    /// bearing one could still be unexpired.
+    ///
+    /// The per-session counterpart to [`Self::sessions_valid_from`],
+    /// which is all-or-nothing. `DELETE /api/admin/sessions/{id}` names
+    /// one row, and `change_password` keeps the caller's session while
+    /// killing the rest — neither can be expressed by one `iat`
+    /// watermark.
+    ///
+    /// Bounded by the access-token lifetime, not by the session's: once
+    /// every token carrying a `sid` has expired, remembering it buys
+    /// nothing. That is why `auth.sessions.revoked_at` exists — without
+    /// a revocation timestamp the only available bound was the refresh
+    /// expiry, which is days rather than an hour.
+    ///
+    /// `Arc<[Uuid]>` rather than `Vec`: these flags ARE the moka cache
+    /// value, so every cache read clones them. An `Arc` clone is a
+    /// refcount bump; a `Vec` clone would be a heap allocation on each
+    /// authenticated request. A slice rather than a set because it is
+    /// built once per cache fill and read with `contains` over a handful
+    /// of entries, where a linear scan of `Uuid`s beats hashing one.
+    ///
+    /// Carrying it is why `UserFlags` is no longer `Copy`.
+    pub revoked_session_ids: std::sync::Arc<[uuid::Uuid]>,
 }
 
 #[derive(Debug, Clone)]

@@ -18,7 +18,7 @@ use serde::Serialize;
 
 use crate::common::di::AppState;
 use crate::infrastructure::services::rt_ticket_store::{SUBPROTOCOL_PREFIX, TICKET_TTL};
-use crate::interfaces::middleware::auth::CurrentUserId;
+use crate::interfaces::middleware::auth::AuthUser;
 
 /// Response body for `POST /api/rt/ticket`. Deliberately minimal —
 /// callers only need the token string; the TTL is echoed so the FE
@@ -61,10 +61,22 @@ pub struct RtTicketResponse {
     security(("bearerAuth" = []))
 )]
 pub async fn issue_rt_ticket(
-    CurrentUserId(caller_id): CurrentUserId,
+    // `AuthUser` rather than `CurrentUserId` because this handler needs
+    // the session the caller presented, not only their id. It derefs to
+    // `CurrentUser`, so this costs no allocation and no extra extraction.
+    caller: AuthUser,
     State(state): State<Arc<AppState>>,
 ) -> Json<RtTicketResponse> {
-    let ticket = state.rt_ticket_store.issue(caller_id);
+    let caller_id = caller.id;
+    // Recorded on the ticket because this endpoint runs under the full
+    // middleware chain and therefore KNOWS the session, while the
+    // WebSocket upgrade that redeems the ticket does not. Without it the
+    // upgrade gets a bare user id and neither revocation check can be
+    // evaluated — on the path browsers actually use.
+    //
+    // Already `PresentedToken::default()` for a credential that is not a
+    // JWT, so there is nothing to handle here.
+    let ticket = state.rt_ticket_store.issue(caller_id, caller.token);
     let ticket_str = ticket.to_string();
     tracing::debug!(
         target: "oxicloud::message_bus",

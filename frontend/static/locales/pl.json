@@ -1466,7 +1466,6 @@
       "empty": "Żadne sesje nie pasują do bieżącego filtra.",
       "revoke_self_confirm": "⚠️  To TWOJA bieżąca sesja. Unieważnienie jej wyloguje Cię natychmiast i musisz zalogować się ponownie. Kontynuować?",
       "revoke_confirm": "Unieważnić tę sesję? Następne żądanie z tej przeglądarki otrzyma 401.",
-      "revoke_lag_notice": "Unieważnienie sesji natychmiast przerywa ścieżkę odświeżania, ale każdy JWT już obecny w przeglądarce pozostaje ważny przez maksymalnie {{secs}} sekund, aż do następnej próby odświeżenia.",
       "origin": {
         "password": "Hasło",
         "opaque": "OPAQUE",

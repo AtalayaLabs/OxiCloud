@@ -40,6 +40,8 @@ use dashmap::DashMap;
 use tokio::task::JoinHandle;
 use uuid::Uuid;
 
+use crate::domain::entities::presented_token::PresentedToken;
+
 /// TTL for a freshly-minted ticket. 30 s covers the round-trip from
 /// `/api/rt/ticket` response to `new WebSocket()` handshake on any
 /// realistic network — well under the shortest sensible clock skew
@@ -64,6 +66,14 @@ pub const SUBPROTOCOL_PREFIX: &str = "oxi.ticket.";
 
 struct Entry {
     caller_id: Uuid,
+    /// The claims of the session that asked for this ticket, carried so
+    /// the WebSocket upgrade can still apply the revocation checks.
+    ///
+    /// Without this the ticket path was a hole: it handed the upgrade a
+    /// bare user id, so neither the user-wide `iat` cutoff nor
+    /// per-session revocation could be evaluated — and the ticket path
+    /// is the one browsers use.
+    token: PresentedToken,
     expires_at: Instant,
 }
 
@@ -88,12 +98,13 @@ impl RtTicketStore {
     /// the "unguessable-token" bar even without server-side rate
     /// limiting. A serial or timestamped id would leak issue-order
     /// signal to anyone with a wire tap.
-    pub fn issue(&self, caller_id: Uuid) -> Uuid {
+    pub fn issue(&self, caller_id: Uuid, token: PresentedToken) -> Uuid {
         let ticket = Uuid::new_v4();
         self.entries.insert(
             ticket,
             Entry {
                 caller_id,
+                token,
                 expires_at: Instant::now() + TICKET_TTL,
             },
         );
@@ -105,12 +116,12 @@ impl RtTicketStore {
     /// caller_id, an expired ticket is silently freed and returns
     /// `None`. Single-use invariant holds by construction: only one
     /// caller wins the `remove`, everyone else sees `None`.
-    pub fn redeem(&self, ticket: Uuid) -> Option<Uuid> {
+    pub fn redeem(&self, ticket: Uuid) -> Option<(Uuid, PresentedToken)> {
         let (_, entry) = self.entries.remove(&ticket)?;
         if entry.expires_at < Instant::now() {
             return None;
         }
-        Some(entry.caller_id)
+        Some((entry.caller_id, entry.token))
     }
 
     /// Background reaper. Walks the map on the configured cadence and
@@ -145,20 +156,27 @@ impl RtTicketStore {
 mod tests {
     use super::*;
 
+    /// A ticket records the claims of the session that asked for it, so
+    /// the WebSocket upgrade can still apply the revocation checks. The
+    /// fixed `sid` here lets `redeem` be compared by value.
+    fn tok() -> PresentedToken {
+        PresentedToken::from_claims(1_700_000_000, Some(Uuid::nil()))
+    }
+
     #[test]
     fn issue_then_redeem_returns_caller_id() {
         let store = RtTicketStore::new();
         let caller = Uuid::new_v4();
-        let ticket = store.issue(caller);
-        assert_eq!(store.redeem(ticket), Some(caller));
+        let ticket = store.issue(caller, tok());
+        assert_eq!(store.redeem(ticket), Some((caller, tok())));
     }
 
     #[test]
     fn redeem_is_single_use() {
         let store = RtTicketStore::new();
         let caller = Uuid::new_v4();
-        let ticket = store.issue(caller);
-        assert_eq!(store.redeem(ticket), Some(caller));
+        let ticket = store.issue(caller, tok());
+        assert_eq!(store.redeem(ticket), Some((caller, tok())));
         // Second redeem finds nothing — replay protection.
         assert_eq!(store.redeem(ticket), None);
     }
@@ -174,7 +192,7 @@ mod tests {
         let store = RtTicketStore::new();
         let caller = Uuid::new_v4();
         assert_eq!(store.len(), 0);
-        let _ticket = store.issue(caller);
+        let _ticket = store.issue(caller, tok());
         assert_eq!(store.len(), 1);
     }
 
@@ -189,6 +207,7 @@ mod tests {
             ticket,
             Entry {
                 caller_id: caller,
+                token: tok(),
                 expires_at: Instant::now() - Duration::from_secs(1),
             },
         );
@@ -206,8 +225,8 @@ mod tests {
         // mean the second issue clobbers the first's expiry map row.
         let store = RtTicketStore::new();
         let caller = Uuid::new_v4();
-        let t1 = store.issue(caller);
-        let t2 = store.issue(caller);
+        let t1 = store.issue(caller, tok());
+        let t2 = store.issue(caller, tok());
         assert_ne!(t1, t2);
     }
 

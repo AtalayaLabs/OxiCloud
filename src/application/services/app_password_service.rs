@@ -75,6 +75,10 @@ pub struct AppPasswordService {
     hasher: Arc<Argon2PasswordHasher>,
     user_repo: Arc<UserPgRepository>,
     base_url: String,
+    /// `OXICLOUD_REQUIRE_VERIFIED_EMAIL`, snapshotted as the other
+    /// auth services do. An app password mints no session but every
+    /// request with one IS a login, so this door owes the same checks.
+    require_verified_email: bool,
 
     /// In-memory cache of successful Basic Auth verifications.
     ///
@@ -95,6 +99,7 @@ impl AppPasswordService {
         hasher: Arc<Argon2PasswordHasher>,
         user_repo: Arc<UserPgRepository>,
         base_url: String,
+        require_verified_email: bool,
     ) -> Self {
         let auth_cache = Cache::builder()
             .max_capacity(BASIC_AUTH_CACHE_MAX_ENTRIES)
@@ -113,6 +118,7 @@ impl AppPasswordService {
             user_repo,
             base_url,
             auth_cache,
+            require_verified_email,
         }
     }
 
@@ -412,6 +418,36 @@ impl AppPasswordService {
                 .verify_password(&verify_password, &ap.password_hash)
                 .await
             {
+                // The credential is proven, so run the full account
+                // admission — the same rule every login door uses, so a
+                // rule added to it reaches this door too. An app password
+                // has no login phase of its own (every request is one),
+                // which is exactly why this was the door that got
+                // forgotten: the `is_active` pre-filter above looks like
+                // the account check, and the email half was missing.
+                //
+                // The real reason goes to the audit log while the caller
+                // still gets the generic "invalid username or app
+                // password" below — the anti-enumeration pattern in
+                // AGENTS.md. A DAV client could not act on "email not
+                // verified" anyway.
+                //
+                // NOTE: the caller caches this result for
+                // `BASIC_AUTH_CACHE_TTL`, so a deactivation or a policy
+                // change takes effect within that window rather than
+                // instantly — the same bound as the user-flags cache.
+                if crate::application::services::auth_application_service::check_account_admission(
+                    &user,
+                    self.require_verified_email,
+                    "app_password",
+                )
+                .is_err()
+                {
+                    return Err(DomainError::unauthorized(
+                        "Invalid username or app password",
+                    ));
+                }
+
                 let _ = self.repo.touch_last_used(ap.id).await;
 
                 // Caching happens in `verify_basic_auth`: `try_get_with`

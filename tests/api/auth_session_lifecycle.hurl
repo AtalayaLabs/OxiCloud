@@ -16,11 +16,16 @@
 #      single-use enforcement)
 #   6. POST /api/auth/logout     (revokes the current refresh)
 #   7. Refresh after logout → 401 (revocation actually took effect)
-#   8. Access token still works briefly until it expires — we
-#      don't assert that explicitly because TTL is configurable
-#      and the access-token revocation semantics are documented
-#      as "JWT remains valid until exp"; logout only kills the
-#      refresh path.
+#   8. Sanity re-check of /api/config after logout.
+#
+# This file used to record, here, that an access token "still
+# works briefly until it expires" because "logout only kills the
+# refresh path". That was true and it was the defect: logging out
+# left the bearer able to read and write until the token aged
+# out. Per-session revocation changed it — logout now refuses the
+# access token on the next request — and the assertion lives in
+# `auth_session_revocation.hurl` rather than here, since this
+# file is about rotation and family semantics.
 # =============================================================
 
 

@@ -216,6 +216,23 @@ pub struct ListSessionsQueryDto {
     pub offset: Option<i64>,
 }
 
+/// Query parameters for a user's OWN sessions listing
+/// (`GET /api/auth/sessions`).
+///
+/// Deliberately NOT a reuse of [`ListSessionsQueryDto`], despite being
+/// that type minus one field. It has no `user_id`, because on this
+/// surface there is nothing a caller could put there: the scope is their
+/// own id and cannot be widened. Sharing the admin type would accept
+/// `?user_id=<someone-else>` on the wire and silently ignore it, which
+/// reads to a caller — and to anyone auditing the endpoint — as though
+/// the parameter did something.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ListOwnSessionsQueryDto {
+    pub include_revoked: Option<bool>,
+    pub limit: Option<i64>,
+    pub offset: Option<i64>,
+}
+
 /// One row of the dashboard's quota panel — usage aggregate for a
 /// single drive kind. Unlimited caps are excluded from `capped_quota_bytes`
 /// and counted in `unlimited_count` so the panel can render the ratio

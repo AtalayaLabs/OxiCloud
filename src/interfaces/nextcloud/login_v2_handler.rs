@@ -347,6 +347,8 @@ pub async fn handle_oidc_login_completion(
     };
 
     let current_user = CurrentUser {
+        // Login Flow v2 ends in an app password, not a JWT: no claims.
+        token: crate::domain::entities::presented_token::PresentedToken::default(),
         id: user_id,
         username: std::sync::Arc::from(username),
         email: std::sync::Arc::from(user_dto.email.as_str()),
@@ -577,6 +579,8 @@ pub async fn handle_drive_pick(
         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
     };
     let user = CurrentUser {
+        // Login Flow v2 ends in an app password, not a JWT: no claims.
+        token: crate::domain::entities::presented_token::PresentedToken::default(),
         id: user_id,
         username: std::sync::Arc::from(username.as_str()),
         email: std::sync::Arc::from(user_dto.email.as_str()),

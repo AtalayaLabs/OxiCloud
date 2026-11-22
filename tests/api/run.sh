@@ -499,6 +499,22 @@ HURL_FILES=( \
   "$API_DIR/auth_magic_link_login.hurl" \
   "$API_DIR/auth_upgrade_to_internal.hurl" \
   "$API_DIR/app_passwords.hurl" \
+  # Cross-door gate pin: a deactivated account is refused by every
+  # surface that can grant a credential. Runs AFTER app_passwords.hurl
+  # so a failure there is attributed to that file rather than to this
+  # one borrowing the same endpoint. Its fixture is its own user, so it
+  # cannot deactivate an account a later scenario logs in with.
+  "$API_DIR/auth_doors_deactivated_account.hurl" \
+  # Revocation takes effect NOW, not at renewal: logout kills its own
+  # access token, change-password kills the other devices but keeps the
+  # caller, and an admin reset kills everything via the user-wide cutoff.
+  "$API_DIR/auth_session_revocation.hurl" \
+  "$API_DIR/auth_own_sessions.hurl" \
+  # created_ip vs last_seen_ip. Spoofs addresses via X-Forwarded-For,
+  # which only works because server.env sets TRUST_PROXY_CIDR=0.0.0.0/0.
+  # Retries rather than sleeps: the last-seen write is batched on a 30 s
+  # flush, so it polls until the flush lands.
+  "$API_DIR/auth_session_ip_columns.hurl" \
   "$API_DIR/auth_profile_image.hurl" \
   "$API_DIR/registration.hurl" \
   # Registers mixed-case usernames and asserts they land lowercased, so it
@@ -798,9 +814,16 @@ selected storage_cleanup_check && bash "$API_DIR/storage_cleanup_check.sh"
 
 # ── 5. Message bus — WebSocket smoke test ───────────────────────────────
 # Runs BEFORE the OPAQUE helper so its user registration + login uses
-# the legacy password path (opaque_substrate.hurl migrates the admin
-# account, but by running first this check is unaffected by whatever
-# order later scenarios touch the auth substrate). Four scenarios:
+# the legacy password path — the helper performs a real handshake as the
+# admin and MIGRATES that account, after which the legacy door refuses it
+# (`reason="opaque_migrated_use_opaque"`). By running first this check is
+# unaffected by whatever order later scenarios touch the auth substrate.
+#
+# (The migrator is the helper. `opaque_substrate.hurl` only pins error
+# shapes — every `register/finish` in it asserts 4xx — so it completes no
+# registration; an earlier version of this comment blamed it, and the
+# verified-email phase in section 8 was debugged against that wrong
+# attribution.) Four scenarios:
 # positive delivery, topic isolation, AuthZ denial on subscribe,
 # anti-enumeration parity. See `tests/api/rt_bus_check.sh` and
 # `docs/plan/message-bus.md`.
@@ -861,6 +884,78 @@ DPOP_HELPER_BASE_URL="$base_url" \
 DPOP_HELPER_USERNAME="$username" \
 DPOP_HELPER_PASSWORD="$password" \
   "$DPOP_HELPER_BIN" || die "DPoP wire-protocol test failed"
+fi
+
+# ── 8. Second server pass — the verified-email policy ──────────────────
+# The only phase that needs a DIFFERENT server config, so it is the only
+# one that restarts the server.
+#
+# `OXICLOUD_REQUIRE_VERIFIED_EMAIL=true` cannot be on for the rest of the
+# suite: 14 scenarios create users through `POST /api/auth/register`, which
+# does NOT stamp `email_verified_at`, and those users then log in. With the
+# flag on they would all be refused. So the policy gets its own pass
+# instead of its own config file.
+#
+# The override is a per-command env prefix on the launch line below:
+#   * nothing ambient is read, so a developer's exported OXICLOUD_* cannot
+#     reach a test server — the failure mode would be a test run pointed at
+#     a sandbox database or storage path;
+#   * `--config` still does both of its jobs, including suppressing the
+#     repo-root `.env` probe;
+#   * it needs no new CLI flag, because the binary's precedence is already
+#     defaults < file < environment (`load_config_file`).
+#
+# Postgres is NOT restarted, so the admin that `setup.hurl` seeded is still
+# there — but its CREDENTIAL is not what it was. The OPAQUE helper in
+# section 6 runs the real handshake as `$username`, which MIGRATES the admin
+# account, and a migrated user is refused on the legacy password door
+# (`auth.login_rejected`, reason `opaque_migrated_use_opaque`) — which is this
+# scenario's Step 0 and the precondition for everything after it. Running the
+# whole suite therefore failed where running this scenario alone passed.
+#
+# It is the HELPER, not `opaque_substrate.hurl`. That file only pins error
+# shapes — every one of its `register/finish` calls asserts 4xx — so it
+# completes no registration and migrates nobody. The ordering is what makes
+# this phase the only casualty: the helper runs after the main Hurl batch
+# (hence `auth_session_revocation.hurl`, which also logs the admin in with a
+# password, is unaffected) and before this pass.
+#
+# Hence `OXICLOUD_AUTH_OPAQUE_MODE=off` for this pass. With OPAQUE off,
+# `opaque_repo_for_auth` is not wired at all (`common/di.rs`: built only when
+# `effective_mode(...) != OpaqueMode::Off`), so the `is_migrated` lookup never
+# runs and the password door answers for the seeded admin again.
+#
+# That is isolation, not papering over: the scenario under test is the
+# verified-email policy, and it should not depend on whether some earlier
+# scenario happened to migrate the account it logs in with. The OPAQUE door's
+# own account-state refusals are covered where they can actually be driven —
+# `opaque-hurl-helper`, which speaks the real ciphersuite (Hurl cannot).
+#
+# The alternative was to run this pass BEFORE `opaque_substrate.hurl`, which
+# is the convention section 5 follows for `rt_bus_check`. Rejected here: that
+# file runs inside the main Hurl batch, so this phase would have to move ahead
+# of the batch and then restart the server a second time to put the flag back,
+# for no gain over turning off the one subsystem that interferes.
+#
+# Selector name: the scenario's own, `auth_email_verified_required`.
+if selected auth_email_verified_required; then
+  log "Restarting OxiCloud with OXICLOUD_REQUIRE_VERIFIED_EMAIL=true..."
+  if [[ -n "$SERVER_PID" ]]; then
+    kill "$SERVER_PID" 2>/dev/null || true
+    wait "$SERVER_PID" 2>/dev/null || true
+  fi
+  OXICLOUD_REQUIRE_VERIFIED_EMAIL=true \
+  OXICLOUD_AUTH_OPAQUE_MODE=off \
+    "$OXICLOUD_BIN" --config "$COMMON/server.env" &
+  # Reassign so the EXIT trap kills THIS server. Without it the trap would
+  # kill a dead pid and leave the second server holding the port.
+  SERVER_PID=$!
+  wait_for_http "$base_url/ready" 120
+  log "Server ready with the verified-email policy ON."
+
+  hurl --variables-file "$API_DIR/test.env" --file-root "$REPO_ROOT/tests" --test --jobs 1 \
+    "$API_DIR/auth_email_verified_required.hurl" \
+    || die "verified-email policy pass failed"
 fi
 
 if (( ${#SELECTORS[@]} > 0 )); then

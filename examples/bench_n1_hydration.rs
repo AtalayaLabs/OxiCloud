@@ -369,7 +369,7 @@ async fn main() {
             }
             queries.fetch_add(1, Ordering::Relaxed);
             let f = repo.get_user_flags(uid).await.expect("flags");
-            cache.insert(uid, f);
+            cache.insert(uid, f.clone());
             f
         }));
     }

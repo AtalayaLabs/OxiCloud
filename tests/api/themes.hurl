@@ -80,8 +80,8 @@ GET {{base_url}}/api/admin/settings/appearance
 Authorization: Bearer {{admin_token}}
 HTTP 200
 [Asserts]
-jsonpath "$.available_themes" includes "default"
-jsonpath "$.available_themes" includes "hurl-sober"
+jsonpath "$.available_themes" contains "default"
+jsonpath "$.available_themes" contains "hurl-sober"
 jsonpath "$.active_theme_id" == "default"
 
 # Admin scope must refuse an ordinary active internal user while allowing
@@ -123,7 +123,7 @@ POST {{base_url}}/api/admin/settings/appearance/reload
 Authorization: Bearer {{admin_token}}
 HTTP 200
 [Asserts]
-jsonpath "$.available_themes" includes "hurl-sober"
+jsonpath "$.available_themes" contains "hurl-sober"
 
 # Wire regression pin: invalid selections must retain the InvalidInput envelope.
 PUT {{base_url}}/api/admin/settings/appearance

@@ -33,6 +33,7 @@ use uuid::Uuid;
 
 use crate::application::services::auth_application_service::AuthApplicationService;
 use crate::common::di::AppState;
+use crate::domain::entities::presented_token::PresentedToken;
 use crate::domain::entities::user::{UserFlags, UserRole};
 use crate::domain::errors::{DomainError, ErrorKind};
 use crate::interfaces::errors::AppError;
@@ -80,19 +81,23 @@ fn decide_internal_user(
             "Forbidden",
         )),
         Ok(_) => Ok(()),
-        // A caller with NO user row lands here. The arm used to be a blanket
-        // `_ => Ok(())`, i.e. fail-OPEN: any lookup failure — including
-        // `NotFound` — admitted the caller. This is the only middleware
-        // guarding `/webdav`, `/caldav` and `/carddav`, so a principal
-        // without an `auth.users` row (an anonymous share session) walked
-        // straight through the "internal users only" gate.
+        // These three arms were once a blanket `_ => Ok(())`, on the only
+        // middleware guarding `/webdav`, `/caldav` and `/carddav` — so any
+        // lookup failure admitted the caller, and a principal with no
+        // `auth.users` row (an anonymous share session) walked straight
+        // through the "internal users only" gate.
         //
-        // `NotFound` is now a denial. Other errors (a DB blip) stay open
-        // deliberately: this gate is a *restriction* on external users, not
-        // the authentication check, and failing every DAV request closed
-        // during a transient database hiccup trades one outage for a worse
-        // one. The authentication decision above it is what must fail
-        // closed, and does.
+        // `NotFound` is a denial: a definitive answer, and the only error
+        // this gate may act on. The rest split on whether a retry could
+        // change the answer, because admitting and denying BOTH answer a
+        // question the lookup could not. 503 says "ask again", which is
+        // what is true; 403 would make an SPA show a permissions error or
+        // bounce to login instead of retrying.
+        //
+        // Failing closed costs little availability here: during a database
+        // outage the request was going to fail at its next query anyway,
+        // so admitting only let a caller into a system that could not
+        // serve them.
         Err(e) if matches!(e.kind, ErrorKind::NotFound) => {
             tracing::info!(
                 target: "audit",
@@ -107,7 +112,31 @@ fn decide_internal_user(
                 "Forbidden",
             ))
         }
-        Err(_) => Ok(()),
+        Err(e) if e.is_transient() => {
+            tracing::warn!(
+                target: "audit",
+                event = "authz.evaluation_failed",
+                reason = "transient_backend",
+                caller_id = %caller_id,
+                error = %e,
+                "👮🏻‍♂️ internal-user gate could not evaluate — answered 503, neither admitted nor denied",
+            );
+            Err(indeterminate_app_error(true))
+        }
+        // Not transient and not `NotFound`: a decode failure, a schema
+        // mismatch — a bug rather than a blip, so retrying will not help
+        // and saying "retry" would be a lie. 500 and an audit line.
+        Err(e) => {
+            tracing::error!(
+                target: "audit",
+                event = "authz.evaluation_failed",
+                reason = "lookup_failed",
+                caller_id = %caller_id,
+                error = %e,
+                "👮🏻‍♂️ internal-user gate could not evaluate — permanent lookup failure",
+            );
+            Err(indeterminate_app_error(false))
+        }
     }
 }
 
@@ -156,6 +185,43 @@ pub enum LiveRole {
     /// The account is deactivated or deleted: the request must be rejected
     /// even though its token is still cryptographically valid.
     Revoked,
+    /// The live record could not be read, so the caller's role is
+    /// **unknown** — which is not the same as revoked, and the
+    /// distinction is load-bearing at two call sites. The cookie branch
+    /// of the auth middleware turns `Revoked` into a 401 and a redirect
+    /// to `/login`; folding "cannot tell" into it would log every
+    /// browser user out during a database blip. The old behaviour here
+    /// was the opposite mistake — fail OPEN on the frozen JWT claim
+    /// role, so a demoted admin kept admin power for as long as the
+    /// lookup kept failing.
+    ///
+    /// `retryable` separates a blip (answer 503, ask again) from a
+    /// permanent lookup failure (answer 500). Telling a client to retry
+    /// a schema mismatch is a lie it acts on, which is why this is a
+    /// field rather than one collapsed "unavailable" case.
+    Indeterminate { retryable: bool },
+}
+
+/// The HTTP answer for a [`LiveRole::Indeterminate`] outcome.
+///
+/// One home for the choice, because four call sites face it and a
+/// status code picked four times gets picked differently the fourth
+/// time. `503` carries `Retry-After` semantics for the SPA's fetch
+/// interceptor; `500` tells it not to bother.
+pub fn indeterminate_app_error(retryable: bool) -> AppError {
+    if retryable {
+        AppError::new(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "Temporarily unable to verify your account; please retry",
+            "ServiceUnavailable",
+        )
+    } else {
+        AppError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Unable to verify your account",
+            "InternalError",
+        )
+    }
 }
 
 /// Re-validate a caller carried by a still-valid token against the live
@@ -178,15 +244,62 @@ pub enum LiveRole {
 /// every authenticated user out, and login/refresh already enforce `active`
 /// at the canonical layer). A *missing* row (`NotFound`) is a definitive
 /// revocation and fails CLOSED.
+/// `token_issued_at` is the JWT's `iat`, used to apply the user's
+/// revocation cutoff. Pass `None` only where no claims are available —
+/// the WebSocket session is the one such caller, and it therefore does
+/// NOT notice a revoke-all for the life of the connection. Its eviction
+/// runs through the authz reader instead; closing that gap is tracked in
+/// `docs/plan/authn-pipeline.md`.
 pub async fn resolve_live_role(
     auth: &AuthApplicationService,
     user_id: Uuid,
     claim_role: &str,
+    token: PresentedToken,
 ) -> LiveRole {
     if let Some(live) = anonymous_live_role(claim_role) {
         return live;
     }
-    decide_live_role(auth.get_user_flags(user_id).await, user_id, claim_role)
+    decide_live_role(auth.get_user_flags(user_id).await, user_id, token)
+}
+
+/// Whether this specific session has been revoked.
+///
+/// The per-session counterpart to [`revoked_by_cutoff`]. Both halves
+/// must be present: no `sid` means the credential cannot be attributed
+/// to a session, which is a blind spot rather than an all-clear — and
+/// the reason `logout`'s single-session revocation does not reach an app
+/// password, which carries no `sid`.
+///
+/// `revoked_session_ids` holds only sessions revoked recently enough to
+/// still have a live token, so this is a scan of a handful of entries,
+/// usually none.
+fn session_revoked(revoked_session_ids: &[Uuid], session_id: Option<Uuid>) -> bool {
+    session_id.is_some_and(|sid| revoked_session_ids.contains(&sid))
+}
+
+/// Whether a token predates the user's revocation cutoff.
+///
+/// Both halves must be present for the answer to be yes, and the
+/// asymmetry is deliberate: `None` cutoff means nothing was ever
+/// revoked, while `None` issued-at means the caller could not tell us
+/// when the token was minted. Neither is grounds for rejecting, but the
+/// second is a blind spot rather than an all-clear — the only caller
+/// that passes `None` is the WebSocket session, which is handed a
+/// `caller_id` and no claims.
+///
+/// Comparison is on the JWT's own `iat` (seconds since the epoch, per
+/// RFC 7519 §4.1.6) against a `TIMESTAMPTZ`, so a revoke and a mint
+/// inside the same second resolve as "not revoked". That is the right
+/// direction to round: a token minted in the same second as the revoke
+/// was almost certainly minted by the re-login that followed it.
+fn revoked_by_cutoff(
+    sessions_valid_from: Option<chrono::DateTime<chrono::Utc>>,
+    token_issued_at: Option<i64>,
+) -> bool {
+    match (sessions_valid_from, token_issued_at) {
+        (Some(cutoff), Some(iat)) => iat < cutoff.timestamp(),
+        _ => false,
+    }
 }
 
 /// `Some` when the claim is an anonymous public-share session, which must
@@ -212,13 +325,51 @@ fn anonymous_live_role(claim_role: &str) -> Option<LiveRole> {
 }
 
 /// Pure decision core of [`resolve_live_role`], split out so the
-/// allow/revoke/fail-open policy is unit-testable without a service or DB.
+/// allow/revoke/indeterminate policy is unit-testable without a service
+/// or DB.
+///
+/// Takes no claim role: the live record is the only authority here. The
+/// parameter used to exist solely to be returned when the lookup failed
+/// — the fail-open path — and removing it is what makes a frozen claim
+/// unable to influence the outcome at all. `resolve_live_role` still
+/// reads the claim, but only to spot an anonymous share session that has
+/// no user row to re-check.
 fn decide_live_role(
     flags: Result<UserFlags, DomainError>,
     user_id: Uuid,
-    claim_role: &str,
+    token: PresentedToken,
 ) -> LiveRole {
     match flags {
+        // Both revocation forms answer HERE, as `Revoked`, rather than
+        // through a mechanism of their own — every caller already handles
+        // that variant, so neither needed new plumbing at five call
+        // sites. What they have in common: `auth.sessions.revoked` sits
+        // on the row holding the REFRESH token, so flipping it stops
+        // renewal while the access token lives out its hour. These two
+        // are what make a revocation take effect now.
+        //
+        // User-wide: every token issued before the cutoff.
+        //
+        // `issued_at: None` means the caller had no `iat` to offer — an
+        // app password, or the WebSocket handler — so the cutoff cannot
+        // be applied. See `PresentedToken`.
+        Ok(flags)
+            if flags.active && revoked_by_cutoff(flags.sessions_valid_from, token.issued_at) =>
+        {
+            audit_token_revoked(user_id, "issued_before_revocation_cutoff");
+            LiveRole::Revoked
+        }
+        // Per-session: this one session, named by `sid`. What
+        // `DELETE /api/admin/sessions/{id}` and `logout` mean, and what
+        // `change_password` needs in order to kill the other devices
+        // while keeping the caller's own session alive — a single
+        // user-wide cutoff cannot say "all except this one".
+        Ok(flags)
+            if flags.active && session_revoked(&flags.revoked_session_ids, token.session_id) =>
+        {
+            audit_token_revoked(user_id, "session_revoked");
+            LiveRole::Revoked
+        }
         Ok(flags) if flags.active => LiveRole::Active(SmolStr::new_static(flags.role.as_str())),
         Ok(_) => {
             audit_token_revoked(user_id, "deactivated");
@@ -229,15 +380,27 @@ fn decide_live_role(
             audit_token_revoked(user_id, "deleted");
             LiveRole::Revoked
         }
-        // Transient lookup failure (DB blip): fail open on the claim role so
-        // a momentary outage doesn't 401 every authenticated user at once.
+        // The lookup failed, so the role is unknown. This arm used to
+        // fail OPEN on `claim_role` — the frozen JWT claim — which meant a
+        // demoted admin kept admin power for as long as the lookup kept
+        // failing, and the one thing this re-check exists to catch was
+        // the one thing it stopped catching under load.
+        //
+        // Reporting "unknown" rather than guessing lets each caller answer
+        // honestly: 503 for a blip, 500 for a permanent failure, and — at
+        // the cookie branch — neither of those is a 401, so a blip no
+        // longer logs every browser session out.
         Err(e) => {
+            let retryable = e.is_transient();
             tracing::warn!(
-                user_id = %user_id,
+                target: "audit",
+                event = "auth.live_role_indeterminate",
+                reason = if retryable { "transient_backend" } else { "lookup_failed" },
+                caller_id = %user_id,
                 error = %e,
-                "live-user re-check failed transiently; allowing request on the JWT claim role (fail-open)"
+                "👮🏻‍♂️ live-role re-check could not evaluate — neither honoured nor revoked",
             );
-            LiveRole::Active(SmolStr::new(claim_role))
+            LiveRole::Indeterminate { retryable }
         }
     }
 }
@@ -445,12 +608,18 @@ mod tests {
             is_external: false,
             active,
             force_password_change: false,
+            sessions_valid_from: None,
+            revoked_session_ids: [].into(),
         }
     }
 
     #[test]
     fn active_admin_yields_current_admin_role() {
-        let live = decide_live_role(Ok(flags(UserRole::Admin, true)), Uuid::nil(), "user");
+        let live = decide_live_role(
+            Ok(flags(UserRole::Admin, true)),
+            Uuid::nil(),
+            PresentedToken::default(),
+        );
         // The live record wins over the (stale) claim — a freshly promoted
         // user is admin even though their token still says "user".
         assert_eq!(live, LiveRole::Active(SmolStr::new_static("admin")));
@@ -459,29 +628,108 @@ mod tests {
     #[test]
     fn active_user_yields_current_user_role() {
         // A demoted admin: token claim still "admin", live record "user".
-        let live = decide_live_role(Ok(flags(UserRole::User, true)), Uuid::nil(), "admin");
+        let live = decide_live_role(
+            Ok(flags(UserRole::User, true)),
+            Uuid::nil(),
+            PresentedToken::default(),
+        );
         assert_eq!(live, LiveRole::Active(SmolStr::new_static("user")));
     }
 
     #[test]
     fn deactivated_account_is_revoked() {
-        let live = decide_live_role(Ok(flags(UserRole::Admin, false)), Uuid::nil(), "admin");
+        let live = decide_live_role(
+            Ok(flags(UserRole::Admin, false)),
+            Uuid::nil(),
+            PresentedToken::default(),
+        );
         assert_eq!(live, LiveRole::Revoked);
     }
 
     #[test]
     fn deleted_account_not_found_is_revoked() {
         let err = DomainError::new(ErrorKind::NotFound, "User", "no such user");
-        let live = decide_live_role(Err(err), Uuid::nil(), "admin");
+        let live = decide_live_role(Err(err), Uuid::nil(), PresentedToken::default());
         assert_eq!(live, LiveRole::Revoked);
     }
 
+    /// Replaces `transient_error_fails_open_on_claim_role`, which pinned
+    /// the fail-open arm: a failed lookup returned `Active(claim_role)`,
+    /// so a demoted admin kept admin power for as long as the lookup kept
+    /// failing — the one thing this re-check exists to catch.
     #[test]
-    fn transient_error_fails_open_on_claim_role() {
-        // A DB blip must not lock everyone out: allow on the claim role.
-        let err = DomainError::new(ErrorKind::InternalError, "User", "connection reset");
-        let live = decide_live_role(Err(err), Uuid::nil(), "admin");
-        assert_eq!(live, LiveRole::Active(SmolStr::new_static("admin")));
+    fn transient_error_is_indeterminate_and_retryable() {
+        let err = DomainError::transient_backend("Database", "connection reset");
+        assert_eq!(
+            decide_live_role(Err(err), Uuid::nil(), PresentedToken::default()),
+            LiveRole::Indeterminate { retryable: true },
+        );
+    }
+
+    /// A permanent failure is still indeterminate, but not retryable, so
+    /// callers answer 500 rather than inviting a retry that cannot help.
+    #[test]
+    fn permanent_error_is_indeterminate_and_not_retryable() {
+        let err = DomainError::new(ErrorKind::InternalError, "User", "column missing");
+        assert_eq!(
+            decide_live_role(Err(err), Uuid::nil(), PresentedToken::default()),
+            LiveRole::Indeterminate { retryable: false },
+        );
+    }
+
+    /// The property the whole variant exists for: a failed lookup never
+    /// yields a ROLE. `Active(claim_role)` was the fail-open, and
+    /// `Revoked` would be the opposite mistake — the cookie branch turns
+    /// `Revoked` into a 401 and a redirect to `/login`, so collapsing
+    /// "cannot tell" into it would log out every browser session during a
+    /// blip.
+    #[test]
+    fn a_failed_lookup_never_yields_a_role_nor_a_revocation() {
+        for kind in [
+            ErrorKind::InternalError,
+            ErrorKind::TransientBackend,
+            ErrorKind::Timeout,
+            ErrorKind::DatabaseError,
+            ErrorKind::AccessDenied,
+        ] {
+            let live = decide_live_role(
+                Err(DomainError::new(kind, "User", "x")),
+                Uuid::nil(),
+                PresentedToken::default(),
+            );
+            assert!(
+                matches!(live, LiveRole::Indeterminate { .. }),
+                "{kind:?} must be indeterminate, got {live:?}",
+            );
+        }
+    }
+
+    /// `NotFound` stays a revocation — the account is genuinely gone, and
+    /// that IS the definitive answer the cookie branch should turn into a
+    /// 401. Pinned next to the above so the boundary between them is
+    /// visible in one place.
+    #[test]
+    fn not_found_stays_a_revocation_not_indeterminate() {
+        let err = DomainError::new(ErrorKind::NotFound, "User", "no such user");
+        assert_eq!(
+            decide_live_role(Err(err), Uuid::nil(), PresentedToken::default()),
+            LiveRole::Revoked
+        );
+    }
+
+    /// The status split, pinned on the shared helper the four call sites
+    /// use — so a change there cannot quietly turn a blip into a 500 or a
+    /// permanent fault into "please retry".
+    #[test]
+    fn indeterminate_renders_503_when_retryable_and_500_otherwise() {
+        assert_eq!(
+            indeterminate_app_error(true).status_code,
+            StatusCode::SERVICE_UNAVAILABLE,
+        );
+        assert_eq!(
+            indeterminate_app_error(false).status_code,
+            StatusCode::INTERNAL_SERVER_ERROR,
+        );
     }
 
     /// An anonymous session skips the live re-check — there is no user row
@@ -534,13 +782,290 @@ mod tests {
         );
     }
 
-    /// Deliberately still open. This gate is a restriction on external
-    /// users, not the authentication decision — failing every DAV request
-    /// closed during a database hiccup trades one outage for a worse one.
-    /// The authentication check above it is what fails closed.
+    /// Replaces `internal_user_gate_stays_open_on_a_transient_error`,
+    /// which pinned the fail-open arm. Admitting and denying both *answer*
+    /// a question the lookup could not; 503 says "ask again", which is
+    /// what is true. 403 would be the other wrong answer — it makes an
+    /// SPA show a permissions error or bounce to login instead of
+    /// retrying.
     #[test]
-    fn internal_user_gate_stays_open_on_a_transient_error() {
-        let err = DomainError::new(ErrorKind::InternalError, "User", "connection reset");
-        assert!(decide_internal_user(Err(err), Uuid::nil()).is_ok());
+    fn internal_user_gate_answers_503_on_a_transient_error() {
+        let err = DomainError::transient_backend("Database", "connection reset");
+        let e = decide_internal_user(Err(err), Uuid::nil())
+            .expect_err("a transient lookup failure must not admit");
+        assert_eq!(e.status_code, StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    /// A permanent lookup failure is 500, not 503. Telling a client to
+    /// retry a decode failure or a schema mismatch is a lie it acts on,
+    /// and `DomainError::is_transient` defaults to "not retryable" for
+    /// exactly this reason.
+    #[test]
+    fn internal_user_gate_answers_500_on_a_permanent_error() {
+        let err = DomainError::new(ErrorKind::InternalError, "User", "column missing");
+        let e = decide_internal_user(Err(err), Uuid::nil())
+            .expect_err("a permanent lookup failure must not admit");
+        assert_eq!(e.status_code, StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    /// The property that matters more than either status code, and the
+    /// one a future refactor is most likely to undo: **no error admits.**
+    /// The arm these replace was `Err(_) => Ok(())` on the only
+    /// middleware guarding `/webdav`, `/caldav` and `/carddav`, so any
+    /// lookup failure walked straight through the gate.
+    #[test]
+    fn internal_user_gate_never_admits_on_any_error() {
+        for kind in [
+            ErrorKind::NotFound,
+            ErrorKind::InternalError,
+            ErrorKind::TransientBackend,
+            ErrorKind::Timeout,
+            ErrorKind::DatabaseError,
+            ErrorKind::AccessDenied,
+        ] {
+            let err = DomainError::new(kind, "User", "lookup failed");
+            assert!(
+                decide_internal_user(Err(err), Uuid::nil()).is_err(),
+                "{kind:?} must not admit the caller",
+            );
+        }
+    }
+
+    fn flags_with_cutoff(cutoff: Option<chrono::DateTime<chrono::Utc>>) -> UserFlags {
+        UserFlags {
+            sessions_valid_from: cutoff,
+            ..flags(UserRole::Admin, true)
+        }
+    }
+
+    /// The defect this closes: revoking set `auth.sessions.revoked`, but
+    /// that row holds the REFRESH token — so revocation meant "cannot
+    /// renew" while every access token already minted stayed good for
+    /// the rest of its hour.
+    #[test]
+    fn a_token_issued_before_the_cutoff_is_revoked() {
+        let cutoff = chrono::Utc::now();
+        let minted_an_hour_earlier = (cutoff - chrono::Duration::hours(1)).timestamp();
+        assert_eq!(
+            decide_live_role(
+                Ok(flags_with_cutoff(Some(cutoff))),
+                Uuid::nil(),
+                PresentedToken {
+                    issued_at: Some(minted_an_hour_earlier),
+                    ..Default::default()
+                },
+            ),
+            LiveRole::Revoked,
+        );
+    }
+
+    /// The other half, and the one that would make this unusable if it
+    /// were wrong: the token the user gets from logging in again must
+    /// work. Were this reversed, a revoke-all would lock the account out
+    /// permanently rather than once.
+    #[test]
+    fn a_token_issued_after_the_cutoff_is_honoured() {
+        let cutoff = chrono::Utc::now();
+        let minted_after = (cutoff + chrono::Duration::seconds(5)).timestamp();
+        assert_eq!(
+            decide_live_role(
+                Ok(flags_with_cutoff(Some(cutoff))),
+                Uuid::nil(),
+                PresentedToken {
+                    issued_at: Some(minted_after),
+                    ..Default::default()
+                },
+            ),
+            LiveRole::Active(SmolStr::new_static("admin")),
+        );
+    }
+
+    /// `NULL` cutoff is the state of every row the migration touches, so
+    /// this pins that deploying it revokes nothing. A `DEFAULT NOW()`
+    /// would have logged out every user on the instance.
+    #[test]
+    fn no_cutoff_revokes_nothing() {
+        assert_eq!(
+            decide_live_role(
+                Ok(flags_with_cutoff(None)),
+                Uuid::nil(),
+                PresentedToken {
+                    issued_at: Some(chrono::Utc::now().timestamp() - 86_400),
+                    ..Default::default()
+                },
+            ),
+            LiveRole::Active(SmolStr::new_static("admin")),
+        );
+    }
+
+    /// A caller with no `iat` to offer — the WebSocket session — cannot
+    /// have the cutoff applied. Pinned so the blind spot is a stated
+    /// property rather than something a reader discovers: an open socket
+    /// does NOT notice a revoke-all.
+    #[test]
+    fn an_absent_issued_at_cannot_apply_the_cutoff() {
+        assert_eq!(
+            decide_live_role(
+                Ok(flags_with_cutoff(Some(chrono::Utc::now()))),
+                Uuid::nil(),
+                PresentedToken::default(),
+            ),
+            LiveRole::Active(SmolStr::new_static("admin")),
+        );
+    }
+
+    /// Deactivation still wins over an honoured token: the two checks are
+    /// independent, and `active` is the one the WS path still gets.
+    #[test]
+    fn deactivation_outranks_a_post_cutoff_token() {
+        let flags = UserFlags {
+            active: false,
+            sessions_valid_from: None,
+            ..flags(UserRole::Admin, true)
+        };
+        assert_eq!(
+            decide_live_role(
+                Ok(flags),
+                Uuid::nil(),
+                PresentedToken {
+                    issued_at: Some(chrono::Utc::now().timestamp() + 60),
+                    ..Default::default()
+                },
+            ),
+            LiveRole::Revoked,
+        );
+    }
+
+    /// Second-granularity rounding, stated as a contract rather than
+    /// left to discovery: `iat` is whole seconds (RFC 7519 §4.1.6) while
+    /// the cutoff is a `TIMESTAMPTZ`, so a token minted in the same
+    /// second as the revoke is HONOURED. That is the right direction —
+    /// such a token was almost certainly minted by the re-login that
+    /// followed the revoke.
+    #[test]
+    fn a_token_minted_in_the_same_second_as_the_revoke_is_honoured() {
+        let cutoff = chrono::Utc::now();
+        assert_eq!(
+            decide_live_role(
+                Ok(flags_with_cutoff(Some(cutoff))),
+                Uuid::nil(),
+                PresentedToken {
+                    issued_at: Some(cutoff.timestamp()),
+                    ..Default::default()
+                },
+            ),
+            LiveRole::Active(SmolStr::new_static("admin")),
+        );
+    }
+
+    fn flags_with_revoked(revoked: &[Uuid]) -> UserFlags {
+        UserFlags {
+            revoked_session_ids: revoked.into(),
+            ..flags(UserRole::Admin, true)
+        }
+    }
+
+    /// Per-session revocation: the defect was that `DELETE
+    /// /api/admin/sessions/{id}` flipped `auth.sessions.revoked`, which
+    /// is the row holding the REFRESH token — so it stopped renewal and
+    /// left the access token working for the rest of its hour. The admin
+    /// panel's button meant "stop this session renewing", not "stop this
+    /// session".
+    #[test]
+    fn a_token_for_a_revoked_session_is_refused() {
+        let sid = Uuid::new_v4();
+        assert_eq!(
+            decide_live_role(
+                Ok(flags_with_revoked(&[sid])),
+                Uuid::nil(),
+                PresentedToken {
+                    session_id: Some(sid),
+                    ..Default::default()
+                },
+            ),
+            LiveRole::Revoked,
+        );
+    }
+
+    /// The half that makes it per-SESSION rather than per-user, and the
+    /// one `change_password` depends on: killing every other device must
+    /// leave the caller's own session working, or the SPA cannot finish
+    /// the OPAQUE envelope re-registration it is mid-way through.
+    #[test]
+    fn a_sibling_session_is_unaffected_by_another_being_revoked() {
+        let revoked = Uuid::new_v4();
+        let mine = Uuid::new_v4();
+        assert_eq!(
+            decide_live_role(
+                Ok(flags_with_revoked(&[revoked])),
+                Uuid::nil(),
+                PresentedToken {
+                    session_id: Some(mine),
+                    ..Default::default()
+                },
+            ),
+            LiveRole::Active(SmolStr::new_static("admin")),
+        );
+    }
+
+    /// A credential with no `sid` cannot be attributed to a session, so
+    /// per-session revocation cannot reach it. Pinned so the blind spot
+    /// is a stated property: an app password is revoked by DELETING it,
+    /// not by revoking a session, and the WebSocket handler has no claims
+    /// at all.
+    #[test]
+    fn a_credential_without_a_session_id_is_not_caught_by_session_revocation() {
+        assert_eq!(
+            decide_live_role(
+                Ok(flags_with_revoked(&[Uuid::new_v4()])),
+                Uuid::nil(),
+                PresentedToken::default(),
+            ),
+            LiveRole::Active(SmolStr::new_static("admin")),
+        );
+    }
+
+    /// The common case is an empty set — nothing revoked recently — and
+    /// it must not cost a false refusal.
+    #[test]
+    fn an_empty_revoked_set_refuses_nothing() {
+        assert_eq!(
+            decide_live_role(
+                Ok(flags_with_revoked(&[])),
+                Uuid::nil(),
+                PresentedToken {
+                    session_id: Some(Uuid::new_v4()),
+                    ..Default::default()
+                },
+            ),
+            LiveRole::Active(SmolStr::new_static("admin")),
+        );
+    }
+
+    /// The two forms are independent: a session-revoked token is refused
+    /// even where the user-wide cutoff would have honoured it. Without
+    /// this, an implementation that only ever consulted the cutoff would
+    /// pass every other test here.
+    #[test]
+    fn session_revocation_applies_independently_of_the_user_cutoff() {
+        let sid = Uuid::new_v4();
+        let flags = UserFlags {
+            sessions_valid_from: Some(chrono::Utc::now() - chrono::Duration::hours(2)),
+            revoked_session_ids: [sid].into(),
+            ..flags(UserRole::Admin, true)
+        };
+        assert_eq!(
+            decide_live_role(
+                Ok(flags),
+                Uuid::nil(),
+                PresentedToken {
+                    // AFTER the cutoff, so that check honours it…
+                    issued_at: Some(chrono::Utc::now().timestamp()),
+                    // …but this session is revoked.
+                    session_id: Some(sid),
+                },
+            ),
+            LiveRole::Revoked,
+        );
     }
 }

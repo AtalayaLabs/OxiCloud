@@ -171,7 +171,10 @@ pub async fn basic_auth_middleware(
         .verify_basic_auth(username, &password)
         .await
     {
-        Ok((user_id, uname, email, role)) => {
+        // `_cached_role` is deliberately dropped: it comes from the
+        // 300 s Basic-auth verification cache, so it can name a role the
+        // user no longer holds. The live one is read below.
+        Ok((user_id, uname, email, _cached_role)) => {
             // Reset lockout counter on success
             if let Some(auth_svc) = state.auth_service.as_ref() {
                 auth_svc.login_lockout.record_success(username, &client_ip);
@@ -185,13 +188,49 @@ pub async fn basic_auth_middleware(
             // /api/auth/app-passwords also gates externals upfront;
             // this is the belt-and-braces check in case one slipped
             // through (e.g. user later flipped to is_external).
-            if let Some(auth_svc) = state.auth_service.as_ref()
-                && let Ok(flags) = auth_svc
-                    .auth_application_service
-                    .get_user_flags(user_id)
-                    .await
-                && flags.is_external
+            // One `get_user_flags` read answers THREE questions, so take
+            // all three from it. It used to read `is_external` and ignore
+            // the rest of the struct:
+            //
+            //   * `is_external` — the belt-and-braces check described
+            //     above.
+            //   * `active` — a DEACTIVATED account used to keep the whole
+            //     NC surface. The `verify_basic_auth` result is cached for
+            //     300 s and its own `is_active` check runs only on a miss,
+            //     so an admin disabling an account did not stop a syncing
+            //     client. This surface accepts no Bearer credential, so
+            //     this middleware is its only gate — there is no other
+            //     path that would have caught it.
+            //   * `role` — the LIVE role. The one returned by
+            //     `verify_basic_auth` comes from that same 300 s cache, so
+            //     a demoted admin kept admin here.
+            //
+            // Failure to read the flags is a REFUSAL, not a skip. The old
+            // `&& let Ok(flags)` form admitted the caller when the lookup
+            // errored, which is the fail-open shape `src/AGENTS.md`
+            // forbids: an auth helper's error arm must deny.
+            let Some(auth_svc) = state.auth_service.as_ref() else {
+                return Err(NextcloudAuthError::Unauthorized);
+            };
+            let flags = match auth_svc
+                .auth_application_service
+                .get_user_flags(user_id)
+                .await
             {
+                Ok(f) => f,
+                Err(e) => {
+                    tracing::warn!(
+                        target: "audit",
+                        event = "auth.nc_basic_rejected",
+                        reason = "flags_unavailable",
+                        user_id = %user_id,
+                        error = %e,
+                        "👮🏻‍♂️ NC Basic auth refused — could not read the live account state",
+                    );
+                    return Err(NextcloudAuthError::Unauthorized);
+                }
+            };
+            if flags.is_external {
                 tracing::info!(
                     target: "audit",
                     event = "auth.nc_basic_rejected",
@@ -201,6 +240,17 @@ pub async fn basic_auth_middleware(
                 );
                 return Err(NextcloudAuthError::Unauthorized);
             }
+            if !flags.active {
+                tracing::info!(
+                    target: "audit",
+                    event = "auth.nc_basic_rejected",
+                    reason = "account_deactivated",
+                    user_id = %user_id,
+                    "👮🏻‍♂️ Deactivated account attempted NC Basic auth — rejected"
+                );
+                return Err(NextcloudAuthError::Unauthorized);
+            }
+            let role = smol_str::SmolStr::new_static(flags.role.as_str());
             // Populate the deferred `user_id` field on the request
             // tracing span (declared in `middleware/trace_span.rs::ClientIpMakeSpan`).
             // Mirrors what `interfaces/middleware/auth.rs` does for the
@@ -220,6 +270,8 @@ pub async fn basic_auth_middleware(
             // with app passwords via Basic Auth, no WebCrypto, no DPoP.
             // Middleware exempts unbound sessions per Gate 9 design.
             let current_user = Arc::new(CurrentUser {
+                // NextCloud Basic auth: no JWT, so no `sid` or `iat`.
+                token: crate::domain::entities::presented_token::PresentedToken::default(),
                 id: user_id,
                 username: uname,
                 email,

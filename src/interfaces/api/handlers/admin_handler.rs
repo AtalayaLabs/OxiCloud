@@ -1932,6 +1932,7 @@ pub async fn list_sessions(
     let caller = crate::application::dtos::session_dto::SessionCaller {
         id: auth_user.id,
         dpop_jkt: auth_user.dpop_jkt.as_deref(),
+        session_id: auth_user.token.session_id,
     };
 
     let sessions = auth
@@ -1947,18 +1948,25 @@ pub async fn list_sessions(
         .await
         .map_err(AppError::from)?;
 
-    // Also publish the current access-token TTL so the admin panel can
-    // render an honest "revoke takes effect within N seconds" warning
-    // above the table. Revoking a session flips the DB row (breaks the
-    // refresh path), but any in-flight JWT stays valid until its `exp`
-    // — which is `access_token_expiry_secs` from now. Showing this
-    // number keeps the UX honest instead of implying instant kill.
-    let access_token_expiry_secs = state.core.config.auth.access_token_expiry_secs;
+    // `access_token_expiry_secs` used to be published here so the panel
+    // could warn "revoke takes effect within N seconds" — because
+    // revoking flipped the DB row, killing the refresh path, while any
+    // in-flight JWT stayed valid until its `exp`.
+    //
+    // That is no longer true. Per-session revocation stamps
+    // `auth.sessions.revoked_at` and carries the revoked sids on the
+    // cached `UserFlags`, and `revoke_session_and_invalidate` drops that
+    // cache, so a revoked session's access token is refused on the NEXT
+    // request. Keeping the field would have the panel advertise a delay
+    // that no longer exists — worse than silence, because an operator
+    // responding to a compromise would wait for nothing.
+    //
+    // Removed rather than zeroed: a field meaning "no delay" is a field
+    // every client still has to interpret. No UI read it.
     Ok(Json(serde_json::json!({
         "sessions": sessions,
         "limit": limit,
         "offset": offset,
-        "access_token_expiry_secs": access_token_expiry_secs,
     })))
 }
 
@@ -1991,6 +1999,7 @@ pub async fn revoke_session(
     let caller = crate::application::dtos::session_dto::SessionCaller {
         id: auth_user.id,
         dpop_jkt: auth_user.dpop_jkt.as_deref(),
+        session_id: auth_user.token.session_id,
     };
     auth.auth_application_service
         .admin_revoke_session_with_perms(state.authorization.as_ref(), caller, session_id)

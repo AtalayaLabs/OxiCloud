@@ -1446,7 +1446,6 @@
       "empty": "没有会话与当前筛选条件匹配。",
       "revoke_self_confirm": "⚠️  这是您当前的会话。撤销后您将立即被注销并需要重新登录。是否继续？",
       "revoke_confirm": "撤销此会话吗？该浏览器的下一次请求将返回 401。",
-      "revoke_lag_notice": "撤销会话会立即中断其刷新路径，但浏览器中已存在的任何 JWT 在下次刷新尝试之前最多可保持有效 {{secs}} 秒。",
       "origin": {
         "password": "密码",
         "opaque": "OPAQUE",

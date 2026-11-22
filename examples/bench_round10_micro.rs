@@ -174,6 +174,7 @@ fn section_identity(iters: u64) {
             email: Arc::clone(&new_claims.email),
             role,
             dpop_jkt: None,
+            token: Default::default(),
         })
     });
 
@@ -185,6 +186,7 @@ fn section_identity(iters: u64) {
         email: Arc::clone(&new_claims.email),
         role: SmolStr::new_static("user"),
         dpop_jkt: None,
+        token: Default::default(),
     });
     assert_eq!(old.username, *new.username);
     assert_eq!(old.email, *new.email);

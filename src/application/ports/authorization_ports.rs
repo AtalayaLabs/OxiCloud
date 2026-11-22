@@ -57,6 +57,24 @@ impl AuthzDenialVisibility {
     }
 }
 
+/// Drop a user's cached `UserFlags` entry.
+///
+/// A narrow port rather than handing a whole `AuthApplicationService`
+/// to every service that revokes something: the only capability needed
+/// is "forget what you cached about this user", and a service that can
+/// do that should not thereby gain the ability to mint sessions.
+///
+/// Needed because revocation is only immediate if the per-request read
+/// stops seeing the stale row. Without it a revoked session keeps
+/// working until the cache TTL rolls — correct eventually, which is not
+/// what an operator revoking a device means.
+///
+/// Implemented by `AuthApplicationService`, which owns the cache.
+#[async_trait::async_trait]
+pub trait UserFlagsInvalidatorPort: Send + Sync {
+    async fn invalidate_user_flags(&self, user_id: Uuid);
+}
+
 /// Shared live-principal guard for system-administration services.
 /// Reuses the authentication service's cached, image-free flags and propagates
 /// lookup errors. Keeping the orchestration here prevents per-service drift.

@@ -176,12 +176,19 @@ HTTP 200
 # pattern in tests/oidc/oidc.hurl Step 8b for the full reasoning.
 body contains "\"origin\":\"password\""
 body contains "\"origin\":\"magic_link\""
-# `access_token_expiry_secs` also served for the SPA's revoke-lag
-# notice. Belt-and-braces with tests/oidc/oidc.hurl Step 8b (same
-# handler, both suites verify the field ships so a shape change
-# would fail at least one of them).
-jsonpath "$.access_token_expiry_secs" isInteger
-jsonpath "$.access_token_expiry_secs" > 0
+# `access_token_expiry_secs` used to be asserted here, belt-and-braces
+# with tests/oidc/oidc.hurl Step 8b, so a shape change would fail at
+# least one suite. It did exactly that job: removing the field broke
+# both, which is how a deliberately redundant pin is supposed to
+# behave.
+#
+# The field is gone because per-session revocation made the lag it
+# described untrue — a revoked session's access token is now refused on
+# the next request, so a "revoke takes effect within N seconds" notice
+# would have an operator responding to a compromise wait for nothing.
+# The assertion is inverted rather than deleted, keeping the
+# cross-suite redundancy pointed at the current shape.
+body not contains "access_token_expiry_secs"
 
 
 # ─────────────────────────────────────────────────────────────

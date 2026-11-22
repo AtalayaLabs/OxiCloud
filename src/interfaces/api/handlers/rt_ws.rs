@@ -197,6 +197,7 @@ pub async fn rt_ws_handler(
         }
     };
     let caller_id = auth.caller_id;
+    let presented = auth.token;
     // If the caller reached us via the ticket path, echo the exact
     // subprotocol they sent back on the 101 response — RFC 6455 §4.2.2
     // requires this or the client fails the connection.
@@ -204,13 +205,20 @@ pub async fn rt_ws_handler(
         Some(sub) => ws.protocols([sub]),
         None => ws,
     };
-    ws.on_upgrade(move |socket| handle_session(socket, caller_id, state))
+    ws.on_upgrade(move |socket| handle_session(socket, caller_id, presented, state))
 }
 
 /// Successful upgrade credentials — the resolved caller and (when the
 /// ticket path was used) the subprotocol to echo on the 101 response.
+use crate::domain::entities::presented_token::PresentedToken;
+
 struct UpgradeAuth {
     caller_id: Uuid,
+    /// What the credential says about itself, so `handle_session` can
+    /// apply the revocation checks. Both upgrade paths can supply it:
+    /// the bearer path validates the JWT right here, and the ticket path
+    /// carries it from the issuing request.
+    token: PresentedToken,
     accepted_subprotocol: Option<String>,
 }
 
@@ -231,11 +239,16 @@ async fn authenticate_upgrade(
         let Ok(ticket_uuid) = Uuid::parse_str(ticket_str) else {
             return Err("bad_ticket_uuid");
         };
-        let Some(caller_id) = state.rt_ticket_store.redeem(ticket_uuid) else {
+        // The ticket carries the claims of the session that asked for it,
+        // recorded at issue time by `POST /api/rt/ticket` — which runs
+        // under the full middleware and therefore knows them, whereas this
+        // upgrade does not.
+        let Some((caller_id, token)) = state.rt_ticket_store.redeem(ticket_uuid) else {
             return Err("ticket_invalid");
         };
         return Ok(UpgradeAuth {
             caller_id,
+            token,
             accepted_subprotocol: Some(ticket_sub),
         });
     }
@@ -263,6 +276,11 @@ async fn authenticate_upgrade(
         }
         return Ok(UpgradeAuth {
             caller_id: claims.sub_id,
+            // This path validated the JWT a few lines up, so the claims are
+            // in hand — they were simply being discarded.
+            token: crate::domain::entities::presented_token::PresentedToken::from_claims(
+                claims.iat, claims.sid,
+            ),
             accepted_subprotocol: None,
         });
     }
@@ -367,7 +385,12 @@ impl Drop for SessionCountGuard {
     }
 }
 
-async fn handle_session(mut socket: WebSocket, caller_id: Uuid, state: Arc<AppState>) {
+async fn handle_session(
+    mut socket: WebSocket,
+    caller_id: Uuid,
+    presented: PresentedToken,
+    state: Arc<AppState>,
+) {
     // Live-session counter — incremented here, decremented on ANY
     // exit path via the `Drop` guard below (clean close, error,
     // panic unwind, task abort). Feeds the admin dashboard's
@@ -390,12 +413,28 @@ async fn handle_session(mut socket: WebSocket, caller_id: Uuid, state: Arc<AppSt
     // account is revoked, treat as non-admin — fail-closed for
     // admin gates. Passing "user" as the claim role is fail-open
     // for `resolve_live_role`'s non-admin fallback path.
-    let caller_role: String = match state.auth_service.as_ref() {
+    // `mut` because the keepalive tick refreshes it: a demotion used to
+    // be invisible to an open socket, which kept admin-topic access for
+    // the life of the connection.
+    let mut caller_role: String = match state.auth_service.as_ref() {
         Some(auth) => {
             match crate::interfaces::middleware::user::resolve_live_role(
                 auth.auth_application_service.as_ref(),
                 caller_id,
                 "user",
+                // Both revocation forms now apply AT UPGRADE, on both
+                // paths. The bearer path validated the JWT and had the
+                // claims all along; the ticket path carries them from the
+                // issuing request, which runs under the full middleware
+                // and knows the session this upgrade cannot see.
+                //
+                // Still NOT closed: an ALREADY-OPEN socket is never
+                // re-checked — this runs once. A revoke refuses new
+                // upgrades and leaves live sockets until they drop.
+                // Closing that needs a periodic re-check or an eviction
+                // signal, not more claims. See
+                // `docs/plan/authn-pipeline.md` § Revocation.
+                presented,
             )
             .await
             {
@@ -413,6 +452,25 @@ async fn handle_session(mut socket: WebSocket, caller_id: Uuid, state: Arc<AppSt
                         reason = "account_revoked",
                         caller_id = %caller_id,
                         "👮🏻‍♂️ WS session rejected — account revoked",
+                    );
+                    drop(socket);
+                    return;
+                }
+                // The role is unknown, and this socket is already
+                // upgraded — there is no status code left to send, so the
+                // honest options are "close" or "continue with a role we
+                // did not verify". Closing wins: the client's reconnect
+                // path exists and will retry, whereas continuing would
+                // hand an unverified role to the admin-topic gate for the
+                // life of the connection.
+                crate::interfaces::middleware::user::LiveRole::Indeterminate { retryable } => {
+                    tracing::warn!(
+                        target: "audit",
+                        event = "message_bus.session_rejected",
+                        reason = "live_role_indeterminate",
+                        retryable,
+                        caller_id = %caller_id,
+                        "👮🏻‍♂️ WS session closed — could not verify account state; client should reconnect",
                     );
                     drop(socket);
                     return;
@@ -441,7 +499,13 @@ async fn handle_session(mut socket: WebSocket, caller_id: Uuid, state: Arc<AppSt
     // `SessionOut::EvictFolders` signals instead of pushing an
     // `rt.event` notification the client can see — client-visible
     // effect is the `rt.revoked` per evicted sub.
-    install_subscription(Topic::UserAuthz(caller_id), &mut subs, &out_tx, &state);
+    install_subscription(
+        Topic::UserAuthz(caller_id),
+        caller_id,
+        &mut subs,
+        &out_tx,
+        &state,
+    );
 
     // Auto-subscribe to the caller's private notifications topic —
     // same identity-scoped invariant as `:authz`. Events on this
@@ -452,6 +516,7 @@ async fn handle_session(mut socket: WebSocket, caller_id: Uuid, state: Arc<AppSt
     // on the next `GET /api/notifications`.
     install_subscription(
         Topic::UserNotifications(caller_id),
+        caller_id,
         &mut subs,
         &out_tx,
         &state,
@@ -575,6 +640,53 @@ async fn handle_session(mut socket: WebSocket, caller_id: Uuid, state: Arc<AppSt
             }
 
             _ = keepalive.tick() => {
+                // Re-check the account on the SAME timer as the ping.
+                //
+                // `resolve_live_role` otherwise runs once, at connect, so a
+                // revoke refused new upgrades and left live sockets running
+                // until the client happened to drop. Piggybacking costs no
+                // new per-connection interval, and the 30 s default already
+                // matches `USER_FLAGS_CACHE_TTL` — so a tick is a cache hit
+                // in the common case and adds no misses the TTL was not
+                // already causing.
+                //
+                // The role is REFRESHED, not just checked: a demotion was
+                // invisible to an open socket, which kept admin-topic access
+                // for the life of the connection.
+                if let Some(auth) = state.auth_service.as_ref() {
+                    match crate::interfaces::middleware::user::resolve_live_role(
+                        auth.auth_application_service.as_ref(),
+                        caller_id,
+                        &caller_role,
+                        presented,
+                    )
+                    .await
+                    {
+                        crate::interfaces::middleware::user::LiveRole::Active(role) => {
+                            caller_role = role.to_string();
+                        }
+                        crate::interfaces::middleware::user::LiveRole::Revoked => {
+                            tracing::info!(
+                                target: "audit",
+                                event = "message_bus.session_rejected",
+                                reason = "revoked_while_open",
+                                caller_id = %caller_id,
+                                "👮🏻‍♂️ WS session closed — account or session revoked after the socket opened",
+                            );
+                            break;
+                        }
+                        // Could not evaluate. The socket STAYS: dropping every
+                        // open connection on a database blip is a worse
+                        // outcome than a bounded delay in noticing a
+                        // revocation, and the next tick retries in 30 s. Same
+                        // reasoning as answering 503 rather than 403 on the
+                        // HTTP path — we do not act on an answer we do not
+                        // have.
+                        crate::interfaces::middleware::user::LiveRole::Indeterminate {
+                            ..
+                        } => {}
+                    }
+                }
                 // RFC 6455 Ping control frame. 0-byte payload is
                 // spec-legal and the smallest wire footprint. Client
                 // auto-Pongs; nothing to observe here on that.
@@ -1189,7 +1301,7 @@ async fn handle_subscribe(
     // AuthZ passed — install the subscription and spawn a reader task
     // that forwards bus events to the outbound channel as `rt.event`
     // notifications.
-    install_subscription(topic, subs, out_tx, state);
+    install_subscription(topic, caller_id, subs, out_tx, state);
 
     // Collab subscribes carry an extra `capabilities` object so the FE
     // can render read-only affordances without a second round trip.
@@ -1245,6 +1357,12 @@ fn handle_unsubscribe(id: Value, params: Value, subs: &mut HashMap<String, Sub>)
 ///   visible `rt.event` notification and pushed as `SessionOut::Frame`.
 fn install_subscription(
     topic: Topic,
+    // Threaded through to the collab forwarder so its attach runs as the
+    // real subscriber. It used to attach as `Uuid::nil()` — a magic value
+    // standing in for "skip authz", which is the pattern `AdmittedCaller`
+    // replaced on the session path. A sentinel cannot be audited, cannot
+    // be denied, and reads as a real user id to anything downstream.
+    caller_id: Uuid,
     subs: &mut HashMap<String, Sub>,
     out_tx: &mpsc::Sender<SessionOut>,
     state: &Arc<AppState>,
@@ -1262,7 +1380,7 @@ fn install_subscription(
     // decision, not a runtime one; the operator sees it in the
     // `collab.service_enabled` audit line (or its absence).
     if let Topic::Collab(file_id) = topic {
-        let reader = spawn_collab_forwarder(file_id, out_tx.clone(), state);
+        let reader = spawn_collab_forwarder(file_id, caller_id, out_tx.clone(), state);
         subs.insert(topic_wire, Sub { reader });
         return;
     }
@@ -1345,6 +1463,7 @@ fn install_subscription(
 /// subscribe ack'd but delivered nothing.
 fn spawn_collab_forwarder(
     file_id: Uuid,
+    caller_id: Uuid,
     out_tx: mpsc::Sender<SessionOut>,
     state: &Arc<AppState>,
 ) -> JoinHandle<()> {
@@ -1367,7 +1486,10 @@ fn spawn_collab_forwarder(
         // subscribe was already ack'd so the client sees a healthy
         // topic that just never delivers — the same shape as the
         // "feature off" case, and the audit line explains which.
-        let session = match collab.attach_file(Uuid::nil(), file_id).await {
+        // The REAL subscriber, not a sentinel. `handle_subscribe` has
+        // already checked Read on this resource, so the gate inside
+        // `attach_file` passes — the point is that it is now asked.
+        let session = match collab.attach_file(caller_id, file_id).await {
             Ok(s) => s,
             Err(e) => {
                 tracing::warn!(

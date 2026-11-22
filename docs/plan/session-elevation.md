@@ -192,11 +192,70 @@ their own admin panel** until the `prompt=login` path exists. So:
 - Each pin asserts the refusal AND the allowed path, per AGENTS.md — a
   gate that refuses everyone must not pass.
 
+## Suggestion: roaming as an elevation trigger
+
+**Not planned, not implemented — recorded because the data now exists.**
+`auth.sessions` carries `created_ip` and `last_seen_ip`
+(`20261121000002_sessions_ip_columns.sql`), and the admin session list
+shows the second only when it differs from the first. That is
+**detection**. The obvious next thought is enforcement: if a session is
+being used from an address it was not created from, require elevation
+before anything sensitive, on the theory that a moved session may be a
+stolen one.
+
+### It exists in the market, so the idea is not novel
+
+| product | mechanism |
+|---|---|
+| **Microsoft Entra ID** | the closest analogue. Continuous Access Evaluation revokes tokens on client-IP change for some workloads, and Conditional Access can gate on named locations and sign-in risk |
+| **Okta** | Behavior Detection — "new IP", "new geo-location", "new device", "velocity" — feeds a step-up MFA policy |
+| **Google Workspace** | risk-scored suspicious-sign-in challenges, location among the signals |
+| **AWS, GitHub** | notify rather than challenge |
+
+### Why a bare `last_seen_ip != created_ip` would be a mistake
+
+The products above all do something more careful than equality, and the
+reasons apply to OxiCloud with more force, not less:
+
+- **Phones roam constantly.** Cellular↔WiFi handover, CGNAT pool
+  rotation and IPv6 privacy extensions all change the address within one
+  network and one minute. Exact-IP equality would challenge a commuting
+  user on a loop.
+- **The signal has to be coarse.** ASN, country, or a /24 — which is
+  what "named locations" and geo-velocity rules encode. Entra scopes its
+  strict IP enforcement to *trusted* networks for exactly this reason.
+- **One signal is not a risk score.** The market treats IP change as an
+  input, never a verdict.
+- **And the OxiCloud-specific blocker: DAV clients cannot elevate.** An
+  app password has no interactive channel — `POST /api/auth/elevate`
+  needs a human at a browser. A roaming trigger reaching a syncing
+  Thunderbird or DAVx5 would not challenge it, it would simply break it.
+  Any such rule must be scoped to interactive sessions, which is a
+  carve-out the per-credential ceiling work (`scope-gates.md`) would
+  have to express first.
+
+### If it is ever built
+
+The cheap, honest version first: **alert, do not block.** The mismatch
+is already visible to an operator; a notification to the *user* ("your
+session was used from a new location") is the step most of the market
+started with, costs no availability, and does not need elevation at all.
+
+Enforcement, if it follows, belongs as one more `Gate` in
+`scope-gates.md` terms — call it `Gate::StableLocation` — evaluated per
+call from the same cached flags row, applied to interactive origins
+only, and comparing something coarser than an address. It must not
+become the default for every route; the right scope is the same
+sensitive surface this document already gates.
+
 ## Non-goals
 
 - Not step-up MFA/TOTP. Elevation re-proves the *existing* credential;
   adding a second factor is a separate feature that would plug into the
   same `POST /api/auth/elevate` branch list.
+- Not triggered by roaming. The `created_ip` / `last_seen_ip` pair is
+  DETECTION only — see § Suggestion above for why equality would be the
+  wrong rule and why DAV clients could not satisfy it.
 - Not applied outside `/api/admin/*`. Per-resource destructive actions
   (deleting your own files) are grant questions, already answered by
   `authz.require`, and trash makes them recoverable.

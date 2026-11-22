@@ -12,6 +12,7 @@ use crate::common::di::AppState;
 // Re-export CurrentUser from application layer for use in handlers
 pub use crate::application::dtos::user_dto::CurrentUser;
 use crate::application::ports::auth_ports::TokenServicePort;
+use crate::domain::entities::presented_token::PresentedToken;
 use crate::domain::entities::user::UserRole;
 use crate::domain::services::authorization::Subject;
 use crate::infrastructure::services::share_ring;
@@ -264,6 +265,18 @@ pub enum AuthError {
 
     #[error("Authentication service unavailable")]
     AuthServiceUnavailable,
+
+    /// The live-role re-check could not read the user record, so the
+    /// caller's role is unknown. Distinct from [`Self::AccountInactive`]
+    /// on purpose: that one is a 401 and means "your account is gone",
+    /// which during a database blip would log out every session instead
+    /// of asking them to retry. See [`LiveRole::Indeterminate`].
+    ///
+    /// Also distinct from [`Self::AuthServiceUnavailable`], which is a
+    /// misconfiguration (no auth service wired at all) and stays a 500 —
+    /// retrying it will never help.
+    #[error("Unable to verify account state")]
+    LiveRoleIndeterminate { retryable: bool },
 }
 
 impl IntoResponse for AuthError {
@@ -295,6 +308,9 @@ impl IntoResponse for AuthError {
                     "Authentication service unavailable",
                 )
             }
+            AuthError::LiveRoleIndeterminate { retryable } => {
+                crate::interfaces::middleware::user::indeterminate_app_error(retryable)
+            }
         };
         app.into_response()
     }
@@ -316,6 +332,24 @@ pub async fn auth_middleware(
     mut request: Request,
     next: Next,
 ) -> Result<Response, AuthError> {
+    // Where this request is coming FROM, for `auth.sessions.last_seen_ip`.
+    //
+    // One small allocation per request, which is a deliberate reversal of
+    // the borrow-only treatment `client_ip_display` exists for
+    // (benches/ROUND13.md §H2): the tracker has to OWN the value across
+    // its flush window, so a borrow cannot work. It buys the
+    // created-from / used-from mismatch that is the credential-theft
+    // signal — and it is one ~16-byte `String` next to a JWT validation
+    // and a cache read, not next to nothing.
+    //
+    // Computed before the credential arms because three of them stamp,
+    // and recomputing per arm would be the actual waste. `None` when no
+    // address can be resolved, which leaves the column untouched rather
+    // than clearing it.
+    let observed_ip: Option<String> =
+        Some(super::trusted_proxy::client_ip_display(&request, false).to_string())
+            .filter(|s| !s.is_empty() && s != "-");
+
     // Borrow the Authorization header straight from the request instead of
     // taking axum's `HeaderMap` extractor, which clones the whole map (~2
     // allocs) on every authenticated request purely to read it
@@ -379,15 +413,30 @@ pub async fn auth_middleware(
                             // deletion and demotion take effect within the flags-cache
                             // TTL instead of waiting for token expiry. The returned
                             // role is authoritative — never the frozen JWT claim.
+                            // Used here AND carried on the `CurrentUser` built
+                            // below, which is the single channel a handler or a
+                            // `Gate` reads it from.
+                            let presented = PresentedToken {
+                                issued_at: Some(claims.iat),
+                                session_id: claims.sid,
+                            };
                             let role = match resolve_live_role(
                                 auth_service.auth_application_service.as_ref(),
                                 user_id,
                                 &claims.role,
+                                presented,
                             )
                             .await
                             {
                                 LiveRole::Active(role) => role,
                                 LiveRole::Revoked => return Err(AuthError::AccountInactive),
+                                // Unknown, not inactive. `AccountInactive`
+                                // is a 401, which would tell a Bearer
+                                // client its token is dead and send it to
+                                // re-authenticate over a blip.
+                                LiveRole::Indeterminate { retryable } => {
+                                    return Err(AuthError::LiveRoleIndeterminate { retryable });
+                                }
                             };
                             // `username`/`email` are `Arc<str>` refcount
                             // bumps out of the cached claims; `role` is an
@@ -395,6 +444,7 @@ pub async fn auth_middleware(
                             // (the `Arc::new`) instead of 4.
                             let current_user = Arc::new(CurrentUser {
                                 id: user_id,
+                                token: presented,
                                 username: Arc::clone(&claims.username),
                                 email: Arc::clone(&claims.email),
                                 role,
@@ -412,7 +462,7 @@ pub async fn auth_middleware(
                             if let (Some(sid), Some(tracker)) =
                                 (claims.sid, state.last_seen_tracker.as_ref())
                             {
-                                tracker.stamp(sid);
+                                tracker.stamp(sid, observed_ip.clone());
                             }
                             return Ok(next.run(request).await);
                         }
@@ -453,12 +503,123 @@ pub async fn auth_middleware(
                                 "App password authentication successful for user: {}",
                                 uname
                             );
+
+                            // Re-check the LIVE user record, exactly as the
+                            // Bearer and cookie branches do.
+                            //
+                            // This branch had no live check at all, and the
+                            // verification it trusts is cached for
+                            // `BASIC_AUTH_CACHE_TTL_SECS` (300 s) keyed on
+                            // the username+password hash — so a deactivated
+                            // account kept full WebDAV / CalDAV / CardDAV
+                            // access for up to five minutes after an admin
+                            // disabled it, and a demoted admin kept the
+                            // cached `role` just as long. Caught by
+                            // `tests/api/auth_doors_deactivated_account.hurl`,
+                            // where a PROPFIND answered 207 after
+                            // deactivation.
+                            //
+                            // The account check inside `verify_basic_auth`
+                            // cannot close this: it runs on a cache MISS,
+                            // which is precisely what a client that just
+                            // authenticated does not produce. This read is
+                            // the `UserFlags` moka entry every Bearer
+                            // request already pays for, and deactivation
+                            // invalidates it eagerly, so the refusal is
+                            // immediate rather than TTL-bounded.
+                            //
+                            // `None` for the issued-at: Basic auth carries
+                            // no JWT, so the revocation cutoff cannot apply
+                            // here — an app password is revoked by deleting
+                            // it, not by `sessions_valid_from`.
+                            //
+                            // ⚠️  HOT PATH — read before adding anything here.
+                            //
+                            // This runs on EVERY WebDAV / NextCloud / CalDAV
+                            // / CardDAV request, and those clients are far
+                            // chattier than the SPA: a sync pass is one
+                            // PROPFIND per folder, and desktop clients poll
+                            // continuously. Whatever sits in this branch is
+                            // multiplied by that traffic.
+                            //
+                            // What makes the check affordable:
+                            //   * `get_user_flags` is a moka hit in the
+                            //     common case — no DB round trip at all.
+                            //   * On a miss it is ONE single-row lookup by
+                            //     primary key of five small columns (no
+                            //     `image`), and `try_get_with` coalesces
+                            //     concurrent misses for the same user into a
+                            //     single query — so twenty parallel
+                            //     PROPFINDs on a cold entry cost one.
+                            //   * The miss rate is therefore ~one tiny query
+                            //     per active user per `USER_FLAGS_CACHE_TTL`
+                            //     (30 s), which is the same cost every
+                            //     Bearer request has always paid.
+                            //
+                            // So: do NOT add an uncached read, a second
+                            // query, or anything per-request that touches
+                            // the database here. If a new account property
+                            // must be enforced, put it on `UserFlags` so it
+                            // rides the existing cached read — that is
+                            // precisely why `sessions_valid_from` was added
+                            // as a column there rather than as its own
+                            // lookup.
+                            // Deny-by-default if there is no auth service to
+                            // ask: without it the account state cannot be
+                            // verified, and an unverifiable account must not
+                            // be admitted. `AuthServiceUnavailable` is a 500
+                            // because it is a misconfiguration, not a blip.
+                            let Some(auth_svc) = state.auth_service.as_ref() else {
+                                return Err(AuthError::AuthServiceUnavailable);
+                            };
+                            let role = match crate::interfaces::middleware::user::resolve_live_role(
+                                auth_svc.auth_application_service.as_ref(),
+                                user_id,
+                                &role,
+                                // An app password is not a JWT: no `iat`,
+                                // no `sid`. So neither revocation form
+                                // reaches it — it is revoked by DELETING
+                                // it, which the 300 s verification cache
+                                // bounds. `active` and the live role,
+                                // which is what this call is for, apply
+                                // regardless.
+                                crate::domain::entities::presented_token::PresentedToken::default(),
+                            )
+                            .await
+                            {
+                                crate::interfaces::middleware::user::LiveRole::Active(r) => r,
+                                crate::interfaces::middleware::user::LiveRole::Revoked => {
+                                    tracing::info!(
+                                        target: "audit",
+                                        event = "auth.login_rejected",
+                                        reason = "account_not_live",
+                                        origin = "app_password",
+                                        caller_id = %user_id,
+                                        "👮🏻‍♂️ app-password request refused — account is no longer active",
+                                    );
+                                    if is_dav_path(request.uri().path()) {
+                                        return Ok(dav_basic_auth_challenge(
+                                            "Invalid username or app password",
+                                        ));
+                                    }
+                                    return Err(AuthError::AccountInactive);
+                                }
+                                crate::interfaces::middleware::user::LiveRole::Indeterminate {
+                                    retryable,
+                                } => {
+                                    return Err(AuthError::LiveRoleIndeterminate { retryable });
+                                }
+                            };
+
                             // App-password sessions are always unbound —
                             // they belong to NC clients / CLI / mobile
                             // tools without WebCrypto. DPoP middleware
                             // exempts them.
                             let current_user = Arc::new(CurrentUser {
                                 id: user_id,
+                                // An app password is not a JWT: no `sid`, no
+                                // `iat`. Revoked by deleting it.
+                                token: PresentedToken::default(),
                                 username: uname,
                                 email,
                                 role,
@@ -520,16 +681,24 @@ pub async fn auth_middleware(
                         // revocation we fall through (rather than erroring) so the
                         // browser receives the standard 401 and redirects to
                         // /login, exactly like an invalid or expired cookie.
+                        // Same as the Bearer branch: used here and carried on the
+                        // `CurrentUser` built below.
+                        let presented = PresentedToken {
+                            issued_at: Some(claims.iat),
+                            session_id: claims.sid,
+                        };
                         match resolve_live_role(
                             auth_service.auth_application_service.as_ref(),
                             user_id,
                             &claims.role,
+                            presented,
                         )
                         .await
                         {
                             LiveRole::Active(role) => {
                                 let current_user = Arc::new(CurrentUser {
                                     id: user_id,
+                                    token: presented,
                                     username: Arc::clone(&claims.username),
                                     email: Arc::clone(&claims.email),
                                     role,
@@ -545,12 +714,22 @@ pub async fn auth_middleware(
                                 if let (Some(sid), Some(tracker)) =
                                     (claims.sid, state.last_seen_tracker.as_ref())
                                 {
-                                    tracker.stamp(sid);
+                                    tracker.stamp(sid, observed_ip.clone());
                                 }
                                 return Ok(next.run(request).await);
                             }
                             LiveRole::Revoked => {
                                 // Fall through to the unauthenticated 401 / login redirect.
+                            }
+                            // Must NOT fall through. Falling through means
+                            // 401 and a redirect to /login — so a database
+                            // blip would log out every browser session at
+                            // once, which is the mass-lockout the old
+                            // fail-open arm was there to avoid. Answer
+                            // 503 and let the SPA retry with the cookie it
+                            // already has.
+                            LiveRole::Indeterminate { retryable } => {
+                                return Err(AuthError::LiveRoleIndeterminate { retryable });
                             }
                         }
                     }
@@ -598,6 +777,8 @@ pub async fn auth_middleware(
     // "anonymous implies a share credential" structural rather than checked.
     if let Some(ring) = request.extensions().get::<ShareRing>().cloned() {
         let current_user = Arc::new(CurrentUser {
+            // A share ring is not a session: no `sid`, no `iat`.
+            token: PresentedToken::default(),
             // The ring's visitor id: stable across this visit, matching no
             // `auth.users` row. Logged as `visitor_id`, never `user_id`.
             id: ring.0.visitor_id,
@@ -693,6 +874,8 @@ mod tests {
             email: "".into(),
             role: SmolStr::new(role),
             dpop_jkt: None,
+            // These tests assert on role resolution, not on revocation.
+            token: PresentedToken::default(),
         }
     }
 

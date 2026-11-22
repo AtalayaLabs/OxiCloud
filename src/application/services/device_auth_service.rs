@@ -38,6 +38,28 @@ const DEVICE_CODE_BYTES: usize = 32;
 const USER_CODE_LETTER_LEN: usize = 4;
 const USER_CODE_DIGIT_LEN: usize = 4;
 
+/// How many of a user's sessions to scan for device-origin rows.
+///
+/// Generous by design: a person has a handful of devices, and the
+/// alternative to a limit is an unbounded read on a user-triggered
+/// endpoint. If someone genuinely exceeds this they have a bigger
+/// problem than a truncated list.
+const DEVICE_LIST_LIMIT: i64 = 200;
+
+/// Recover the client name `approve()` stamped into `user_agent`.
+///
+/// It is written as `device:{client_name}`, so the prefix doubles as
+/// the marker that a row came from the device flow. Falls back to the
+/// raw value if the prefix is missing — a session whose user_agent was
+/// set by something else should still render as itself rather than as
+/// an empty cell.
+fn device_client_name(user_agent: Option<&str>) -> String {
+    match user_agent {
+        Some(ua) => ua.strip_prefix("device:").unwrap_or(ua).to_string(),
+        None => "unknown device".to_string(),
+    }
+}
+
 pub struct DeviceAuthService {
     device_code_storage: Arc<DeviceCodePgRepository>,
     token_service: Arc<JwtTokenService>,
@@ -45,6 +67,17 @@ pub struct DeviceAuthService {
     session_storage: Arc<SessionPgRepository>,
     /// Base URL of the server (e.g. "https://cloud.example.com")
     base_url: String,
+    /// Narrow capability to drop a user's cached flags, so revoking a
+    /// device takes effect on its next request instead of within the
+    /// cache TTL. A port rather than the whole auth service: this
+    /// service revokes sessions, it has no business minting them.
+    flags_invalidator:
+        Arc<dyn crate::application::ports::authorization_ports::UserFlagsInvalidatorPort>,
+    /// `OXICLOUD_REQUIRE_VERIFIED_EMAIL`, snapshotted like
+    /// `AuthApplicationService` does. Needed because approving a device
+    /// code mints a session, so this door owes the same account checks
+    /// as every other one.
+    require_verified_email: bool,
 }
 
 impl DeviceAuthService {
@@ -54,6 +87,10 @@ impl DeviceAuthService {
         user_storage: Arc<UserPgRepository>,
         session_storage: Arc<SessionPgRepository>,
         base_url: String,
+        require_verified_email: bool,
+        flags_invalidator: Arc<
+            dyn crate::application::ports::authorization_ports::UserFlagsInvalidatorPort,
+        >,
     ) -> Self {
         Self {
             device_code_storage,
@@ -61,6 +98,8 @@ impl DeviceAuthService {
             user_storage,
             session_storage,
             base_url,
+            require_verified_email,
+            flags_invalidator,
         }
     }
 
@@ -184,6 +223,24 @@ impl DeviceAuthService {
         // Fetch user to generate tokens
         let user = self.user_storage.get_user_by_id(user_id).await?;
 
+        // Account checks. This door ran none of them: approving a device
+        // code minted a session for a deactivated account, or one with an
+        // unverified address under `OXICLOUD_REQUIRE_VERIFIED_EMAIL`,
+        // because it went from the user row straight to `Session::new`.
+        //
+        // The same function the password and OPAQUE doors use — this
+        // service holds no `AuthApplicationService`, and a second copy of
+        // the rule here is exactly how the door came to skip it.
+        // `admit` because this door MINTS a session; the proof is what
+        // `Session::new` requires, so the check cannot be skipped here
+        // without failing to compile.
+        let admitted = crate::application::services::auth_application_service::admit(
+            user,
+            self.require_verified_email,
+            "device",
+        )?;
+        let user = admitted.user();
+
         // Generate internal JWT access token + refresh token. Device-
         // authorization sessions (RFC 8628) are for CLI / TV / device
         // clients that don't run WebCrypto — always unbound (`None`
@@ -196,9 +253,9 @@ impl DeviceAuthService {
         // (`docs/plan/sessions.md`).
         let refresh_token = self.token_service.generate_refresh_token();
         let session = Session::new(
-            user_id,
+            &admitted,
             refresh_token.clone(),
-            client_ip, // ip_address — approver's browser IP
+            client_ip, // created_ip — approver's browser IP
             Some(format!("device:{}", dc.client_name())), // user_agent
             self.token_service.refresh_token_expiry_days(),
             Uuid::new_v4(),
@@ -206,7 +263,7 @@ impl DeviceAuthService {
         );
         let access_token =
             self.token_service
-                .generate_access_token(&user, Some(session.id()), None)?;
+                .generate_access_token(user, Some(session.id()), None)?;
         self.session_storage.create_session(session).await?;
 
         // Store tokens on the device code entity
@@ -313,24 +370,65 @@ impl DeviceAuthService {
     }
 
     // ========================================================================
-    // 7. List — user's authorized devices (for UI)
+    // 7. List — the user's CONNECTED devices
     // ========================================================================
 
+    /// Devices that actually hold a credential, read from
+    /// `auth.sessions WHERE origin = 'device'`.
+    ///
+    /// This used to read `auth.device_codes`, which made it a list of
+    /// things that are NOT connected. Four facts combined to produce
+    /// that:
+    ///
+    /// 1. [`Self::approve`] creates a `Session` with
+    ///    `origin = Device` — the durable record of a connected device.
+    /// 2. [`Self::poll`] DELETES the `device_codes` row once the tokens
+    ///    are collected, deliberately, so plain-text tokens do not
+    ///    linger in the database.
+    /// 3. this listed `device_codes`, unfiltered by status;
+    /// 4. [`Self::revoke_device`] deleted a `device_codes` row.
+    ///
+    /// So a device that had actually connected was absent from its own
+    /// list and unrevokable from it, while the rows that DID appear were
+    /// authorizations nobody had collected yet. The session row is the
+    /// one that matters and it carries more besides: genuine liveness,
+    /// and both IP columns.
+    ///
+    /// Revoked sessions are excluded — a revoked device is not a
+    /// connected one. Expired-but-unrevoked rows are included and
+    /// labelled, because "this stopped working yesterday" is something
+    /// an operator wants to see rather than have silently vanish.
     pub async fn list_user_devices(
         &self,
         user_id: Uuid,
     ) -> Result<Vec<DeviceInfoDto>, DomainError> {
-        let codes = self.device_code_storage.list_by_user(user_id).await?;
-        Ok(codes
+        // Reuses the admin panel's lister rather than adding a near-copy
+        // query. `include_revoked = false` does the filtering that
+        // matters in SQL; the `origin` filter happens here because a
+        // user has a handful of sessions, not thousands, and a second
+        // query shape would have to be kept in step with this one.
+        let sessions = self
+            .session_storage
+            .list_sessions_paginated(Some(user_id), false, DEVICE_LIST_LIMIT, 0)
+            .await?;
+
+        Ok(sessions
             .into_iter()
-            .map(|dc| DeviceInfoDto {
-                id: dc.id().to_string(),
-                client_name: dc.client_name().to_string(),
-                scopes: dc.scopes().to_string(),
-                status: dc.status().as_str().to_string(),
-                created_at: dc.created_at().to_rfc3339(),
-                authorized_at: dc.authorized_at().map(|t| t.to_rfc3339()),
-                expires_at: dc.expires_at().to_rfc3339(),
+            .filter(|s| s.origin() == crate::domain::entities::session::SessionOrigin::Device)
+            .map(|s| DeviceInfoDto {
+                id: s.id().to_string(),
+                client_name: device_client_name(s.user_agent()),
+                // `created_at` on a device session IS the moment the
+                // human approved it: `approve()` is what creates the
+                // row. The device's own earlier request-time lived on
+                // the `device_codes` row and is gone with it.
+                created_at: s.created_at().to_rfc3339(),
+                expires_at: s.expires_at().to_rfc3339(),
+                last_seen_at: s.last_seen_at().to_rfc3339(),
+                created_ip: s.created_ip().map(str::to_owned),
+                last_seen_ip: s.last_seen_ip().map(str::to_owned),
+                is_bound: s.dpop_jkt().is_some(),
+                status: if s.is_expired() { "expired" } else { "active" }.to_string(),
             })
             .collect())
     }
@@ -339,18 +437,55 @@ impl DeviceAuthService {
     // 8. Revoke — user revokes a device authorization
     // ========================================================================
 
+    /// Revoke a connected device by revoking its SESSION.
+    ///
+    /// `device_id` is a session id, matching what [`Self::list_user_devices`]
+    /// returns. It used to delete a `device_codes` row, which could only
+    /// ever cancel an authorization the device had not collected yet —
+    /// the one case where there is nothing to revoke.
+    ///
+    /// Revoking the session is what makes this stop a device that IS
+    /// connected: per-session revocation puts the `sid` in the
+    /// revoked set, so the access token it already holds is refused on
+    /// its next request rather than living out its hour.
+    ///
+    /// Ownership is checked against the caller's own device sessions, so
+    /// a caller cannot revoke another user's device by guessing an id —
+    /// and an id that is already revoked is no longer in that list,
+    /// which is what makes a second revoke answer 404 rather than
+    /// silently succeeding.
     pub async fn revoke_device(&self, device_id: Uuid, user_id: Uuid) -> Result<(), DomainError> {
-        // Verify ownership before deleting
-        let devices = self.device_code_storage.list_by_user(user_id).await?;
-        let found = devices.iter().any(|d| d.id() == device_id);
-        if !found {
+        let devices = self.list_user_devices(user_id).await?;
+        let owned = devices.iter().any(|d| d.id == device_id.to_string());
+        if !owned {
+            tracing::info!(
+                target: "audit",
+                event = "auth.device_revoke_rejected",
+                reason = "not_found_or_not_owned",
+                caller_id = %user_id,
+                session_id = %device_id,
+                "👮🏻‍♂️ device revoke refused — no connected device with that id for this user",
+            );
             return Err(DomainError::new(
                 ErrorKind::NotFound,
-                "DeviceCode",
-                "Device authorization not found or not owned by you",
+                "Device",
+                "Connected device not found or not owned by you",
             ));
         }
-        self.device_code_storage.delete_by_id(device_id).await
+
+        self.session_storage.revoke_session(device_id).await?;
+        // Drop the cached flags so the revoked `sid` is in the set on the
+        // device's very next request, not within the 30 s TTL.
+        self.flags_invalidator.invalidate_user_flags(user_id).await;
+
+        tracing::info!(
+            target: "audit",
+            event = "auth.device_revoked",
+            caller_id = %user_id,
+            session_id = %device_id,
+            "👮🏻‍♂️ connected device revoked by its owner",
+        );
+        Ok(())
     }
 }
 
@@ -416,16 +551,47 @@ impl DevicePollError {
 // Additional DTOs (used by service, not in the handler module)
 // ============================================================================
 
-/// DTO for listing authorized devices in the user's profile.
+/// One CONNECTED device, projected from its session row.
+///
+/// Two fields of the `device_codes`-era shape are gone, and their
+/// absence is the point:
+///
+/// * `scopes` — recorded on the `device_codes` row, which `poll()`
+///   deletes once the tokens are collected, so a connected device's
+///   approved scopes are not retrievable. They are also not enforced
+///   yet (`scope-gates.md`); the field returns when a session carries a
+///   `ScopeSet` and the value is real.
+/// * `authorized_at` — would duplicate `created_at`, since the session
+///   row IS created at the moment of approval. The device's own earlier
+///   request time lived on the deleted row.
 #[derive(Debug, serde::Serialize, utoipa::ToSchema)]
 pub struct DeviceInfoDto {
+    /// The SESSION id — what `DELETE /api/auth/device/devices/{id}`
+    /// takes. Previously a `device_codes` id, which named a row that no
+    /// longer existed for any device that had actually connected.
     pub id: String,
     pub client_name: String,
-    pub scopes: String,
+    /// `active`, or `expired` for a row past `expires_at` that nobody
+    /// revoked. Revoked sessions are not listed at all.
     pub status: String,
+    /// When the device was AUTHORISED — the approval moment.
     pub created_at: String,
-    pub authorized_at: Option<String>,
     pub expires_at: String,
+    /// Genuine liveness, maintained per request. This is the field that
+    /// makes the list answer "is this thing still talking to me?",
+    /// which the old one could not.
+    pub last_seen_at: String,
+    /// Where the human approved it from. The device never reaches the
+    /// approval endpoint, so this is the approver's browser.
+    pub created_ip: Option<String>,
+    /// Where the device is actually being used from, to within the
+    /// last-seen flush interval. A mismatch against `created_ip` is
+    /// worth an operator's attention.
+    pub last_seen_ip: Option<String>,
+    /// Whether the session is DPoP-bound. Device-flow sessions are
+    /// unbound by design (CLI and TV clients have no WebCrypto), so a
+    /// `true` here would be surprising and worth surfacing.
+    pub is_bound: bool,
 }
 
 // ============================================================================

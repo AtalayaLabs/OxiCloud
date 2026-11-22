@@ -18,6 +18,7 @@ mod magic_link_token_pg_repository;
 mod nextcloud_object_id_repository;
 mod notification_pg_repository;
 mod opaque_pg_repository;
+pub mod pg_error;
 pub mod playlist_pg_repository;
 mod recent_changes_pg_repository;
 mod recent_items_pg_repository;

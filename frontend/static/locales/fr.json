@@ -1489,7 +1489,6 @@
       "empty": "Aucune session ne correspond au filtre actuel.",
       "revoke_self_confirm": "⚠️  Il s'agit de VOTRE session actuelle. La révoquer vous déconnectera immédiatement et vous devrez vous reconnecter. Continuer ?",
       "revoke_confirm": "Révoquer cette session ? La prochaine requête depuis ce navigateur renverra 401.",
-      "revoke_lag_notice": "La révocation d'une session coupe immédiatement son chemin de rafraîchissement, mais tout JWT déjà présent dans le navigateur reste valide pendant jusqu'à {{secs}} secondes, jusqu'à la prochaine tentative de rafraîchissement.",
       "origin": {
         "password": "Mot de passe",
         "opaque": "OPAQUE",

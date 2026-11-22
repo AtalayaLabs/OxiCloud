@@ -95,6 +95,68 @@ let emailOverride = null;
 // new sub gets bound). Reset by POSTing an empty/null body.
 let subOverride = null;
 
+// The `sid` claim of the most recently issued id_token, so the Hurl
+// suite can target OxiCloud's per-session BCL branch
+// (`revoke_sessions_by_oidc_sid`) with a sid that actually MATCHES a
+// session. Without it only the sub-only revoke-all branch was reachable,
+// and the branch real IdPs normally use had no positive coverage.
+//
+// Captured off the wire rather than out of the library: the sid is
+// minted inside node-oidc-provider and OxiCloud deliberately never
+// echoes it back (`dto_never_leaks_oidc_sid` pins that the session DTO
+// must not carry it, not even a prefix), so neither side can be asked.
+// But an id_token is a plain JWT by specification, so reading the claim
+// from the token endpoint's own response depends only on the OIDC wire
+// format — not on an oidc-provider internal that a minor bump could
+// move.
+//
+// Read via `GET /control/last-sid`, which the test calls right after the
+// login whose session it wants to name. Order matters: a later login
+// overwrites this, which is exactly what lets the suite capture Bob's
+// FIRST session sid and then establish a second one that must survive.
+let lastIssuedSid = null;
+
+/// Wrap `res` so the token endpoint's response body can be inspected on
+/// its way out, recording the id_token's `sid`. Transparent: every chunk
+/// is passed straight through, and a body that is not JSON or carries no
+/// id_token is ignored rather than treated as an error — the token
+/// endpoint also serves refresh and client-credentials responses.
+function captureSid(res) {
+  const chunks = [];
+  const origWrite = res.write.bind(res);
+  const origEnd = res.end.bind(res);
+  const collect = (chunk) => {
+    // `end()` accepts a callback as its first argument, so only
+    // buffer-ables are collected.
+    if (typeof chunk === 'string' || Buffer.isBuffer(chunk)) {
+      chunks.push(Buffer.from(chunk));
+    }
+  };
+  res.write = (chunk, ...rest) => {
+    collect(chunk);
+    return origWrite(chunk, ...rest);
+  };
+  res.end = (chunk, ...rest) => {
+    collect(chunk);
+    try {
+      const parsed = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+      if (parsed.id_token) {
+        const claims = JSON.parse(
+          Buffer.from(parsed.id_token.split('.')[1], 'base64url').toString('utf8'),
+        );
+        if (claims.sid) {
+          lastIssuedSid = claims.sid;
+          // eslint-disable-next-line no-console
+          console.log(`[fake-idp] recorded id_token sid=${claims.sid} sub=${claims.sub}`);
+        }
+      }
+    } catch {
+      // Not a JSON token response, or no id_token in it. Nothing to record.
+    }
+    return origEnd(chunk, ...rest);
+  };
+}
+
 // Pre-generate the signing keypair. oidc-provider v9 accepts private
 // JWKs via configuration.jwks and exports the public halves at
 // /jwks.json; keeping our own reference to the private key means we
@@ -269,6 +331,15 @@ async function handleControl(req, res) {
     res.setHeader('content-type', 'application/json');
     return res.end(JSON.stringify({ email_verified: false }));
   }
+  // The `sid` of the most recently issued id_token — the handle the test
+  // needs to aim BCL at ONE session. Returns `null` before any login, so
+  // a test that forgets to establish a session first gets an obvious
+  // null rather than a stale sid from an earlier flow.
+  if (req.method === 'GET' && url.pathname === '/control/last-sid') {
+    res.statusCode = 200;
+    res.setHeader('content-type', 'application/json');
+    return res.end(JSON.stringify({ sid: lastIssuedSid }));
+  }
   // Swap the IdP-returned sub (accountId) to test the OIDC-linking
   // scenarios that need a fresh, not-yet-known identity: self-service
   // link happy path, +alias normalization link, auto-link happy path,
@@ -434,6 +505,13 @@ const server = http.createServer(async (req, res) => {
 
     if (autoMatch) {
       return await handleAuto(req, res);
+    }
+
+    // Record the id_token `sid` on the way out of the token endpoint so
+    // the suite can name one session for per-session BCL. Wrapping here
+    // rather than inside `oidcHandler` keeps the provider untouched.
+    if (req.method === 'POST' && url.pathname === '/token') {
+      captureSid(res);
     }
 
     return oidcHandler(req, res);

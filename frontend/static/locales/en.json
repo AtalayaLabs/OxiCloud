@@ -1368,6 +1368,7 @@
       "col_created": "Created",
       "col_expires": "Expires",
       "col_ip": "IP",
+      "ip_roamed_hint": "Last used from a different address than it was created from. Normal for a roaming client; worth a look on a long-lived session.",
       "col_user_agent": "User agent",
       "col_bound": "Bound",
       "col_status": "Status",
@@ -1385,7 +1386,6 @@
       "empty": "No sessions match the current filter.",
       "revoke_self_confirm": "⚠️  This is YOUR current session. Revoking it will log YOU out immediately and you'll have to sign back in. Continue?",
       "revoke_confirm": "Revoke this session? The next request from that browser will 401.",
-      "revoke_lag_notice": "Revoking a session breaks its refresh path immediately, but any JWT already in the browser stays valid for up to {{secs}} seconds until the next refresh attempt.",
       "origin": {
         "password": "Password",
         "opaque": "OPAQUE",

@@ -58,6 +58,27 @@ pub struct SessionCaller<'a> {
     /// logged in via an unbound path (legacy password without DPoP,
     /// pre-bind OIDC redirect, etc.).
     pub dpop_jkt: Option<&'a str>,
+    /// The caller's OWN session id, from the JWT `sid` claim
+    /// (`CurrentUser::token`).
+    ///
+    /// The primary input to [`SessionSummaryDto::is_current`], with
+    /// `dpop_jkt` as the fallback. Identity beats correlation: a session
+    /// id names exactly one row, whereas a thumbprint identifies a KEY —
+    /// and two sessions bound to the same key would both light up.
+    ///
+    /// Added because the thumbprint alone made the highlight unavailable
+    /// to most callers: it needs BOTH sides bound, so every non-DPoP
+    /// session (password login without WebCrypto, NextCloud clients,
+    /// CLI tools, pre-bind OIDC redirects) saw no "this is you" row at
+    /// all. Tolerable on the admin panel, where the stakes are an
+    /// administrator's own branch; not tolerable on
+    /// `GET /api/auth/sessions`, where the flag is what stands between a
+    /// user and revoking the laptop they are holding.
+    ///
+    /// `None` for a credential that is not a JWT — an app password over
+    /// Basic auth carries no `sid` — in which case the fallback applies
+    /// and, failing that, no row highlights.
+    pub session_id: Option<Uuid>,
 }
 
 /// Wire shape for `GET /api/admin/sessions`. Contains everything the
@@ -80,7 +101,19 @@ pub struct SessionSummaryDto {
     /// capped at the access-token TTL. The admin table renders a
     /// "last seen X ago" column off this field.
     pub last_seen_at: DateTime<Utc>,
-    pub ip_address: Option<String>,
+    /// IP the session was CREATED from: the login IP, or for
+    /// `origin = device` the approver's browser IP. Inherited across
+    /// rotation, so it stays the family's authorisation point rather
+    /// than drifting to "where it last refreshed".
+    pub created_ip: Option<String>,
+    /// IP the session was last USED from, to within the last-seen
+    /// flush interval. `None` until it serves a request.
+    ///
+    /// Rendered beside `created_ip` because **the mismatch is the
+    /// signal**: a session authorised from one address and now used
+    /// from another is the shape of a stolen credential, which neither
+    /// column shows alone.
+    pub last_seen_ip: Option<String>,
     pub user_agent: Option<String>,
     /// `true` iff the session is DPoP-bound. Rendered as a lock icon
     /// in the admin table. Complements the auth-badges surface.
@@ -117,7 +150,7 @@ pub struct SessionSummaryDto {
     // sid identifies the row's upstream session and stays server-side
     // (used by Back-Channel Logout matching). Exposing even a prefix
     // earns no operator utility over what `id` / `created_at` /
-    // `ip_address` / `user_agent` already give. `origin` below answers
+    // `created_ip` / `user_agent` already give. `origin` below answers
     // "how did this session start?" cleanly.
     /// How the session was minted — see [`SessionOrigin`]. Set at
     /// INSERT time by the login handler and carried over on refresh
@@ -135,7 +168,7 @@ pub struct SessionSummaryDto {
 
 impl From<Session> for SessionSummaryDto {
     fn from(s: Session) -> Self {
-        Self::from_session(s, None)
+        Self::from_session(s, None, None)
     }
 }
 
@@ -145,14 +178,27 @@ impl SessionSummaryDto {
     /// the panel highlight the caller's own row; pass `None` when
     /// the caller is unbound (no jkt = no correlation) or from
     /// non-admin contexts.
-    pub fn from_session(s: Session, caller_jkt: Option<&str>) -> Self {
+    pub fn from_session(
+        s: Session,
+        caller_jkt: Option<&str>,
+        caller_session_id: Option<Uuid>,
+    ) -> Self {
         let is_revoked = s.is_revoked();
         let is_expired = s.is_expired();
         let is_active = !is_revoked && !is_expired;
         let jkt = s.dpop_jkt().map(|s| s.to_owned());
         let dpop_jkt_prefix = jkt.as_ref().map(|t| t.chars().take(8).collect::<String>());
-        let is_current = match (jkt.as_deref(), caller_jkt) {
-            (Some(row), Some(caller)) => row == caller,
+        // Session id first, thumbprint second.
+        //
+        // The id is an identity match — it names exactly this row. The
+        // thumbprint is a correlation: it identifies a KEY, so two
+        // sessions bound to the same key would both claim to be current.
+        // The fallback stays because a DPoP-bound caller whose token
+        // predates `sid` still correlates, and losing the highlight for
+        // them would be a regression.
+        let is_current = match (caller_session_id, jkt.as_deref(), caller_jkt) {
+            (Some(caller_sid), _, _) => s.id() == caller_sid,
+            (None, Some(row), Some(caller)) => row == caller,
             _ => false,
         };
         // Presence check gated on lifecycle — a revoked or expired
@@ -175,7 +221,8 @@ impl SessionSummaryDto {
             created_at: s.created_at(),
             expires_at: s.expires_at(),
             last_seen_at: s.last_seen_at(),
-            ip_address: s.ip_address().map(str::to_owned),
+            created_ip: s.created_ip().map(str::to_owned),
+            last_seen_ip: s.last_seen_ip().map(str::to_owned),
             user_agent: s.user_agent().map(str::to_owned),
             is_bound: jkt.is_some(),
             dpop_jkt_prefix,
@@ -191,11 +238,30 @@ impl SessionSummaryDto {
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// A session needs an `AdmittedCaller`, so a test needs one too.
+    /// `admitted_for_test` is `#[cfg(test)]`-only — see its doc for why
+    /// it is deliberately not behind `test_utils`.
+    fn admitted() -> crate::domain::entities::admitted_caller::AdmittedCaller {
+        let user = crate::domain::entities::user::User::new(
+            "session-fixture@example.com".to_string(),
+            Some("session-fixture".to_string()),
+            Some("hash".to_string()),
+            None,
+            None,
+            None,
+            crate::domain::entities::user::UserRole::User,
+            0,
+            false,
+        )
+        .expect("fixture user");
+        crate::domain::entities::admitted_caller::AdmittedCaller::admitted_for_test(user)
+    }
+
     use chrono::Duration;
 
     fn base(revoked: bool, jkt: Option<&str>) -> Session {
         let mut s = Session::new(
-            Uuid::new_v4(),
+            &admitted(),
             "refresh-token".to_string(),
             Some("192.0.2.1".to_string()),
             Some("Mozilla/5.0".to_string()),
@@ -228,7 +294,57 @@ mod tests {
             None,
             crate::domain::entities::session::SessionOrigin::Oidc,
             Utc::now(),
+            None,
         )
+    }
+
+    #[test]
+    fn is_current_matches_on_session_id_without_dpop() {
+        // The regression this closes: `is_current` needed BOTH sides
+        // DPoP-bound, so every non-DPoP session — password login without
+        // WebCrypto, NextCloud clients, CLI tools, pre-bind OIDC
+        // redirects — saw no "this is you" row at all. Tolerable on the
+        // admin panel; not on `GET /api/auth/sessions`, where that flag
+        // is what stands between a user and revoking the laptop they are
+        // holding.
+        //
+        // Caught by `auth_own_sessions.hurl` asserting `is_current ==
+        // true` for a plain password login and getting `false`.
+        let s = base(false, None);
+        let own_id = s.id();
+
+        let dto = SessionSummaryDto::from_session(s, None, Some(own_id));
+        assert!(
+            dto.is_current,
+            "a caller holding this very session must see it flagged, DPoP or not",
+        );
+    }
+
+    #[test]
+    fn is_current_is_false_for_another_session_even_with_a_matching_key() {
+        // Session id BEATS thumbprint rather than supplementing it. A
+        // thumbprint identifies a KEY, so two sessions bound to the same
+        // key both used to light up — two "this is you" rows, and a user
+        // who revokes the wrong one. An id names exactly one row.
+        let other = base(false, Some("same-key"));
+        let unrelated_id = Uuid::new_v4();
+
+        let dto = SessionSummaryDto::from_session(other, Some("same-key"), Some(unrelated_id));
+        assert!(
+            !dto.is_current,
+            "the key matched but the session did not — identity must win",
+        );
+    }
+
+    #[test]
+    fn is_current_falls_back_to_dpop_when_the_token_carries_no_sid() {
+        // The fallback is not dead code: a DPoP-bound caller whose token
+        // predates `sid` still correlates, and dropping that would be a
+        // regression for exactly the callers the feature was built for.
+        let s = base(false, Some("bound-key"));
+
+        let dto = SessionSummaryDto::from_session(s, Some("bound-key"), None);
+        assert!(dto.is_current, "thumbprint match must still flag the row");
     }
 
     #[test]
@@ -355,6 +471,7 @@ mod tests {
             None,
             SessionOrigin::Password,
             stale,
+            None,
         );
         let dto = SessionSummaryDto::from(s);
         assert!(!dto.is_online, "1h-idle session must not be online");
@@ -398,6 +515,7 @@ mod tests {
             None,
             SessionOrigin::Password,
             Utc::now(), // last_seen_at fresh
+            None,
         );
         let dto = SessionSummaryDto::from(s);
         assert!(!dto.is_active, "expired session is not active");
@@ -436,6 +554,7 @@ mod tests {
             None,
             crate::domain::entities::session::SessionOrigin::Unknown,
             past,
+            None,
         );
         let dto = SessionSummaryDto::from(s);
         assert!(!dto.is_active);
@@ -460,7 +579,8 @@ mod wire_shape_tests {
             created_at: epoch_to_datetime(1_700_000_000),
             expires_at: epoch_to_datetime(1_700_086_400),
             last_seen_at: epoch_to_datetime(1_700_000_300),
-            ip_address: Some("192.0.2.1".to_string()),
+            created_ip: Some("192.0.2.1".to_string()),
+            last_seen_ip: Some("192.0.2.9".to_string()),
             user_agent: Some("Mozilla/5.0".to_string()),
             is_bound: false,
             dpop_jkt_prefix: None,

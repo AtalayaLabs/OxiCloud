@@ -54,7 +54,7 @@ impl SessionPgRepository {
             row.get("user_id"),
             row.get("refresh_token"),
             row.get("expires_at"),
-            row.get("ip_address"),
+            row.get("created_ip"),
             row.get("user_agent"),
             row.get("created_at"),
             row.get("revoked"),
@@ -64,6 +64,7 @@ impl SessionPgRepository {
             row.get("dpop_jkt"),
             crate::domain::entities::session::SessionOrigin::from_wire(row.get("origin")),
             row.get("last_seen_at"),
+            row.get("last_seen_ip"),
         )
     }
 }
@@ -81,7 +82,7 @@ impl SessionRepository for SessionPgRepository {
                     r#"
                         INSERT INTO auth.sessions (
                             id, user_id, refresh_token, expires_at,
-                            ip_address, user_agent, created_at, revoked, family_id,
+                            created_ip, user_agent, created_at, revoked, family_id,
                             oidc_id_token, oidc_sid, dpop_jkt, origin, last_seen_at
                         ) VALUES (
                             $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14
@@ -92,7 +93,7 @@ impl SessionRepository for SessionPgRepository {
                 .bind(session_clone.user_id())
                 .bind(session_clone.refresh_token())
                 .bind(session_clone.expires_at())
-                .bind(session_clone.ip_address())
+                .bind(session_clone.created_ip())
                 .bind(session_clone.user_agent())
                 .bind(session_clone.created_at())
                 .bind(session_clone.is_revoked())
@@ -154,8 +155,8 @@ impl SessionRepository for SessionPgRepository {
             r#"
             SELECT
                 id, user_id, refresh_token, expires_at,
-                ip_address, user_agent, created_at, revoked, family_id,
-                oidc_id_token, oidc_sid, dpop_jkt, origin, last_seen_at
+                created_ip, user_agent, created_at, revoked, family_id,
+                oidc_id_token, oidc_sid, dpop_jkt, origin, last_seen_at, last_seen_ip
             FROM auth.sessions
             WHERE id = $1
             "#,
@@ -170,7 +171,7 @@ impl SessionRepository for SessionPgRepository {
             row.get("user_id"),
             row.get("refresh_token"),
             row.get("expires_at"),
-            row.get("ip_address"),
+            row.get("created_ip"),
             row.get("user_agent"),
             row.get("created_at"),
             row.get("revoked"),
@@ -180,6 +181,7 @@ impl SessionRepository for SessionPgRepository {
             row.get("dpop_jkt"),
             crate::domain::entities::session::SessionOrigin::from_wire(row.get("origin")),
             row.get("last_seen_at"),
+            row.get("last_seen_ip"),
         ))
     }
 
@@ -193,8 +195,8 @@ impl SessionRepository for SessionPgRepository {
             r#"
             SELECT
                 id, user_id, refresh_token, expires_at,
-                ip_address, user_agent, created_at, revoked, family_id,
-                oidc_id_token, oidc_sid, dpop_jkt, origin, last_seen_at
+                created_ip, user_agent, created_at, revoked, family_id,
+                oidc_id_token, oidc_sid, dpop_jkt, origin, last_seen_at, last_seen_ip
             FROM auth.sessions
             WHERE refresh_token = $1
             "#,
@@ -209,7 +211,7 @@ impl SessionRepository for SessionPgRepository {
             row.get("user_id"),
             row.get("refresh_token"),
             row.get("expires_at"),
-            row.get("ip_address"),
+            row.get("created_ip"),
             row.get("user_agent"),
             row.get("created_at"),
             row.get("revoked"),
@@ -219,6 +221,7 @@ impl SessionRepository for SessionPgRepository {
             row.get("dpop_jkt"),
             crate::domain::entities::session::SessionOrigin::from_wire(row.get("origin")),
             row.get("last_seen_at"),
+            row.get("last_seen_ip"),
         ))
     }
 
@@ -231,8 +234,8 @@ impl SessionRepository for SessionPgRepository {
             r#"
             SELECT
                 id, user_id, refresh_token, expires_at,
-                ip_address, user_agent, created_at, revoked, family_id,
-                oidc_id_token, oidc_sid, dpop_jkt, origin, last_seen_at
+                created_ip, user_agent, created_at, revoked, family_id,
+                oidc_id_token, oidc_sid, dpop_jkt, origin, last_seen_at, last_seen_ip
             FROM auth.sessions
             WHERE user_id = $1
             ORDER BY created_at DESC
@@ -251,7 +254,7 @@ impl SessionRepository for SessionPgRepository {
                     row.get("user_id"),
                     row.get("refresh_token"),
                     row.get("expires_at"),
-                    row.get("ip_address"),
+                    row.get("created_ip"),
                     row.get("user_agent"),
                     row.get("created_at"),
                     row.get("revoked"),
@@ -261,6 +264,7 @@ impl SessionRepository for SessionPgRepository {
                     row.get("dpop_jkt"),
                     crate::domain::entities::session::SessionOrigin::from_wire(row.get("origin")),
                     row.get("last_seen_at"),
+                    row.get("last_seen_ip"),
                 )
             })
             .collect();
@@ -281,8 +285,8 @@ impl SessionRepository for SessionPgRepository {
             r#"
             SELECT
                 id, user_id, refresh_token, expires_at,
-                ip_address, user_agent, created_at, revoked, family_id,
-                oidc_id_token, oidc_sid, dpop_jkt, origin, last_seen_at
+                created_ip, user_agent, created_at, revoked, family_id,
+                oidc_id_token, oidc_sid, dpop_jkt, origin, last_seen_at, last_seen_ip
             FROM auth.sessions
             WHERE family_id = $1 AND created_at > $2
             ORDER BY created_at ASC
@@ -318,8 +322,8 @@ impl SessionRepository for SessionPgRepository {
             r#"
             SELECT
                 id, user_id, refresh_token, expires_at,
-                ip_address, user_agent, created_at, revoked, family_id,
-                oidc_id_token, oidc_sid, dpop_jkt, origin, last_seen_at
+                created_ip, user_agent, created_at, revoked, family_id,
+                oidc_id_token, oidc_sid, dpop_jkt, origin, last_seen_at, last_seen_ip
             FROM auth.sessions
             WHERE ($1::uuid IS NULL OR user_id = $1)
               AND ($2 OR (revoked = false AND expires_at > NOW()))
@@ -343,7 +347,7 @@ impl SessionRepository for SessionPgRepository {
                     row.get("user_id"),
                     row.get("refresh_token"),
                     row.get("expires_at"),
-                    row.get("ip_address"),
+                    row.get("created_ip"),
                     row.get("user_agent"),
                     row.get("created_at"),
                     row.get("revoked"),
@@ -353,6 +357,7 @@ impl SessionRepository for SessionPgRepository {
                     row.get("dpop_jkt"),
                     crate::domain::entities::session::SessionOrigin::from_wire(row.get("origin")),
                     row.get("last_seen_at"),
+                    row.get("last_seen_ip"),
                 )
             })
             .collect();
@@ -370,7 +375,7 @@ impl SessionRepository for SessionPgRepository {
                 let result = sqlx::query(
                     r#"
                         UPDATE auth.sessions
-                        SET revoked = true
+                        SET revoked = true, revoked_at = NOW()
                         WHERE id = $1
                         RETURNING user_id
                         "#,
@@ -406,7 +411,7 @@ impl SessionRepository for SessionPgRepository {
                 let result = sqlx::query(
                     r#"
                         UPDATE auth.sessions
-                        SET revoked = true
+                        SET revoked = true, revoked_at = NOW()
                         WHERE user_id = $1 AND revoked = false
                         "#,
                 )
@@ -445,7 +450,7 @@ impl SessionRepository for SessionPgRepository {
                 let result = sqlx::query(
                     r#"
                     UPDATE auth.sessions
-                       SET revoked = true
+                       SET revoked = true, revoked_at = NOW()
                      WHERE user_id  = $1
                        AND id      != $2
                        AND revoked  = false
@@ -477,7 +482,7 @@ impl SessionRepository for SessionPgRepository {
         let result = sqlx::query(
             r#"
             UPDATE auth.sessions
-            SET revoked = true
+            SET revoked = true, revoked_at = NOW()
             WHERE family_id = $1 AND revoked = false
             "#,
         )
@@ -506,7 +511,7 @@ impl SessionRepository for SessionPgRepository {
         let rows = sqlx::query(
             r#"
             UPDATE auth.sessions
-            SET revoked = true
+            SET revoked = true, revoked_at = NOW()
             WHERE oidc_sid = $1 AND NOT revoked
             RETURNING user_id
             "#,
@@ -567,7 +572,7 @@ impl SessionRepository for SessionPgRepository {
         let result = sqlx::query(
             r#"
             UPDATE auth.sessions
-            SET revoked = true
+            SET revoked = true, revoked_at = NOW()
             WHERE user_id = $1 AND NOT revoked
             "#,
         )
@@ -686,6 +691,21 @@ impl SessionStoragePort for SessionPgRepository {
         let session_clone = new_session.clone();
         with_transaction(&self.pool, "rotate_session", |tx| {
             Box::pin(async move {
+                // Deliberately does NOT stamp `revoked_at`, unlike every
+                // other `SET revoked = true` in this file.
+                //
+                // Rotation is SUPERSESSION, not revocation: the client
+                // asked for fresh tokens and got them. Stamping would put
+                // the parent `sid` into the revoked-sid set, and the
+                // parent's access token is what any request already
+                // in flight is carrying — so a client that refreshes
+                // while other requests are outstanding would see them
+                // fail. The old access token is meant to age out, not to
+                // die the instant its successor is issued.
+                //
+                // The refresh-grace replay (`try_grace_replay`) depends on
+                // the same thing: it re-issues against the parent inside a
+                // grace window, which a revocation stamp would forbid.
                 sqlx::query("UPDATE auth.sessions SET revoked = true WHERE id = $1")
                     .bind(old_session_id)
                     .execute(&mut **tx)
@@ -696,7 +716,7 @@ impl SessionStoragePort for SessionPgRepository {
                     r#"
                         INSERT INTO auth.sessions (
                             id, user_id, refresh_token, expires_at,
-                            ip_address, user_agent, created_at, revoked, family_id,
+                            created_ip, user_agent, created_at, revoked, family_id,
                             oidc_id_token, oidc_sid, dpop_jkt, origin, last_seen_at
                         ) VALUES (
                             $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14
@@ -707,7 +727,7 @@ impl SessionStoragePort for SessionPgRepository {
                 .bind(session_clone.user_id())
                 .bind(session_clone.refresh_token())
                 .bind(session_clone.expires_at())
-                .bind(session_clone.ip_address())
+                .bind(session_clone.created_ip())
                 .bind(session_clone.user_agent())
                 .bind(session_clone.created_at())
                 .bind(session_clone.is_revoked())
@@ -908,9 +928,30 @@ mod integration_tests {
         .expect("seed user");
     }
 
+    /// `Session::new` requires an `AdmittedCaller`, so the integration
+    /// fixtures need one for the seeded user. `admitted_for_test` is
+    /// `#[cfg(test)]`-only by design.
+    fn admitted_fixture(user_id: Uuid) -> crate::domain::entities::admitted_caller::AdmittedCaller {
+        let now = chrono::Utc::now();
+        let user = crate::domain::entities::user::User::from_data(
+            user_id,
+            Some("session-fixture".to_string()),
+            "session-fixture@example.com".to_string(),
+            Some("hash".to_string()),
+            crate::domain::entities::user::UserRole::User,
+            0,
+            0,
+            now,
+            now,
+            None,
+            true,
+        );
+        crate::domain::entities::admitted_caller::AdmittedCaller::admitted_for_test(user)
+    }
+
     async fn insert_session(repo: &SessionPgRepository, user_id: Uuid, family_id: Uuid) -> Session {
         let session = Session::new(
-            user_id,
+            &admitted_fixture(user_id),
             format!("rt-{}", Uuid::new_v4()),
             None,
             None,
