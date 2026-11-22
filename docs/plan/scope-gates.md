@@ -24,7 +24,8 @@ document — see the two § Required sections.
 | Credential scopes — `Scope`, `ScopeSet`, the 235-operation map | **not started** — PR 2 |
 | Authentication by default (`NotAnonymous` inverted) | **not started** — needs the fold |
 | A password-change facet | **will not ship with PR 1** — deadlocked on `authn-pipeline.md` part B; § Fold in |
-| `src/AGENTS.md` rule + `authorization-axes.md` | **not started** |
+| `authorization-axes.md` | **written** — gate/grant distinction, request diagram, enforcement points; scope section marks itself unenforced |
+| `src/AGENTS.md` rule | **not started** |
 
 The companion document's work — `authn-pipeline.md` part A — is MERGED
 (PR #951). It touched the same middleware this plan folds, so four of its
@@ -1534,10 +1535,16 @@ plan file — plans record *why a change was made*, architecture docs
 record *how the system works now*, and a reader debugging a 403 needs
 the second.
 
-### New: `docs/architecture/authorization-axes.md`
+### `docs/architecture/authorization-axes.md` — WRITTEN
 
 One page covering all three axes and how a request is decided, with
 ReBAC remaining the deep dive for Grant.
+
+Written ahead of the fold because the gate/grant distinction and the
+request path are true TODAY; what is not yet enforced says so. Still
+owed once PR 1 and PR 2 land: the `Gates` type, the scope vocabulary
+table, and elevation.
+
 
 A new file rather than an extension of `rebac-authorization.md`, because
 that document is focused and already disclaims this material. Its
