@@ -51,18 +51,13 @@ callable from a router layer or a service, replacing five hand-wired
 middleware layers that each decide the same class of question with their
 own fail-open policy.
 
-A gate has FOUR independent facets, and the type is one field per facet
-rather than a flat enum in a slice. "Facet" rather than "axis" because
-this document already uses axis for Gate-vs-Scope-vs-Grant (§ Three
-axes); these are the sub-dimensions inside the Gate axis alone.
+A gate has FOUR independent facets — role, credential-kind, anonymity,
+session-binding — and the type is one field per facet. ("Facet" because
+this document uses *axis* for Gate-vs-Scope-vs-Grant, § Three axes.)
 
-Independence is the whole reason: a caller is anonymous-or-not AND
-app-password-or-not AND some role, and those answers constrain each other
-not at all. A `Vec<Gate>` can hold `[NotAppPassword, PermitAppPassword]`,
-so the contradiction has to be caught — at startup, in the best case. One
-field per facet cannot hold it, so there is nothing to catch. § Maximise
-deny-by-default ranks "won't compile" above "won't start", and this is
-that ranking applied to the gate type itself.
+A slice would let `[NotAppPassword, PermitAppPassword]` be constructed
+and need catching at startup; one field per facet cannot hold it. That is
+§ Maximise deny-by-default's "won't compile" over "won't start".
 
 ```rust
 // application/ports/scope_ports.rs
@@ -150,17 +145,10 @@ impl Gates {
 }
 ```
 
-Composition reads as a chain, and the chain is the audit trail — the
-`/webdav` mount is `Gates::role(RoleGate::Internal).permit_app_password()`,
-which states both that it is internal-only and that it is one of the few
-surfaces a sync client's app password may reach.
+`/webdav` then mounts as
+`Gates::role(RoleGate::Internal).permit_app_password()`.
 
-**No `PasswordChangeSettled` facet.** It was a variant in the flat enum
-"for the fold-in table only"; as a facet it would be a field every route
-has an opinion about, for a check PR 1 does not move. The intended
-successor — forced-reset as a scope narrowed to `{security}` at mint — is
-`authn-pipeline.md` part B, which has not started, so
-`require_no_password_change_pending_layer` keeps the check. § Fold in.
+No password-change facet — § Fold in.
 
 ```rust
 /// What the CREDENTIAL was issued for. Client-requestable, frozen at
@@ -289,14 +277,11 @@ password scoped `files:ro` administers nothing — not because the scope
 says "not admin", but because `/api/admin` requires the `Admin` gate and
 no scope string can supply it.
 
-**Vocabulary, because this document needs two words and had one.** The
-three rows above are the **axes** — three different questions, answered
-from three different sources, enforced in three different layers. Inside
-the Gate axis there are four independent **facets**: role,
-credential-kind, anonymity, session-binding. A caller has a value for
-every facet at once, which is why `Gates` carries one field per facet
-(§ Goal) and why reduction never crosses between them (§ Reduction is
-per facet). Axes are separate types; facets are fields of one type.
+**Vocabulary.** The three rows above are the **axes** — separate types.
+Inside the Gate axis are four independent **facets** — role,
+credential-kind, anonymity, session-binding — which are fields of one
+type (§ Goal), and reduction never crosses between them (§ Reduction is
+per facet).
 
 Consequences, both agreed:
 
@@ -834,34 +819,21 @@ you must remember to write does. So the value is two narrower things:
 allowlist and must stay `route_layer` (it needs `MatchedPath`). Fold the
 *decision* and leave the allowlist where it is.
 
-**The password-change layer is a deadlock between the two plans, and PR 1
-breaks it by not touching the layer.** This table used to say "deleted,
-not folded, because `authn-pipeline.md` narrows the scope at mint
-instead". That plan's narrowing is part B, which is *not started* and
-whose own status line reads "needs `scope-gates.md`". Each plan deferred
-the removal to the other, and no narrowing exists at the mint today.
+**PR 1 does not touch the password-change layer.** Its intended
+replacement — forced-reset as a scope narrowed to `{security}` at mint —
+is `authn-pipeline.md` part B, which is *not started* and whose status
+line reads "needs `scope-gates.md`". Each plan assigned the removal to
+the other; no narrowing exists at the mint today.
 
-So: the eleven references stay exactly as they are, no password-change
-facet exists, and the layer's removal belongs to whichever of the
-two lands second — by which time one of them really will have the
-replacement. Folding it as a gate instead would be worse than leaving it:
-it would be a third home for the check, built to be deleted, and PR 1's
-acceptance is that behaviour does not change.
+So the eleven references stay, no password-change facet exists, and the
+removal belongs to whichever plan lands second. Folding it as a facet
+meanwhile would be a third home for the check, built to be deleted,
+against an acceptance criterion of unchanged behaviour.
 
-The general lesson, since this is the second cross-plan assumption to
-fail here: a row that says "X goes away because the other plan does Y" is
-a claim about another document's STATUS, and status is the thing most
-likely to have moved. Verify Y shipped before planning around it.
-
-**Not the same thing as `authn-pipeline.md` § The forced-reset deadlock**,
-despite both being about this layer. That one is a RUNTIME risk inside
-part B's own design: a session narrowed to `{security}` needs
-the session facet's `Elevated` to discharge the reset, and elevation uses the very
-password being changed — so if elevation ever demands something a
-narrowed session cannot get, a forced reset bricks the account. It is
-live only once narrowing exists. This one is a PLANNING deadlock: two
-documents each assigning the layer's removal to the other, which blocks
-work today and is settled by PR 1 declining the removal.
+Distinct from `authn-pipeline.md` § The forced-reset deadlock, which is a
+runtime risk inside part B (a `{security}`-narrowed session needs
+elevation via the password it must change) and only exists once narrowing
+does.
 
 ### Keep as layers, not extractors
 
@@ -885,27 +857,20 @@ a moka cache with a 30 s TTL and `try_get_with`, so concurrent callers
 for one user collapse into a single lookup and a user's row is read at
 most twice a minute. The DB appears on a miss.
 
-This is the correction that matters most here, because an earlier draft
-called it "a DB lookup per request" and then used that cost to justify
-two separate decisions. It is a concurrent hash lookup in the
-overwhelming majority of cases.
-
-The live-read decision still stands and the cache is what makes it
-affordable: putting `is_external` on the JWT claims is the one thing
+The live-read decision stands and the cache makes it affordable: putting `is_external` on the JWT claims is the one thing
 § What a scope is bound to rules out, because an upgraded guest would
 then stay locked out until re-login. A cache can be invalidated on
 upgrade or demotion; a minted claim cannot — and `invalidate_user_flags`
 is already the mechanism every revocation path uses.
 
-So the rule is placement, and the reason is no longer cost:
+So the rule is placement, and the reason is not cost:
 
-- Ownerless creates and the DAV / admin subtrees are cold paths. Keep
-  the token and the layers there.
-- Prefer not to spread GATE checks onto the hot paths — listing,
-  thumbnails, auth (AGENTS.md § Performance) — but the argument is that
-  those are **grant** questions, answered by `authz.require` against a
-  resource. A gate there is the wrong check. It is no longer "and also a
-  per-request query", which it was not.
+- Ownerless creates and the DAV / admin subtrees are cold. Keep the
+  token and the layers there.
+- Keep GATE checks off the hot paths — listing, thumbnails, auth
+  (AGENTS.md § Performance) — because those ask a **grant** question,
+  answered by `authz.require` against a resource. A gate there is the
+  wrong check, not an expensive one.
 
 The 30 s TTL carries a second consequence worth stating: a gate's answer
 can be up to 30 s stale. For `is_external` and role that is the intended
@@ -944,36 +909,22 @@ names as hot, several times per DAV request, and `u8` masks make it one
 `&` and a compare with `writable ⊆ readable` held as an invariant — so
 `rw` implying `ro` is not a branch at every callsite.
 
-### The defaults put a gate on EVERY request — reconciled, not assumed
+### The defaults put a gate on every request
 
-"Cold by design" and § Authentication by default cannot both be taken at
-face value. Deny-by-default facets only bite if something universal
-applies them: `AnonymityGate::Denied` and `AppPasswordGate::Denied` as
-`Default` are meaningless unless every route is gated, which is the root
-choke point that section argues for. So the design does put a gate check
-on listing and on thumbnails.
+"Cold by design" holds for the named gates, not for the defaults.
+`AnonymityGate::Denied` and `AppPasswordGate::Denied` only bite if every
+route is gated — the root choke point § Authentication by default argues
+for — so the design does put a gate check on listing and thumbnails.
 
-That is affordable because of the cache, not despite the hot-path rule —
-a moka hit per request on a path that already does a DB listing query is
-noise. But it is a claim to MEASURE before PR 1 wires a root layer, and
-the thing to measure is not steady-state hit cost:
+The cache makes that affordable, but **measure it before wiring a root
+layer**, and measure the right thing: not steady-state hit cost but
+single-flight at the 30 s boundary under K concurrent requests for one
+user, which is a sync client's shape. `examples/bench_auth_herd.rs` is
+that shape for the sibling cache. Benches run against 5433, not 5432.
 
-> `examples/bench_auth_herd.rs` exists because the sibling cache
-> (`AppPasswordService`, TTL 300 s) was once a plain get/insert, so a
-> sync client holding K parallel connections hit an expired entry and all
-> K missed at once, each issuing its own query. `user_flags_cache` uses
-> `try_get_with`, which is the fix — the measurement is that it HOLDS at
-> the 30 s boundary under K concurrent requests for one user, which is
-> exactly a sync client's shape.
-
-Benches run against the test database on **5433**, never the dev
-instance on 5432.
-
-Note that § Rejected: default-deny across all of `/api` rejects a root
-`RoleGate::Internal` for an unrelated reason — the external-user
-exemption list would cover most of `/api` — which is about correctness,
-not cost. The two rejections are independent and should not be read as
-one.
+(§ Rejected: default-deny across all of `/api` refuses a root
+`RoleGate::Internal` on correctness grounds — the external exemption list
+would cover most of `/api` — which is a separate argument from cost.)
 
 A scope check has no query to hide behind. It runs on paths AGENTS.md
 names as hot (listing, thumbnails, auth), on every DAV request a sync
@@ -1042,36 +993,18 @@ callsite to constrain), not because 4 is good enough.
 
 ### Reduction is per facet
 
-This section argued its way to the `Gates` type in § Goal; what follows
-is the reasoning, kept because it is the justification for the shape
-rather than a separate proposal.
+**Reduction is per facet, never global.** The facets are independent, so
+a role conjunction collapses to its maximum while the app-password facet
+stays untouched; reducing across facets would silently drop a gate.
 
-Composed gates must reduce, because `[Internal, Admin, Owner]` is three
-lookups answering one question, and the default `NotAppPassword` beside
-an explicit `PermitAppPassword` is a contradiction a router would
-otherwise carry to runtime.
+One field per facet makes both problems vanish instead of needing checks:
+the contradictory pair is unrepresentable, and the role reduction is a
+field assignment (`max`) rather than a lattice walk.
 
-**Reduction is per facet, never global.** The facets are independent — a
-role gate says nothing about a credential-kind one — so a role
-conjunction collapses to its maximum while the app-password facet stays
-untouched. Reducing across facets would silently drop a gate.
-
-One field per facet turns both problems into non-problems rather than
-into checks:
-
-- the contradictory pair is **unrepresentable**, so no startup validation
-  has to exist, and none can be forgotten;
-- the role reduction is a field assignment (`max`), not a lattice walk.
-
-`Admin ⇒ Internal` is what makes that `max` sound, and it is provable
-from the `users_external_not_privileged` CHECK constraint rather than
-conventional — so a test pins the dependency, because removing the
-constraint would quietly make the reduction wrong.
-
-The cost argument does NOT decide this, and § Checking cost says so: a
-gate check is dominated by its DB round trip, so four field reads and a
-three-element slice are indistinguishable. Representability is the only
-reason to prefer one, which is why it is the stated one.
+`Admin ⇒ Internal` makes that `max` sound, and it is provable from the
+`users_external_not_privileged` CHECK rather than conventional — so a
+test pins it, since removing the constraint would make the reduction
+wrong.
 
 ### Authentication by default
 
@@ -1690,24 +1623,17 @@ change:
   `authz.elevation_required`. Per AGENTS.md every denial emits one
   before returning.
 
-### `sid` is on the caller — settled, nothing to decide
+### `sid` is on the caller
 
-This section used to pose a choice: thread `sid` through in PR 2, or ship
-`security` ceiling-only and accept that an XSS riding a live browser
-session would pass. Neither is needed. `CurrentUser` carries
-`token: PresentedToken`, whose `session_id` is the JWT `sid`, merged with
-`authn-pipeline.md` part A.
-
-So `security` gets the stronger, per-session form for free, and
-the session facet's `Elevated` can read `caller.token.session_id` when
+`CurrentUser` carries `token: PresentedToken`, whose `session_id` is the
+JWT `sid` (merged with `authn-pipeline.md` part A). So `security` gets
+the per-session form rather than ceiling-only, and the session facet's
+`Elevated` reads `caller.token.session_id` once
 `auth.sessions.elevated_at` exists.
 
-Worth noting WHY it landed there, because the reasoning constrains any
-future variant: a `Gate` is handed `&CurrentUser` and nothing else, so it
-cannot reach request extensions. Publishing the pair into extensions —
-which is where it first went — serves a handler but can never serve a
-gate. The fact has to be ON the caller, and putting it there made the
-extension publish redundant, so there is exactly one channel for it.
+It must live on the caller, not in request extensions: a gate is handed
+`&CurrentUser` and nothing else, so extensions can serve a handler but
+never a gate.
 
 ## Test plan
 
