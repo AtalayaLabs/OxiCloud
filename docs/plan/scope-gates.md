@@ -1,6 +1,6 @@
 # Scope gates — one home for principal-kind checks
 
-Branch: `feat/scope-and-session-elevation`. **Trigger: PR #853**
+Branch: `feat/scopes`. **Trigger: PR #853**
 (calendars REST surface) for the gate half — see § When. The credential-
 scope half (§ Credential scopes) has its own trigger: the device flow
 already collects and displays scopes it does not enforce.
@@ -20,15 +20,15 @@ document — see the two § Required sections.
 
 | item | status |
 |---|---|
-| Gates fold — `Gate`, `ScopePolicy`, the three consumers | **not started** |
-| Credential scopes — `Scope`, `ScopeSet`, the 235-operation map | **not started** |
-| Authentication by default (`NotAnonymous` inverted) | **not started** |
+| Gates fold — `Gate`, `ScopePolicy`, the three consumers | **not started** — PR 1, and 2 and 3 below depend on it |
+| Credential scopes — `Scope`, `ScopeSet`, the 235-operation map | **not started** — PR 2 |
+| Authentication by default (`NotAnonymous` inverted) | **not started** — needs the fold |
+| `Gate::PasswordChangeSettled` | **will not ship with PR 1** — deadlocked on `authn-pipeline.md` part B; § Fold in |
 | `src/AGENTS.md` rule + `authorization-axes.md` | **not started** |
 
-What HAS landed on this branch is the companion document's work —
-`authn-pipeline.md` part A, which shares the branch and touches the same
-middleware. See its § Status. Two consequences worth knowing before
-starting here:
+The companion document's work — `authn-pipeline.md` part A — is MERGED
+(PR #951). It touched the same middleware this plan folds, so four of its
+consequences land before the first line here:
 
 - **The two fail-open arms are already resolved**, as 503 rather than as
   a denial (§ The two fail-open arms). The gates fold inherits that
@@ -37,6 +37,12 @@ starting here:
   carries `sessions_valid_from` and `revoked_session_ids`. The fold
   touches those call sites, so expect them to look different from the
   snippets here.
+- **`CurrentUser` carries `token: PresentedToken`**, so `sid` is on the
+  caller. That retires the choice § `sid` is no longer deferrable framed,
+  and it is the prerequisite `Gate::Elevated` was waiting for.
+- **`require_no_password_change_pending_layer` cannot be deleted by this
+  plan** — the mechanism meant to replace it did NOT land. See the
+  fold-in table.
 
 ## Goal
 
@@ -53,8 +59,11 @@ pub enum Gate {
     Internal,                // not is_external
     Admin,                   // role.at_least(Admin); Owner satisfies it
     Owner,                   // UserRole::Owner, NOT storage.grant_role
-    /// SUPERSEDED by `authn-pipeline.md`: forced-reset becomes a scope
-    /// narrowed to `{security}` at mint. Here for the fold-in table only.
+    /// NOT IMPLEMENTED, and not by PR 1 either. The intended successor —
+    /// forced-reset as a scope narrowed to `{security}` at mint — is
+    /// `authn-pipeline.md` part B, which has not started. Until then
+    /// `require_no_password_change_pending_layer` keeps the check and
+    /// this variant stays a name in a table. § Fold in.
     PasswordChangeSettled,
     // ── from HOW the caller authenticated ──
     /// Applied by DEFAULT to every route; a static Basic-auth app
@@ -724,7 +733,7 @@ you must remember to write does. So the value is two narrower things:
 |---|---|
 | `require_internal_user_layer` | `gate_layer(Gate::Internal)` |
 | admin middleware on `/api/admin/*` | `gate_layer(Gate::Admin)` |
-| `require_no_password_change_pending_layer` | **deleted**, not folded — `authn-pipeline.md` narrows the scope at mint instead, so the five mount points go away |
+| `require_no_password_change_pending_layer` | **left alone by PR 1** — see the deadlock below |
 | `require_dpop_layer` | `gate_layer(Gate::DpopBound)` |
 | hand-rolled owner check in `transfer_ownership` | `Gate::Owner` |
 | `anonymous_allowlist_layer` | `gate_layer(Gate::NotAnonymous)` + keeps its allowlist — and is the mechanism § Authentication by default would promote to the root |
@@ -732,6 +741,35 @@ you must remember to write does. So the value is two narrower things:
 `anonymous_allowlist_layer` is the loose fit — it carries a route
 allowlist and must stay `route_layer` (it needs `MatchedPath`). Fold the
 *decision* and leave the allowlist where it is.
+
+**The password-change layer is a deadlock between the two plans, and PR 1
+breaks it by not touching the layer.** This table used to say "deleted,
+not folded, because `authn-pipeline.md` narrows the scope at mint
+instead". That plan's narrowing is part B, which is *not started* and
+whose own status line reads "needs `scope-gates.md`". Each plan deferred
+the removal to the other, and no narrowing exists at the mint today.
+
+So: the eleven references stay exactly as they are, `Gate::PasswordChangeSettled`
+is not implemented, and the layer's removal belongs to whichever of the
+two lands second — by which time one of them really will have the
+replacement. Folding it as a gate instead would be worse than leaving it:
+it would be a third home for the check, built to be deleted, and PR 1's
+acceptance is that behaviour does not change.
+
+The general lesson, since this is the second cross-plan assumption to
+fail here: a row that says "X goes away because the other plan does Y" is
+a claim about another document's STATUS, and status is the thing most
+likely to have moved. Verify Y shipped before planning around it.
+
+**Not the same thing as `authn-pipeline.md` § The forced-reset deadlock**,
+despite both being about this layer. That one is a RUNTIME risk inside
+part B's own design: a session narrowed to `{security}` needs
+`Gate::Elevated` to discharge the reset, and elevation uses the very
+password being changed — so if elevation ever demands something a
+narrowed session cannot get, a forced reset bricks the account. It is
+live only once narrowing exists. This one is a PLANNING deadlock: two
+documents each assigning the layer's removal to the other, which blocks
+work today and is settled by PR 1 declining the removal.
 
 ### Keep as layers, not extractors
 
@@ -1443,7 +1481,7 @@ each must grandfather to the complete set rather than the empty one:
 
 | population | why it has none | rule |
 |---|---|---|
-| JWTs in flight | minted before the claim existed | absent claim ⇒ every scope `:rw`. Precedent: `JwtClaims.sid` is `Option<String>`, "None on tokens minted by pre-`sid` builds" |
+| JWTs in flight | minted before the claim existed | absent claim ⇒ every scope `:rw`. Precedent: `sid` is optional for exactly this reason, "None on tokens minted by pre-`sid` builds" — but note it is declared THREE times in two types (`auth_ports.rs:73` as `Option<Uuid>`, `auth_ports.rs:389` and `jwt_service.rs:68` as `Option<String>`), so "absent" is spelled differently depending on which one you are holding. A scope claim should be declared once |
 | `auth.app_passwords` rows | no scope column exists today | migration backfills the full app-password ceiling, never NULL-as-empty |
 | `auth.device_codes` rows | default is `webdav,caldav,carddav` | maps to files+calendar+contacts and **omits `account`** — widen existing rows, or a device credential that reads an avatar starts 401ing |
 
@@ -1486,15 +1524,24 @@ change:
   `authz.elevation_required`. Per AGENTS.md every denial emits one
   before returning.
 
-### `sid` is no longer deferrable
+### `sid` is on the caller — settled, nothing to decide
 
-§ What a scope is bound to leaves `sid` off `CurrentUser` "to keep the
-two changes separable". That held while `Elevated` was hypothetical; it
-now has three consumers, one of which (`security` mutations) is in this
-plan. So either PR 2 threads `sid` through, or `security` ships
-ceiling-only — which § `security` already admits is weaker, since an XSS
-riding a live browser session would pass. Decide deliberately rather
-than discovering it mid-implementation.
+This section used to pose a choice: thread `sid` through in PR 2, or ship
+`security` ceiling-only and accept that an XSS riding a live browser
+session would pass. Neither is needed. `CurrentUser` carries
+`token: PresentedToken`, whose `session_id` is the JWT `sid`, merged with
+`authn-pipeline.md` part A.
+
+So `security` gets the stronger, per-session form for free, and
+`Gate::Elevated` can read `caller.token.session_id` when
+`auth.sessions.elevated_at` exists.
+
+Worth noting WHY it landed there, because the reasoning constrains any
+future variant: a `Gate` is handed `&CurrentUser` and nothing else, so it
+cannot reach request extensions. Publishing the pair into extensions —
+which is where it first went — serves a handler but can never serve a
+gate. The fact has to be ON the caller, and putting it there made the
+extension publish redundant, so there is exactly one channel for it.
 
 ## Test plan
 
