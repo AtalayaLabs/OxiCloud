@@ -73,7 +73,6 @@ at all — § Maximise deny-by-default's "won't compile" over "won't start".
 #[derive(Default)]
 pub struct Requires {
     pub role: Option<RoleGate>,
-    pub app_password: Option<AppPasswordGate>,
     pub anonymous: Option<AnonymityGate>,
     pub scope: Option<(Scope, Access)>,
     // pub elevation: Option<Elevation>,   // with auth.sessions.elevated_at
@@ -88,8 +87,6 @@ pub struct Policy {
     /// `None` = any authenticated principal. Folds by MAXIMUM; a
     /// declaration that would widen is a boot error.
     pub role: Option<RoleGate>,
-    /// Credential-kind facet. § Credential-kind gating.
-    pub app_password: AppPasswordGate,
     /// Anonymity facet. § Authentication by default.
     pub anonymous: AnonymityGate,
     // pub elevation: Option<Elevation>,   // with auth.sessions.elevated_at
@@ -110,17 +107,6 @@ pub enum RoleGate {
     Internal,   // not is_external
     Admin,      // role.at_least(Admin); Owner satisfies it
     Owner,      // UserRole::Owner, NOT storage.grant_role
-}
-
-/// Deny-by-default: `Denied` is the `Default`, so a static Basic-auth app
-/// password is refused on every route that does not say otherwise.
-/// `Permitted` is the only variant that appears at a callsite, so
-/// `grep Permitted` prints the whole app-password attack surface.
-#[derive(Default)]
-pub enum AppPasswordGate {
-    #[default]
-    Denied,
-    Permitted,
 }
 
 /// Deny-by-default likewise — § Authentication by default. The handful of
@@ -146,9 +132,9 @@ pub enum AnonymityGate {
 /// leaving the rest `None`. So a declaration says exactly what it says,
 /// and chaining adds without disturbing:
 ///
-///   Requires::role(RoleGate::Internal).permit_app_password()   // /webdav
-///   Requires::elevated()                                       // adds only this
+///   Requires::role(RoleGate::Internal)
 ///   Requires::scope(Scope::Security, Access::ReadWrite)
+///   Requires::anonymous_allowed()
 ///
 /// `const` so a declaration is a compile-time constant and the compile
 /// step folds constants, not runtime values.
@@ -156,9 +142,6 @@ impl Requires {
     pub const fn role(r: RoleGate) -> Self;
     /// The whole public surface, greppable: § Authentication by default.
     pub const fn anonymous_allowed() -> Self;
-    /// The whole app-password attack surface, greppable:
-    /// § Credential-kind gating.
-    pub const fn permit_app_password(self) -> Self;
     pub const fn scope(s: Scope, a: Access) -> Self;
     // pub const fn elevated(self) -> Self;   // with auth.sessions.elevated_at
 }
@@ -169,7 +152,27 @@ rule. It cannot change how the existing axes fold, and it cannot change
 any existing declaration — which is the property that makes this worth
 building rather than hand-wiring the next check too.
 
-No password-change facet — § Fold in.
+**Four axes at request time: scope, role, anonymity, elevation.** The
+first three ship in PR 1; elevation is not optional, only blocked —
+`auth.sessions.elevated_at` does not exist yet, and three classes of
+operation need it (§ Declaring session elevation: non-safe
+`/api/admin/*`, `security` mutations, irreversible deletions). It lands
+as a fourth `Option` field with no reshaping.
+
+Two things that look like axes are not, and keeping them out is most of
+why the list is this short:
+
+- **credential kind is a MINT-time input, not a request-time axis.** The
+  login phase already narrows by credential type —
+  `effective = (requested ?? type_default) ∩ type_maximum`, § Defaults —
+  so an app password reaching `/api/auth/password` is refused because its
+  `ScopeSet` lacks `security`, not because something noticed it was an
+  app password. `Requires::scope(Scope::Security)` is the whole
+  mechanism; a credential-kind facet would be a second implementation of
+  a decision already made once.
+- **integrity checks** — JWT signature, DPoP proof, CSRF — § Not axes.
+
+No password-change facet either: that is a scope narrowing too — § Fold in.
 
 ```rust
 /// What the CREDENTIAL was issued for. Client-requestable, frozen at
@@ -226,8 +229,8 @@ An implementor says only what they constrain. One method per axis:
 `Requires` is `Option` per axis, and `None` means **"I say nothing about
 this"** — distinct from "I require the safe value". That distinction is
 the whole point of the type: without it a child that only wants to add
-elevation also re-asserts `AppPasswordGate::Denied`, silently revoking a
-parent's `permit_app_password()` opt-in.
+elevation also re-asserts the safe value on every other axis, silently
+overtightening what a parent had widened.
 
 A new axis is a new `Option` field plus a constructor. It cannot change
 how existing axes fold, which is what makes the engine extensible
@@ -973,17 +976,16 @@ it is being forced to change. It only exists once step 3 does.)
 a layer is both natural and cheaper there. Extractors are for REST
 handlers only.
 
-### Two fields `CurrentUser` must carry first
+### The field `CurrentUser` must carry first
 
-Every facet is a field read only if the caller actually carries it. Two
-do not, and both block a facet rather than merely slowing it:
+An axis is a field read only if the caller actually carries it. One does
+not:
 
 | field | why | today |
 |---|---|---|
 | `is_external` | `RoleGate::Internal` has nothing to read | `UserFlags` has it, but `LiveRole::Active(SmolStr)` returns only the role, so `require_internal_user` calls `get_user_flags` a SECOND time per request |
-| credential-kind | `AppPasswordGate::Denied` cannot be evaluated at all | the Basic-auth branch knows (`origin = "app_password"`) and discards it |
 
-Both resolve in the pass that already holds the flags, and both follow
+It resolves in the pass that already holds the flags, and follows
 `token: PresentedToken` (`9a42e4299`): the middleware knows the fact,
 drops it, and a consumer re-derives it or cannot ask. Adding
 `is_external` also removes the duplicate lookup.
@@ -1067,8 +1069,7 @@ names as hot, several times per DAV request, and `u8` masks make it one
 
 So a root gate layer adds **no lookup** to an authenticated request: the
 one cached read already happens in `auth_middleware`, and the rest are
-field reads — given the two fields § Two fields `CurrentUser` must carry
-first adds.
+field reads — once `CurrentUser` carries `is_external`.
 
 Cost does not decide this; staleness does. The gate-side form of
 `authn-pipeline.md`'s rule ("every state change that **tightens** must
@@ -1101,7 +1102,7 @@ This belongs in `src/AGENTS.md` — § Required: amend.
 ### The defaults put a gate on every request
 
 "Cold by design" holds for the named gates, not for the defaults.
-`AnonymityGate::Denied` and `AppPasswordGate::Denied` only bite if every
+`AnonymityGate::Denied` only bites if every
 route is gated — the root choke point § Authentication by default argues
 for — so the design does put a gate check on listing and thumbnails.
 
@@ -1158,7 +1159,7 @@ plan is otherwise balanced. Ranked, because not all denial is equal:
 | 1. **Won't compile** | the omission is a type error | `InternalCaller` token — `auth_user.id` stops type-checking on an ownerless create |
 | 2. **Won't start** | boot panics on a misconfiguration | an unknown job name in `OXICLOUD_JOBS_SCHEDULED` already does this; the scope parser rejecting an unknown resource is the same posture |
 | 3. **Won't pass CI** | the omission fails a test | exhaustiveness test — a route in neither the scope map nor `SCOPELESS` |
-| 4. **Fails closed at runtime** | the default answer is refusal | `AppPasswordGate::Denied` as the facet default; ceilings as allowlists; `CurrentUser::role` resolving an unknown value to `Anonymous`, "the *least* privileged answer" |
+| 4. **Fails closed at runtime** | the default answer is refusal | ceilings as allowlists; `CurrentUser::role` resolving an unknown value to `Anonymous`, "the *least* privileged answer" |
 | 5. **Merely visible** | a reviewer must notice | an extractor on a handler — forget it and the route is open. Use only where 1-4 do not fit |
 
 Prefer the lowest number available. Where this plan chose 4 over 1 it
@@ -1383,7 +1384,7 @@ only in a plan file:
 > 3. **Won't pass CI** — the omission fails a test, as a route absent
 >    from both the scope map and `SCOPELESS` does.
 > 4. **Fails closed at runtime** — the default answer is refusal
->    (`AppPasswordGate::Denied` as the facet default; ceilings as allowlists;
+>    (ceilings as allowlists;
 >    `CurrentUser::role` resolving an unknown value to `Anonymous`).
 > 5. **Merely visible** — a reviewer must notice. An extractor on a
 >    handler is this: forget it and the route is open. Use only where
@@ -1597,25 +1598,40 @@ another one. Every ceiling in § Defaults is bypassable in one request by
 the credential type most likely to be pasted into a config file, mailed
 to oneself, or committed by accident.
 
-Scopes cannot fix this. The vocabulary is resource-shaped on purpose
-(§ Areas, not protocols), and `/api/files` and `/webdav` both
-need `files` — so no scope distinguishes the browser API from the sync
-door. This is a question about the KIND of caller, which is the
-definition of a gate.
+**Scope closes it, and no credential-kind axis is needed.** Every route
+in the hole above is in the `security` area — § Defaults classifies
+`/app-passwords`, `/change-password`, `/oidc/link/start`,
+`/oidc/unlink`, `/upgrade-to-internal`, `/opaque/register/*`,
+`/device/devices` and `/device/verify` there — and the app-password
+ceiling grants **no `security`**. So an app password minting another one
+is refused by `Requires::scope(Scope::Security)`, not by anything
+noticing it was an app password.
+
+That makes credential kind a MINT-time input rather than a request-time
+axis: `effective = (requested ?? type_default) ∩ type_maximum` already
+decides, once, what each credential type can reach. A facet would be a
+second implementation of the same decision, and the two would drift.
+
+What scope genuinely cannot express is a PROTOCOL distinction —
+`/api/files` and `/webdav` both need `files`, so no scope admits an app
+password to the sync door while refusing it on the browser API. That is
+accepted rather than worked around, for two reasons: the restriction
+would add nothing (same bytes, same permission, different verb), and
+protocol-shaped restriction is what § Areas, not protocols rejects for
+the scope vocabulary in the first place. Wanting it here would be
+wanting the shape the plan already argued against.
 
 ### Deny by default, permit explicitly
 
-`AppPasswordGate::Denied` is the facet DEFAULT, so **every** route
-refuses a Basic-auth app password until something says otherwise. Mounts
-that legitimately accept one declare `.permit_app_password()`.
+The ceiling is an **allowlist** per credential type, so the deny-by-
+default property lives there: a new credential type whose author never
+considers `security` gets it **withheld**. Forgetting is safe.
 
-Positive opt-in rather than a `remove`-style subtraction, for a reason
-beyond taste: `grep PermitAppPassword` then prints the **complete**
-app-password attack surface in one command. A subtractive form cannot be
-audited that way — you would be grepping for an absence, and a route
-that silently inherits the default looks identical to one someone
-deliberately opened. Only the positive marker ever appears at a
-callsite, so the double negative never shows up in route code.
+That is also better than the per-route opt-in this section used to
+propose. The auditable artifact is **one table** — § Defaults — rather
+than a set of call sites to grep for; "what can an app password reach?"
+is answered by reading a row, not by trusting that every route that
+should have declared an opt-in did.
 
 The permit set is exactly the sync surfaces, and nothing else:
 
@@ -1763,7 +1779,7 @@ The halves have opposite risk profiles and must not share a green suite:
 
 | PR | change | acceptance |
 |---|---|---|
-| 1 — gates | `is_external` + credential-kind on `CurrentUser` (§ Two fields); `Requires` / `Policy` + the facet enums; the compile step and the operation table; then fold four layers plus the `transfer_ownership` check | **behaviour-preserving**, and provable rather than hoped: the compiled table before and after the fold must be IDENTICAL, with `external_users.hurl` green *unchanged* |
+| 1 — gates | `is_external` on `CurrentUser`; `Requires` / `Policy` + `RoleGate` / `AnonymityGate`; the compile step and the operation table; then fold three layers plus the `transfer_ownership` check | **behaviour-preserving**, and provable rather than hoped: the compiled table before and after the fold must be IDENTICAL, with `external_users.hurl` green *unchanged* |
 | 2 — scopes | turns `device_codes.scopes` from an inert column into enforcement | **not** behaviour-preserving; carries every lockout risk below |
 
 Landing them together means PR 2's risk rides in on PR 1's green suite.
@@ -1924,9 +1940,9 @@ field into an enforced one:
   claim, an app-password row backfilled from NULL, and a `device_codes`
   row still holding the legacy `webdav,caldav,carddav`. Each keeps
   working. This is the pin that prevents a silent lockout on upgrade.
-- Unit: `require_all` is **conjunction** — a caller holding `elevated`
-  but not `Admin` is REFUSED on `[Admin, Elevated]`, and so is one
-  holding `Admin` but not `elevated`. Pin both halves: a disjunctive
+- Unit: a multi-axis `Policy` is **conjunction** — a caller holding
+  elevation but not `Admin` is REFUSED by a policy requiring both, and so
+  is one holding `Admin` but not elevation. Pin both halves: a disjunctive
   implementation passes the first silently and hands admin mutations to
   any user who re-authenticated.
 - Unit: normalisation — `[Internal, Admin, Owner]` reduces to `[Owner]`
