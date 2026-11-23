@@ -1,5 +1,5 @@
 # =============================================================
-# OxiCloud — GATE MATRIX: the cells nothing else covers
+# OxiCloud — GATE MATRIX: the cells no other api test covers
 # =============================================================
 # PR 1 step 4 (`docs/plan/scope-gates.md` § Rollout) removes three
 # middleware layers and one service-level owner check, replacing
@@ -39,6 +39,18 @@
 #   4. The NOT-folded layers (DPoP), pinned so "the fold moved a
 #      layer it was not meant to" fails here — no policy dump would
 #      show it, since an integrity check is not an axis.
+#
+# ─── Structure: authenticated FIRST, then logout, then anonymous
+#
+# Hurl keeps ONE cookie jar per file and `POST /api/auth/login` sets
+# `oxicloud_access` (`cookie_auth::append_auth_cookies`), so every
+# entry after a login is cookie-authenticated whether or not it
+# carries an `Authorization` header. The first draft of this file
+# got a 207 on an "anonymous" PROPFIND for exactly that reason — it
+# was the plain user's own session. So the anonymous section comes
+# after a logout and opens with a CANARY: if the jar leaks, the
+# canary fails loudly instead of the section silently becoming a
+# test of the logged-in user's permissions.
 #
 # ─── Limit, stated so nobody trusts this further than it goes
 #
@@ -90,12 +102,18 @@ plain_id: jsonpath "$.user.full.user.id"
 
 
 # =============================================================
-# 1 — /webdav, the surface with no coverage in tests/api
+# PART A — AUTHENTICATED positives
+# =============================================================
+# A gate that refuses EVERYONE satisfies every refusal assertion in
+# part B, which is the failure mode AGENTS.md calls out for
+# `external_users.hurl`. So the positives come first and are the
+# half that catches over-tightening.
 # =============================================================
 
-# A plain internal user MUST reach it: that is exactly what
-# `require_internal_user_layer` admits. Over-tightening the fold to
-# `MinRole::Admin` shows up here and nowhere else in the suite.
+# /webdav for a plain internal user — the surface with no coverage
+# in tests/api, and exactly what `require_internal_user_layer`
+# admits. A fold that over-tightened it to `MinRole::Admin` shows up
+# here and nowhere else in the suite.
 PROPFIND {{base_url}}/webdav/
 Authorization: Bearer {{plain_token}}
 Depth: 0
@@ -105,13 +123,7 @@ HTTP *
 status != 401
 status != 403
 
-# Unauthenticated must not.
-PROPFIND {{base_url}}/webdav/
-HTTP 401
-
-# The owner reaches it too — a gate that refuses everyone would
-# satisfy the refusal above, which is the failure mode AGENTS.md
-# calls out for `external_users.hurl`.
+# And for the owner.
 PROPFIND {{base_url}}/webdav/
 Authorization: Bearer {{owner_token}}
 Depth: 0
@@ -121,12 +133,90 @@ HTTP *
 status != 401
 status != 403
 
+# A NON-allowlisted route stays reachable for a plain user, so the
+# allowlist is not accidentally made exclusive by the fold.
+GET {{base_url}}/api/files/recent-changes
+Authorization: Bearer {{plain_token}}
+
+HTTP *
+[Asserts]
+status != 401
+status != 403
+
+# The admin surface refuses a plain user: 403, not 401 — the caller
+# IS authenticated, just not an admin. This is what separates a
+# folded admin gate from a policy that merely demands a session.
+GET {{base_url}}/api/admin/users
+Authorization: Bearer {{plain_token}}
+HTTP 403
+
+# A bad DPoP proof must not become acceptable because a gate above
+# it moved, and must not 500. `require_dpop_layer` is NOT folded
+# (§ Not axes: integrity checks), and no policy dump would show it
+# moving, since an integrity check is not an axis.
+GET {{base_url}}/api/folders
+Authorization: Bearer {{plain_token}}
+DPoP: not-a-valid-proof
+
+HTTP *
+[Asserts]
+status != 500
+
+
+# ─────────────────────────────────────────────────────────────
+# End of the authenticated session. Bearer is CSRF-exempt, and this
+# clears `oxicloud_access` / `oxicloud_refresh` / `oxicloud_csrf`
+# while leaving other cookies alone.
+# ─────────────────────────────────────────────────────────────
+POST {{base_url}}/api/auth/logout
+Authorization: Bearer {{plain_token}}
+
+HTTP *
+[Asserts]
+status != 500
+
 
 # =============================================================
-# 2 — ANONYMOUS against each folded surface
+# PART B — ANONYMOUS, no credential at all
 # =============================================================
-# `MinPrincipal::Public`. All 401 today; a widened policy turns one
-# of these into a 200.
+
+# CANARY. If the cookie jar still holds a session, this returns 200
+# and every assertion below becomes a test of that user's
+# permissions — passing for the wrong reason.
+#
+# Asserted as "not 200" rather than a hard code on purpose: a
+# visitor holding a share ring gets 403 here (the handler refuses a
+# profile read — `anonymous_share_session.hurl`), while a caller
+# with NO credential is refused by `auth_middleware` before the
+# handler. Both are correct answers to "no session"; only 200 means
+# the jar leaked, and that is the thing this guards.
+GET {{base_url}}/api/auth/me
+
+HTTP *
+[Asserts]
+status != 200
+status < 500
+
+# /webdav unauthenticated. 401 WITH a challenge: DAV clients only
+# send credentials after a 401 carrying `WWW-Authenticate`
+# (regression #480), so the header is part of the contract and not
+# incidental.
+PROPFIND {{base_url}}/webdav/
+Depth: 0
+
+HTTP 401
+[Asserts]
+header "WWW-Authenticate" exists
+
+PROPFIND {{base_url}}/caldav/
+HTTP 401
+[Asserts]
+header "WWW-Authenticate" exists
+
+PROPFIND {{base_url}}/carddav/
+HTTP 401
+[Asserts]
+header "WWW-Authenticate" exists
 
 GET {{base_url}}/api/admin/users
 HTTP 401
@@ -136,62 +226,19 @@ Content-Type: application/json
 { "new_owner_id": "{{plain_id}}" }
 HTTP 401
 
-PROPFIND {{base_url}}/caldav/
-HTTP 401
-
-PROPFIND {{base_url}}/carddav/
-HTTP 401
-
-
-# =============================================================
-# 3 — allowlisted vs NOT, under one subtree
-# =============================================================
-# `ANONYMOUS_ALLOWLIST` holds seven exact routes. "Allowlisted"
-# means a visitor RING may reach it, never that no credential may —
-# the distinction `MinPrincipal`'s three states exist to make.
+# Allowlisted vs NOT, under one subtree. `ANONYMOUS_ALLOWLIST` holds
+# seven exact routes, and "allowlisted" means a visitor RING may
+# reach it — never that no credential may, which is the distinction
+# `MinPrincipal`'s three states exist to make.
 #
-# The pair below is the pin: if step 4 declares
-# `visitor_allowed()` on the subtree rather than on the seven
-# routes, the second request changes and the first does not.
-
-# Allowlisted route, no credential at all.
+# This pair is the pin: if step 4 declares `visitor_allowed()` on
+# the subtree instead of the seven routes, the second changes and
+# the first does not.
 GET {{base_url}}/api/files/00000000-0000-0000-0000-000000000000
 HTTP 401
 
-# NON-allowlisted sibling in the same subtree.
 GET {{base_url}}/api/files/recent-changes
 HTTP 401
-
-# And a plain user still reaches the non-allowlisted one, so the
-# allowlist is not accidentally made exclusive.
-GET {{base_url}}/api/files/recent-changes
-Authorization: Bearer {{plain_token}}
-
-HTTP *
-[Asserts]
-status != 401
-status != 403
-
-
-# =============================================================
-# 4 — the NOT-folded layers
-# =============================================================
-# `require_dpop_layer` and
-# `require_no_password_change_pending_layer` stay exactly as they
-# are: integrity and scope concerns, not axes (§ Not axes). They sit
-# on the subtrees the fold touches, so "the fold moved a layer it
-# was not meant to" is a real failure mode — and invisible to a
-# policy dump, since neither appears in a `Policy`.
-
-# A bad DPoP proof must not become acceptable because a gate above
-# it moved, and must not 500.
-GET {{base_url}}/api/folders
-Authorization: Bearer {{plain_token}}
-DPoP: not-a-valid-proof
-
-HTTP *
-[Asserts]
-status != 500
 
 # A DPoP header is not a credential.
 GET {{base_url}}/api/folders
@@ -204,6 +251,9 @@ HTTP 401
 # run when an assertion fails above, so a leaked fixture makes the
 # NEXT run fail on a duplicate username and look like a bug in
 # whatever ran then.
+#
+# The owner's Bearer is still valid: the logout above ended the
+# PLAIN user's session, not this one.
 # ─────────────────────────────────────────────────────────────
 DELETE {{base_url}}/api/admin/users/{{plain_id}}
 Authorization: Bearer {{owner_token}}
