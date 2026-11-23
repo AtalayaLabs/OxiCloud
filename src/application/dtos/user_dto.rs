@@ -629,7 +629,7 @@ pub struct UpgradeToInternalDto {
 /// `TokenClaims` / Basic-auth cache — JSON shape unchanged) and `caller` is
 /// a `Copy` enum one byte wide, so the per-request build allocates nothing.
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
-pub struct CurrentUser {
+pub struct CurrentCaller {
     pub id: Uuid,
     #[schema(value_type = String)]
     pub username: Arc<str>,
@@ -637,17 +637,17 @@ pub struct CurrentUser {
     pub email: Arc<str>,
     /// WHO this caller is — one value, replacing the `role` +
     /// `is_external` pair. The pair could express three states that cannot
-    /// exist, one of which the schema already forbids; see [`Caller`].
+    /// exist, one of which the schema already forbids; see [`CallerKind`].
     ///
     /// There is no "public" value because a caller with no credential has
-    /// no `CurrentUser` at all, so the absence of this extension IS
+    /// no `CurrentCaller` at all, so the absence of this extension IS
     /// "public".
     ///
     /// `#[serde(skip)]` like the fields below. Safe to drop from the wire
-    /// shape: `CurrentUser` is in no OpenAPI path and is serialized
+    /// shape: `CurrentCaller` is in no OpenAPI path and is serialized
     /// nowhere — its `Serialize` / `ToSchema` derives are vestigial.
     #[serde(skip)]
-    pub caller: crate::domain::entities::user::Caller,
+    pub kind: crate::domain::entities::user::CallerKind,
 
     #[serde(skip)]
     pub dpop_jkt: Option<String>,
@@ -655,8 +655,8 @@ pub struct CurrentUser {
     /// What the credential said about itself: the JWT `sid` and `iat`.
     ///
     /// Here rather than only in request extensions because a `Gate` is
-    /// handed `&CurrentUser` and nothing else (`docs/plan/scope-gates.md`
-    /// — `require(gate, caller: &CurrentUser)`), so `Gate::Elevated`
+    /// handed `&CurrentCaller` and nothing else (`docs/plan/scope-gates.md`
+    /// — `require(gate, caller: &CurrentCaller)`), so `Gate::Elevated`
     /// cannot reach extensions to find the session it must check
     /// `auth.sessions.elevated_at` on. Carrying the pair on the caller is
     /// the single channel both a gate and a handler can read.
@@ -678,7 +678,7 @@ pub struct CurrentUser {
     pub token: crate::domain::entities::presented_token::PresentedToken,
 }
 
-impl CurrentUser {
+impl CurrentCaller {
     /// Typed view of the `role` string.
     ///
     /// An unrecognised value resolves to `Anonymous` — the *least*
@@ -688,7 +688,7 @@ impl CurrentUser {
     /// real user. Here it becomes the principal that can reach almost
     /// nothing.
     pub fn role_enum(&self) -> crate::domain::entities::user::UserRole {
-        self.caller.role()
+        self.kind.role()
     }
 
     /// True for a principal with no `auth.users` row behind it — today,

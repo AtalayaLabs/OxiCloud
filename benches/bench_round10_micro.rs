@@ -3,7 +3,7 @@
 //! Sections (all pure CPU, no Postgres):
 //!   1. Authenticated-request identity build (Bearer/cookie hit path):
 //!      BEFORE `String` claims clone ×2 + live-role `to_string` + `Arc::new`
-//!      vs AFTER `Arc<str>` refcount bumps + a `Copy` `Caller` + `Arc::new`.
+//!      vs AFTER `Arc<str>` refcount bumps + a `Copy` `CallerKind` + `Arc::new`.
 //!   2. Basic-auth cache hit: BEFORE `CachedBasicAuthResult{String}` moka
 //!      value clone vs AFTER `Arc<str>` bumps (no role: it was removed).
 //!   3. NC PROPFIND per-row integer props (`oc:fileid`, `nc:creation_time`,
@@ -102,7 +102,7 @@ mod before {
         pub role: String,
     }
 
-    /// Old `CurrentUser` shape.
+    /// Old `CurrentCaller` shape.
     #[derive(Debug, Clone, serde::Serialize)]
     pub struct OldCurrentUser {
         pub id: uuid::Uuid,
@@ -134,7 +134,7 @@ mod before {
 }
 
 fn section_identity(iters: u64) {
-    use oxicloud::application::dtos::user_dto::CurrentUser;
+    use oxicloud::application::dtos::user_dto::CurrentCaller;
     use oxicloud::application::ports::auth_ports::TokenClaims;
 
     println!("[1] authenticated-request identity build (per request)");
@@ -164,12 +164,12 @@ fn section_identity(iters: u64) {
         before::bearer_identity(black_box(&old_claims), black_box("user"))
     });
     let (an, aa) = measure("AFTER  Arc bumps + Copy Caller", iters, || {
-        // The shipped middleware tail: LiveRole render + CurrentUser build.
-        Arc::new(CurrentUser {
+        // The shipped middleware tail: LiveRole render + CurrentCaller build.
+        Arc::new(CurrentCaller {
             id: uuid::Uuid::nil(),
             username: Arc::clone(&black_box(&new_claims).username),
             email: Arc::clone(&new_claims.email),
-            caller: oxicloud::domain::entities::user::Caller::Internal(
+            kind: oxicloud::domain::entities::user::CallerKind::Internal(
                 oxicloud::domain::entities::user::UserRole::User,
             ),
             dpop_jkt: None,
@@ -179,11 +179,11 @@ fn section_identity(iters: u64) {
 
     // Gate: identical field values + identical JSON wire shape.
     let old = before::bearer_identity(&old_claims, "user");
-    let new = Arc::new(CurrentUser {
+    let new = Arc::new(CurrentCaller {
         id: uuid::Uuid::nil(),
         username: Arc::clone(&new_claims.username),
         email: Arc::clone(&new_claims.email),
-        caller: oxicloud::domain::entities::user::Caller::Internal(
+        kind: oxicloud::domain::entities::user::CallerKind::Internal(
             oxicloud::domain::entities::user::UserRole::User,
         ),
         dpop_jkt: None,
@@ -191,10 +191,13 @@ fn section_identity(iters: u64) {
     });
     assert_eq!(old.username, *new.username);
     assert_eq!(old.email, *new.email);
-    assert_eq!(old.role, new.caller.role().as_str());
+    assert_eq!(old.role, new.kind.role().as_str());
     let json_old = serde_json::to_string(&*old).unwrap();
     let json_new = serde_json::to_string(&*new).unwrap();
-    assert_eq!(json_old, json_new, "CurrentUser JSON shape must not change");
+    assert_eq!(
+        json_old, json_new,
+        "CurrentCaller JSON shape must not change"
+    );
     println!(
         "    gate: fields + JSON byte-identical ✓   ({bn:.0}→{an:.0} ns, {ba:.2}→{aa:.2} allocs)"
     );

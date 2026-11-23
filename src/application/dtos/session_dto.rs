@@ -59,7 +59,7 @@ pub struct SessionCaller<'a> {
     /// pre-bind OIDC redirect, etc.).
     pub dpop_jkt: Option<&'a str>,
     /// The caller's OWN session id, from the JWT `sid` claim
-    /// (`CurrentUser::token`).
+    /// (`CurrentCaller::token`).
     ///
     /// The primary input to [`SessionSummaryDto::is_current`], with
     /// `dpop_jkt` as the fallback. Identity beats correlation: a session

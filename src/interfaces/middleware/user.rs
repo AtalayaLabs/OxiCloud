@@ -33,10 +33,10 @@ use uuid::Uuid;
 use crate::application::services::auth_application_service::AuthApplicationService;
 use crate::common::di::AppState;
 use crate::domain::entities::presented_token::PresentedToken;
-use crate::domain::entities::user::{Caller, UserFlags, UserRole};
+use crate::domain::entities::user::{CallerKind, UserFlags, UserRole};
 use crate::domain::errors::{DomainError, ErrorKind};
 use crate::interfaces::errors::AppError;
-use crate::interfaces::middleware::auth::CurrentUser;
+use crate::interfaces::middleware::auth::CurrentCaller;
 
 /// Require the caller to be an internal user. Returns `Ok(())` for
 /// internal callers, `Err(403)` for externals.
@@ -177,14 +177,14 @@ pub async fn require_admin_user(
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LiveRole {
     /// The account exists and is active, and this is WHO it is — the live
-    /// [`Caller`], authoritative over the possibly-stale JWT `role` claim.
+    /// [`CallerKind`], authoritative over the possibly-stale JWT `role` claim.
     ///
     /// One value rather than a `(role, is_external)` pair: the flags
     /// lookup answered both, and returning only the role is what made
     /// `require_internal_user` issue a SECOND `get_user_flags` on every
-    /// request to a DAV surface. `Caller` is `Copy` and one byte wider
+    /// request to a DAV surface. `CallerKind` is `Copy` and one byte wider
     /// than the discriminant, so nothing is allocated per request —
-    Active(Caller),
+    Active(CallerKind),
     /// The account is deactivated or deleted: the request must be rejected
     /// even though its token is still cryptographically valid.
     Revoked,
@@ -324,13 +324,13 @@ fn revoked_by_cutoff(
 fn anonymous_live_role(claim_role: &str) -> Option<LiveRole> {
     UserRole::from_session(claim_role)
         .filter(|r| r.is_anonymous())
-        // `Caller::Visitor` rather than a (role, is_external) pair: a share
+        // `CallerKind::Visitor` rather than a (role, is_external) pair: a share
         // visitor has NO `auth.users` row, so neither "internal" nor
         // "external" was true of them and the pair had to assert one. The
         // interim bool said `true` — fail-closed, because `false` would
         // read as "internal" and pass the internal-user gate. Now the
         // state is simply named.
-        .map(|_| LiveRole::Active(Caller::Visitor))
+        .map(|_| LiveRole::Active(CallerKind::Visitor))
 }
 
 /// Pure decision core of [`resolve_live_role`], split out so the
@@ -379,7 +379,7 @@ fn decide_live_role(
             audit_token_revoked(user_id, "session_revoked");
             LiveRole::Revoked
         }
-        Ok(flags) if flags.active => LiveRole::Active(Caller::from_flags(&flags)),
+        Ok(flags) if flags.active => LiveRole::Active(CallerKind::from_flags(&flags)),
         Ok(_) => {
             audit_token_revoked(user_id, "deactivated");
             LiveRole::Revoked
@@ -433,17 +433,17 @@ fn audit_token_revoked(user_id: Uuid, reason: &'static str) {
 /// semantic meaning for externals — they own no calendars, no address
 /// books, no home folder.
 ///
-/// Must run AFTER the auth middleware so `CurrentUser` is in the
+/// Must run AFTER the auth middleware so `CurrentCaller` is in the
 /// request extensions; in tower order that means the auth layer is
 /// added LAST (outermost). If the layer fires on an unauthenticated
-/// path (no `CurrentUser` populated), it simply passes through — the
+/// path (no `CurrentCaller` populated), it simply passes through — the
 /// inner handler is then responsible for the 401, and we don't blanket-
 /// 403 traffic the auth layer would have rejected anyway.
 ///
 /// Emits an `authz.external_user_blocked` audit event on rejection so
 /// operators can spot which surfaces externals are probing.
 pub async fn require_internal_user_layer(
-    // Unused now that the decision reads `CurrentUser`, but the signature
+    // Unused now that the decision reads `CurrentCaller`, but the signature
     // is what `from_fn_with_state` expects at all 11 mount points.
     State(_state): State<Arc<AppState>>,
     request: Request,
@@ -451,21 +451,21 @@ pub async fn require_internal_user_layer(
 ) -> Response {
     let caller = request
         .extensions()
-        .get::<Arc<CurrentUser>>()
-        .map(|cu| (cu.id, cu.caller));
+        .get::<Arc<CurrentCaller>>()
+        .map(|cc| (cc.id, cc.kind));
 
     let Some((caller_id, caller_kind)) = caller else {
         // No auth populated, or auth disabled globally — pass through.
         return next.run(request).await;
     };
 
-    // Read off `CurrentUser` rather than calling `require_internal_user`,
+    // Read off `CurrentCaller` rather than calling `require_internal_user`,
     // which would issue a SECOND `get_user_flags` for a fact the auth
     // middleware already resolved — on every request to `/webdav`,
     // `/caldav` and `/carddav`.
     //
     // Sound because the error cases were decided upstream: if a
-    // `CurrentUser` is in the extensions then the flags read SUCCEEDED.
+    // `CurrentCaller` is in the extensions then the flags read SUCCEEDED.
     // `resolve_live_role` turns a transient failure into
     // `Indeterminate` (503) and a missing row into `Revoked` (401)
     // before this layer runs, so the three non-`Ok` arms
@@ -509,7 +509,7 @@ pub async fn require_internal_user_layer(
 ///   * `POST /api/auth/logout`         — bailing out is always allowed.
 ///
 /// `/api/auth/refresh` is not on this list because refresh is mounted
-/// on a rate-limited public path that doesn't carry a `CurrentUser` at
+/// on a rate-limited public path that doesn't carry a `CurrentCaller` at
 /// middleware time; the gate never fires on it. If refresh ever moves
 /// under the gate, add `(&Method::POST, "/api/auth/refresh")` here.
 fn is_password_change_pending_allowlisted(method: &axum::http::Method, path: &str) -> bool {
@@ -544,7 +544,7 @@ fn is_password_change_pending_allowlisted(method: &axum::http::Method, path: &st
 /// reset before other clients work again.
 ///
 /// Must run AFTER the auth middleware. On unauthenticated paths (no
-/// `CurrentUser` populated) this is a pass-through — the inner
+/// `CurrentCaller` populated) this is a pass-through — the inner
 /// handler / auth layer will produce the 401.
 pub async fn require_no_password_change_pending_layer(
     State(state): State<Arc<AppState>>,
@@ -574,18 +574,18 @@ pub async fn require_no_password_change_pending_layer(
         return next.run(request).await;
     }
 
-    let current_user = request.extensions().get::<Arc<CurrentUser>>();
+    let current_user = request.extensions().get::<Arc<CurrentCaller>>();
 
     // An anonymous public-share visitor has no account, so no password can be
     // pending a forced change. Skipping is not only correctness: without it
     // every such request looks up a `visitor_id` matching no row, which misses
     // the flags cache and reaches the database — on the highest-frequency GET
     // in the app (one per thumbnail tile).
-    if current_user.is_some_and(|cu| cu.is_anonymous()) {
+    if current_user.is_some_and(|cc| cc.is_anonymous()) {
         return next.run(request).await;
     }
 
-    let caller_id = current_user.map(|cu| cu.id);
+    let caller_id = current_user.map(|cc| cc.id);
 
     let (Some(caller_id), Some(svc)) = (
         caller_id,
@@ -651,7 +651,10 @@ mod tests {
         );
         // The live record wins over the (stale) claim — a freshly promoted
         // user is admin even though their token still says "user".
-        assert_eq!(live, LiveRole::Active(Caller::Internal(UserRole::Admin)));
+        assert_eq!(
+            live,
+            LiveRole::Active(CallerKind::Internal(UserRole::Admin))
+        );
     }
 
     #[test]
@@ -662,7 +665,7 @@ mod tests {
             Uuid::nil(),
             PresentedToken::default(),
         );
-        assert_eq!(live, LiveRole::Active(Caller::Internal(UserRole::User)));
+        assert_eq!(live, LiveRole::Active(CallerKind::Internal(UserRole::User)));
     }
 
     #[test]
@@ -771,9 +774,9 @@ mod tests {
             // The old assertion had to pin `is_external: true` — a value
             // that is not true of a visitor — because `false` would read
             // as "internal" and pass `require_internal_user_layer`. With
-            // `Caller::Visitor` there is nothing to get wrong: the layer
+            // `CallerKind::Visitor` there is nothing to get wrong: the layer
             // asks `is_internal()`, which only `Internal(_)` answers.
-            Some(LiveRole::Active(Caller::Visitor)),
+            Some(LiveRole::Active(CallerKind::Visitor)),
         );
     }
 
@@ -911,7 +914,7 @@ mod tests {
                     ..Default::default()
                 },
             ),
-            LiveRole::Active(Caller::Internal(UserRole::Admin)),
+            LiveRole::Active(CallerKind::Internal(UserRole::Admin)),
         );
     }
 
@@ -929,7 +932,7 @@ mod tests {
                     ..Default::default()
                 },
             ),
-            LiveRole::Active(Caller::Internal(UserRole::Admin)),
+            LiveRole::Active(CallerKind::Internal(UserRole::Admin)),
         );
     }
 
@@ -945,7 +948,7 @@ mod tests {
                 Uuid::nil(),
                 PresentedToken::default(),
             ),
-            LiveRole::Active(Caller::Internal(UserRole::Admin)),
+            LiveRole::Active(CallerKind::Internal(UserRole::Admin)),
         );
     }
 
@@ -989,7 +992,7 @@ mod tests {
                     ..Default::default()
                 },
             ),
-            LiveRole::Active(Caller::Internal(UserRole::Admin)),
+            LiveRole::Active(CallerKind::Internal(UserRole::Admin)),
         );
     }
 
@@ -1039,7 +1042,7 @@ mod tests {
                     ..Default::default()
                 },
             ),
-            LiveRole::Active(Caller::Internal(UserRole::Admin)),
+            LiveRole::Active(CallerKind::Internal(UserRole::Admin)),
         );
     }
 
@@ -1056,7 +1059,7 @@ mod tests {
                 Uuid::nil(),
                 PresentedToken::default(),
             ),
-            LiveRole::Active(Caller::Internal(UserRole::Admin)),
+            LiveRole::Active(CallerKind::Internal(UserRole::Admin)),
         );
     }
 
@@ -1073,7 +1076,7 @@ mod tests {
                     ..Default::default()
                 },
             ),
-            LiveRole::Active(Caller::Internal(UserRole::Admin)),
+            LiveRole::Active(CallerKind::Internal(UserRole::Admin)),
         );
     }
 

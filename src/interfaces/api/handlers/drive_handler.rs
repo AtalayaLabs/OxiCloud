@@ -173,7 +173,7 @@ pub async fn create_drive(
     auth_user: AuthUser,
     Json(dto): Json<CreateDriveDto>,
 ) -> impl IntoResponse {
-    let caller_is_admin = auth_user.caller.role().at_least(UserRole::Admin);
+    let caller_is_admin = auth_user.kind.role().at_least(UserRole::Admin);
 
     // Personal kind is a wire-shape placeholder — see DTO doc.
     if dto.kind == DriveKindDto::Personal {
@@ -486,7 +486,7 @@ pub async fn update_drive_policies(
     // OxiCloud-admin only. Anti-enumeration: return the same 404 a
     // non-existent drive would carry, never 403, so the policy
     // existence isn't probable by error shape.
-    if !auth_user.caller.role().at_least(UserRole::Admin) {
+    if !auth_user.kind.role().at_least(UserRole::Admin) {
         tracing::info!(
             target: "audit",
             event = "drive.policy_change_rejected",
@@ -640,7 +640,7 @@ pub async fn update_drive_quota(
     // caller can't distinguish "no such drive" from "you're not
     // admin" — the endpoint's existence isn't probable by error
     // shape.
-    if !auth_user.caller.role().at_least(UserRole::Admin) {
+    if !auth_user.kind.role().at_least(UserRole::Admin) {
         tracing::info!(
             target: "audit",
             event = "drive.quota_change_rejected",

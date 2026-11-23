@@ -62,8 +62,9 @@ Basic hit is bumps + a 24-byte memcpy. JSON wire shape is unchanged
 
 > **Superseded since Round 10, in the same direction.** The numbers above
 > stand as measured, but both role carriers are gone:
-> `CurrentUser.role: SmolStr` + `is_external: bool` became one `Copy`
-> `Caller` enum (no string, so no 23-byte buffer and no reparse), and
+> the then-`CurrentUser.role: SmolStr` + `is_external: bool` became one
+> `Copy` `CallerKind` on what is now `CurrentCaller` (no string, so no
+> 23-byte buffer and no reparse), and
 > `CachedBasicAuthResult` lost its role field entirely — both callers
 > dropped it as stale, since that cache has a 300 s TTL against the live
 > flags cache's 30 s. So the AFTER side of sections 1 and 2 is now smaller

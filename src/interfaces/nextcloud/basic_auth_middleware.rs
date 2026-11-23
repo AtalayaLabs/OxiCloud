@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use crate::application::dtos::folder_dto::FolderDto;
 use crate::common::di::AppState;
-use crate::interfaces::middleware::auth::CurrentUser;
+use crate::interfaces::middleware::auth::CurrentCaller;
 
 /// Markerless-chroot cache: default-drive root folder id → `FolderDto`.
 ///
@@ -262,16 +262,16 @@ pub async fn basic_auth_middleware(
             // no per-request `to_string` (mirrors the JWT path since ROUND5).
             tracing::Span::current().record("user_id", tracing::field::display(user_id));
             // One shared identity: the same `Arc` serves the
-            // `Arc<CurrentUser>` extension AND `NcSession.user` (the old
+            // `Arc<CurrentCaller>` extension AND `NcSession.user` (the old
             // code built the struct, cloned it for the extension, then
             // moved the original — 2-3 String allocs per request).
             // Nextcloud clients are always unbound — they authenticate
             // with app passwords via Basic Auth, no WebCrypto, no DPoP.
             // Middleware exempts unbound sessions per Gate 9 design.
-            let current_user = Arc::new(CurrentUser {
+            let current_user = Arc::new(CurrentCaller {
                 // The same single flags read that answered `active` and the
                 // live role — § the one-read rule in this file's header.
-                caller: crate::domain::entities::user::Caller::from_flags(&flags),
+                kind: crate::domain::entities::user::CallerKind::from_flags(&flags),
                 // NextCloud Basic auth: no JWT, so no `sid` or `iat`.
                 token: crate::domain::entities::presented_token::PresentedToken::default(),
                 id: user_id,

@@ -207,7 +207,7 @@ A top-level create is a **gate** question wearing a grant's clothes.
 │     │             ├─ sid ∈ revoked_session_ids  → 401  (per-session)
 │     │             └─ DB error                   → 503  (never a denial)
 │     │
-│     ├── CurrentUser { id, username, email, role ←LIVE, dpop_jkt, token }
+│     ├── CurrentCaller { id, username, email, role ←LIVE, dpop_jkt, token }
 │     │        └─→ Arc into request extensions
 │     │
 │     └── last_seen.touch(sid)         ⚡ DashMap upsert, no I/O
@@ -241,7 +241,7 @@ A top-level create is a **gate** question wearing a grant's clothes.
 Three things worth reading off the diagram:
 
 - **The gate axis costs one cached read per request.** Role is resolved
-  live in step 1 and lands on `CurrentUser.role`, so it is the *claim*
+  live in step 1 and lands on `CurrentCaller.role`, so it is the *claim*
   that is advisory and the live value that is authoritative. Step 2's
   second `get_user_flags` is a redundant hit on the same cache, because
   `is_external` is not carried on the caller.
@@ -383,7 +383,7 @@ When a check can be forgotten, prefer the form where forgetting fails:
 3. **Won't pass CI** — a test that enumerates routes and fails on an
    undeclared one.
 4. **Fails closed at runtime** — the default answer is refusal.
-   `CurrentUser::role_enum()` resolving an unknown value to `Anonymous`
+   `CurrentCaller::role_enum()` resolving an unknown value to `Anonymous`
    is this: the least privileged answer, not the most convenient one.
 5. **Merely visible** — a comment or a doc. Weakest; use only when the
    four above cannot apply.

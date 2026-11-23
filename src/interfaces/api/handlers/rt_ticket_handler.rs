@@ -63,7 +63,7 @@ pub struct RtTicketResponse {
 pub async fn issue_rt_ticket(
     // `AuthUser` rather than `CurrentUserId` because this handler needs
     // the session the caller presented, not only their id. It derefs to
-    // `CurrentUser`, so this costs no allocation and no extra extraction.
+    // `CurrentCaller`, so this costs no allocation and no extra extraction.
     caller: AuthUser,
     State(state): State<Arc<AppState>>,
 ) -> Json<RtTicketResponse> {

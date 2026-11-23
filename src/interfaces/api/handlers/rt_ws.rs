@@ -52,7 +52,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::domain::entities::user::{Caller, UserRole};
+use crate::domain::entities::user::{CallerKind, UserRole};
 
 use axum::body::Bytes;
 use axum::extract::State;
@@ -416,7 +416,7 @@ async fn handle_session(
     // `mut` because the keepalive tick refreshes it: a demotion used to
     // be invisible to an open socket, which kept admin-topic access for
     // the life of the connection.
-    let mut caller: Caller = match state.auth_service.as_ref() {
+    let mut kind: CallerKind = match state.auth_service.as_ref() {
         Some(auth) => {
             match crate::interfaces::middleware::user::resolve_live_role(
                 auth.auth_application_service.as_ref(),
@@ -481,7 +481,7 @@ async fn handle_session(
         // asserted a role nobody had verified; `Internal(User)` says the
         // same thing in the type, and the surrounding branch only runs when
         // there is no auth service to ask.
-        None => Caller::Internal(UserRole::User),
+        None => CallerKind::Internal(UserRole::User),
     };
 
     // Outbound queue — every path that produces a client-bound frame
@@ -662,10 +662,10 @@ async fn handle_session(
                         auth.auth_application_service.as_ref(),
                         caller_id,
                         // `claim_role` is only consulted for the anonymous
-                        // short-circuit. A visitor keeps its `Caller` across
+                        // short-circuit. A visitor keeps its `CallerKind` across
                         // ticks without a flags read, which is what this
                         // passes through; anything else takes the live read.
-                        caller.role().as_str(),
+                        kind.role().as_str(),
                         presented,
                     )
                     .await
@@ -673,7 +673,7 @@ async fn handle_session(
                         crate::interfaces::middleware::user::LiveRole::Active(live) => {
                             // Refresh on the keepalive tick: a demotion was
                             // invisible to an open socket before.
-                            caller = live;
+                            kind = live;
                         }
                         crate::interfaces::middleware::user::LiveRole::Revoked => {
                             tracing::info!(
@@ -709,7 +709,7 @@ async fn handle_session(
                 match incoming {
                     Some(Ok(Message::Text(txt))) => {
                         if let Some(reply) =
-                            handle_text_frame(&txt, caller_id, caller, &state, &mut subs, &out_tx).await
+                            handle_text_frame(&txt, caller_id, kind, &state, &mut subs, &out_tx).await
                             && socket.send(Message::Text(reply.into())).await.is_err() {
                                 break;
                             }
@@ -908,7 +908,7 @@ async fn handle_session(
 async fn handle_text_frame(
     text: &str,
     caller_id: Uuid,
-    caller: Caller,
+    kind: CallerKind,
     state: &Arc<AppState>,
     subs: &mut HashMap<String, Sub>,
     out_tx: &mpsc::Sender<SessionOut>,
@@ -939,7 +939,7 @@ async fn handle_text_frame(
 
     match method.as_str() {
         "rt.subscribe" => {
-            Some(handle_subscribe(id, req.params, caller_id, caller, state, subs, out_tx).await)
+            Some(handle_subscribe(id, req.params, caller_id, kind, state, subs, out_tx).await)
         }
         "rt.unsubscribe" => Some(handle_unsubscribe(id, req.params, subs)),
         "rt.ping" => Some(success_response(id, serde_json::json!({ "pong": true }))),
@@ -1158,7 +1158,7 @@ async fn handle_subscribe(
     id: Value,
     params: Value,
     caller_id: Uuid,
-    caller: Caller,
+    kind: CallerKind,
     state: &Arc<AppState>,
     subs: &mut HashMap<String, Sub>,
     out_tx: &mpsc::Sender<SessionOut>,
@@ -1289,7 +1289,7 @@ async fn handle_subscribe(
             // was snapshotted at session start (see `handle_session`),
             // so no per-subscribe DB hit. A demotion mid-session
             // takes effect on the caller's next reconnect.
-            if !caller.role().at_least(UserRole::Admin) {
+            if !kind.role().at_least(UserRole::Admin) {
                 audit_denied(caller_id, &topic_str, "role_denied");
                 return error_response(
                     id,

@@ -810,7 +810,7 @@ pub fn create_api_routes(app_state: &Arc<AppState>) -> Router<Arc<AppState>> {
     // Admin settings routes — the whole subtree is admin-only by
     // construction. The `require_admin` layer runs AFTER the outer
     // `auth_middleware` (main.rs::protected_api), so it can rely on
-    // `CurrentUser` already being in the request extensions. Any new
+    // `CurrentCaller` already being in the request extensions. Any new
     // route added to `admin_handler::admin_routes()` inherits the
     // gate automatically — implementors no longer have to remember
     // to call `require_admin(&state, &headers).await?` inline, and a

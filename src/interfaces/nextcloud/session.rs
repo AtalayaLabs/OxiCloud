@@ -43,13 +43,13 @@ use axum::{
 
 use crate::application::dtos::folder_dto::FolderDto;
 use crate::interfaces::errors::AppError;
-use crate::interfaces::middleware::auth::CurrentUser;
+use crate::interfaces::middleware::auth::CurrentCaller;
 
 #[derive(Debug, Clone)]
 pub struct NcSession {
-    /// Shared with the `Arc<CurrentUser>` request extension — one identity
+    /// Shared with the `Arc<CurrentCaller>` request extension — one identity
     /// build per request instead of a clone per consumer.
-    pub user: Arc<CurrentUser>,
+    pub user: Arc<CurrentCaller>,
     pub raw_username: String,
     /// Shared with `NC_CHROOT_CACHE` (markerless branch) — a cache hit is
     /// an `Arc` bump, not a `FolderDto` deep-clone.
@@ -129,7 +129,7 @@ fn extract_url_user(path: &str) -> Option<std::borrow::Cow<'_, str>> {
 /// Derefs to `NcSession`, so handler bodies read `session.user`,
 /// `session.require_chroot()`, … unchanged. Extraction is one `Arc`
 /// refcount increment — the previous extractor deep-cloned the whole
-/// session (`CurrentUser` + `raw_username` + chroot `FolderDto`, ~8-9
+/// session (`CurrentCaller` + `raw_username` + chroot `FolderDto`, ~8-9
 /// `String` allocs) on every authenticated NC request.
 ///
 /// On path-scoped DAV routes (`/remote.php/dav/{files,uploads,

@@ -28,7 +28,7 @@ pub trait PasswordHasherPort: Send + Sync + 'static {
 
 /// Claims contained in a JWT token
 ///
-/// `username` / `email` are `Arc<str>` so the per-request `CurrentUser`
+/// `username` / `email` are `Arc<str>` so the per-request `CurrentCaller`
 /// build clones them with a refcount bump instead of copying the strings —
 /// the validation cache already hands the whole struct out behind an `Arc`,
 /// but the two display fields still had to be deep-cloned out of it on

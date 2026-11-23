@@ -23,7 +23,7 @@ has shipped is worse than no status at all.
 | Session IP pair — `created_ip` / `last_seen_ip` | **done** | `b299f184f` `5a31e1f29` |
 | Connected-device list + revoke reading `auth.sessions` | **done** | `5c3da3ac7` |
 | WebSocket revocation — both upgrade paths + open-socket re-check | **done** | `75c806b5a` `57a506a85` |
-| `CurrentUser` carries the presented token (`sid` + `iat`) | **done** | `9a42e4299` |
+| `CurrentCaller` carries the presented token (`sid` + `iat`) | **done** | `9a42e4299` |
 | OIDC backchannel logout applies immediately | **done** | `0228c1433` |
 | Scope narrowing, obligations (part B) | **not started** | needs `scope-gates.md` PR 2 (`Scope` + enforcement) — and nothing from PR 1 |
 

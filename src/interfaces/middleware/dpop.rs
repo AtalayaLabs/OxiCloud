@@ -1,6 +1,6 @@
 //! DPoP proof enforcement middleware (RFC 9449).
 //!
-//! Runs AFTER the auth middleware — reads the `CurrentUser`
+//! Runs AFTER the auth middleware — reads the `CurrentCaller`
 //! extension to know the caller has an authenticated session, and
 //! validates the `DPoP` header against the session's stored JWK
 //! thumbprint (`session.dpop_jkt`).
@@ -47,7 +47,7 @@ use crate::infrastructure::services::dpop_verifier::{
     DpopRequestContext, DpopVerifyError, verify as verify_proof,
 };
 use crate::interfaces::errors::AppError;
-use crate::interfaces::middleware::auth::CurrentUser;
+use crate::interfaces::middleware::auth::CurrentCaller;
 
 /// Resolve the request's external `(scheme, host)` — what the client
 /// sees the URL as, which is what its DPoP proof's `htu` was built
@@ -94,7 +94,7 @@ pub async fn require_dpop_layer(
     // No authenticated user → pass through (upstream auth layer
     // already handled or will handle the 401). We only concern
     // ourselves with proof-carrying requests on authenticated paths.
-    let Some(current_user) = request.extensions().get::<Arc<CurrentUser>>().cloned() else {
+    let Some(current_user) = request.extensions().get::<Arc<CurrentCaller>>().cloned() else {
         return next.run(request).await;
     };
 

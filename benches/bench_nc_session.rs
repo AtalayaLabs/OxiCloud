@@ -4,16 +4,16 @@
 //! the session. The old pipeline paid, per request:
 //!
 //!   • extractor: `(**arc).clone()` — a DEEP clone of `NcSession`
-//!     (`CurrentUser` 3 Strings + `raw_username` + chroot `FolderDto`
+//!     (`CurrentCaller` 3 Strings + `raw_username` + chroot `FolderDto`
 //!     ~5 Strings ≈ 8-9 heap allocs) despite the doc claiming "one Arc
 //!     increment";
 //!   • chroot cache hit: moka `get` clones the stored `FolderDto` by value
 //!     (~5 more allocs) on the markerless (default-drive) branch;
-//!   • session build: `CurrentUser` built then cloned for the extension,
+//!   • session build: `CurrentCaller` built then cloned for the extension,
 //!     `raw_username` cloned, `user_id.to_string()` for the span.
 //!
 //! Round 9 stores `Arc<FolderDto>` in the cache, shares one
-//! `Arc<CurrentUser>` between the extension and the session, and extracts
+//! `Arc<CurrentCaller>` between the extension and the session, and extracts
 //! `SharedNcSession` (an `Arc` handle that derefs to `NcSession`).
 //!
 //! `mod before` replicates the old struct shapes + clone flows verbatim;
@@ -23,7 +23,7 @@
 //!   1. Extractor — allocs/extract + ns/extract (BEFORE deep clone vs
 //!      AFTER production `SharedNcSession::from_request_parts`)
 //!   2. Chroot-cache hit — allocs/hit (FolderDto-by-value vs Arc)
-//!   3. Session build — allocs/build (double CurrentUser + clones vs
+//!   3. Session build — allocs/build (double CurrentCaller + clones vs
 //!      single shared Arc + moves)
 //!
 //! Run (no Postgres needed):
@@ -40,7 +40,7 @@ use std::time::Instant;
 use axum::extract::FromRequestParts;
 use oxicloud::application::dtos::display_helpers::ResourceCategory;
 use oxicloud::application::dtos::folder_dto::FolderDto;
-use oxicloud::interfaces::middleware::auth::CurrentUser;
+use oxicloud::interfaces::middleware::auth::CurrentCaller;
 use oxicloud::interfaces::nextcloud::session::{NcSession, SharedNcSession};
 
 // ─── Counting allocator ─────────────────────────────────────────────────────
@@ -82,10 +82,10 @@ fn env_or<T: std::str::FromStr>(key: &str, default: T) -> T {
 mod before {
     use super::*;
 
-    /// Old `NcSession` shape: owned `CurrentUser`, chroot by value.
+    /// Old `NcSession` shape: owned `CurrentCaller`, chroot by value.
     #[derive(Debug, Clone)]
     pub struct OldNcSession {
-        pub user: CurrentUser,
+        pub user: CurrentCaller,
         pub raw_username: String,
         pub chroot: Option<FolderDto>,
     }
@@ -123,12 +123,12 @@ fn fixture_folder() -> FolderDto {
     }
 }
 
-fn fixture_user(id: uuid::Uuid) -> CurrentUser {
-    CurrentUser {
+fn fixture_user(id: uuid::Uuid) -> CurrentCaller {
+    CurrentCaller {
         id,
         username: Arc::from("alice.longname"),
         email: Arc::from("alice.longname@example.com"),
-        caller: oxicloud::domain::entities::user::Caller::Internal(
+        kind: oxicloud::domain::entities::user::CallerKind::Internal(
             oxicloud::domain::entities::user::UserRole::User,
         ),
         dpop_jkt: None,
@@ -168,7 +168,7 @@ async fn main() {
         assert_eq!(old.user.id, new.user.id);
         assert_eq!(old.user.username, new.user.username);
         assert_eq!(old.user.email, new.user.email);
-        assert_eq!(old.user.caller, new.user.caller);
+        assert_eq!(old.user.kind, new.user.kind);
         assert_eq!(old.raw_username, new.raw_username);
         let (oc, nc) = (old.chroot.as_ref().unwrap(), new.require_chroot().unwrap());
         assert_eq!(oc.name, nc.name);
@@ -278,7 +278,7 @@ async fn main() {
     let s2_ok = ba_allocs < bv_allocs;
 
     // ── Section 3: session build ────────────────────────────────────────────
-    // BEFORE: build CurrentUser, clone it for the extension Arc, clone
+    // BEFORE: build CurrentCaller, clone it for the extension Arc, clone
     // raw_username, `to_string` the span value. AFTER: one Arc shared by
     // extension + session, raw_username moved, span rendered lazily (the
     // lazy render costs nothing here; the removed `to_string` did).
@@ -316,7 +316,7 @@ async fn main() {
     let sa_allocs = ALLOC_CALLS.load(Ordering::Relaxed) - a1;
 
     println!("\n#################################################################");
-    println!("# [3] session build — double CurrentUser + clones vs shared Arc");
+    println!("# [3] session build — double CurrentCaller + clones vs shared Arc");
     println!("# builds={reqs}");
     println!("#################################################################\n");
     println!(

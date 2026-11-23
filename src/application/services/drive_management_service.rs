@@ -80,7 +80,7 @@ impl DriveManagementService {
     /// admin-only path; group-owner triggering can extend the gate
     /// later without changing the wire shape or the service method
     /// signature. `caller_is_admin` is resolved by the HTTP handler
-    /// from `CurrentUser.role` and passed in; the service trusts it
+    /// from `CurrentCaller.kind` and passed in; the service trusts it
     /// (defense-in-depth check stays at the route layer).
     ///
     /// Quota: an omitted `quota_bytes` falls back to the configured

@@ -2541,7 +2541,7 @@ impl AuthApplicationService {
         &self,
         username: &str,
         password: &str,
-    ) -> Result<crate::application::dtos::user_dto::CurrentUser, DomainError> {
+    ) -> Result<crate::application::dtos::user_dto::CurrentCaller, DomainError> {
         let user = self
             .user_storage
             .get_user_by_username(username)
@@ -2579,13 +2579,13 @@ impl AuthApplicationService {
         // credential, so it owes the same checks as a session mint.
         check_account_admission(&user, self.require_verified_email, "nextcloud_login_v2")?;
 
-        Ok(crate::application::dtos::user_dto::CurrentUser {
+        Ok(crate::application::dtos::user_dto::CurrentCaller {
             id: user.id(),
             // Straight off the entity this door already loaded and admitted.
-            caller: if user.is_external() {
-                crate::domain::entities::user::Caller::External
+            kind: if user.is_external() {
+                crate::domain::entities::user::CallerKind::External
             } else {
-                crate::domain::entities::user::Caller::Internal(user.role())
+                crate::domain::entities::user::CallerKind::Internal(user.role())
             },
             // This door mints an app password, not a JWT — no claims to
             // record.
@@ -2595,7 +2595,7 @@ impl AuthApplicationService {
             // The one caller is the NextCloud Login Flow v2
             // (`nextcloud/login_v2_handler.rs`), whose clients hold an
             // app password and are exempt from DPoP; the middleware
-            // never reads a `CurrentUser` populated here. Leaving None
+            // never reads a `CurrentCaller` populated here. Leaving None
             // is safe.
             dpop_jkt: None,
         })

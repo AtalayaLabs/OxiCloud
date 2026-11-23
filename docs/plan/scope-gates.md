@@ -38,7 +38,7 @@ consequences land before the first line here:
   carries `sessions_valid_from` and `revoked_session_ids`. The fold
   touches those call sites, so expect them to look different from the
   snippets here.
-- **`CurrentUser` carries `token: PresentedToken`**, so `sid` is on the
+- **`CurrentCaller` carries `token: PresentedToken`**, so `sid` is on the
   caller. That retires the choice § `sid` is no longer deferrable framed,
   and it is the prerequisite `Elevation` was waiting for.
 - **`require_no_password_change_pending_layer` cannot be deleted by this
@@ -191,7 +191,7 @@ pub enum MinPrincipal {
 
 /// NOT a v1 axis — there is no elevation state in the schema yet.
 /// Designed in `session-elevation.md`, which adds
-/// `auth.sessions.elevated_at`. Its `CurrentUser` prerequisite is DONE:
+/// `auth.sessions.elevated_at`. Its `CurrentCaller` prerequisite is DONE:
 /// the caller carries `token: PresentedToken`, so this reads
 /// `caller.token.session_id`.
 ///
@@ -317,7 +317,7 @@ pub struct ScopeSet {
 pub trait RequestPolicy {
     /// Takes the CALLER CONTEXT, not a bare user id — § What a scope is
     /// bound to.
-    async fn require(&self, policy: &Policy, caller: &CurrentUser)
+    async fn require(&self, policy: &Policy, caller: &CurrentCaller)
         -> Result<(), AppError>;
 }
 
@@ -326,8 +326,8 @@ pub trait RequestPolicy {
 ///
 /// Separate trait rather than a second method, so the phases cannot be
 /// confused by construction: this one takes a `&User` and no
-/// `CurrentUser`, so it cannot be called per request; `RequestPolicy`
-/// needs a `CurrentUser`, so it cannot be called at login. The handoff is
+/// `CurrentCaller`, so it cannot be called per request; `RequestPolicy`
+/// needs a `CurrentCaller`, so it cannot be called at login. The handoff is
 /// one-directional — admission mints the credential the request side
 /// reads.
 pub trait AdmissionPolicy {
@@ -482,11 +482,11 @@ user is currently allowed. Both halves are load-bearing:
   prevent. So user-derived variants re-read per request, as
   `require_internal_user` and `decide_live_role` already do.
 
-Hence `require(gate, caller: &CurrentUser)`: a bare `Uuid` cannot
+Hence `require(gate, caller: &CurrentCaller)`: a bare `Uuid` cannot
 express the session half, and a signature taking one quietly forces
 every condition to be user-bound.
 
-`CurrentUser` (`dtos/user_dto.rs:621`) carries `id`, `username`,
+`CurrentCaller` (`dtos/user_dto.rs:621`) carries `id`, `username`,
 `email`, `role` (**from the JWT claim**, hence stale-prone, hence
 `decide_live_role`), `dpop_jkt` — and now `token: PresentedToken`, the
 `sid` and `iat` the credential presented. **This question is closed; the
@@ -498,12 +498,12 @@ both claims come from the same credential and `resolve_live_role` needs
 them together; a second encoding of the same fact is how two channels
 drift apart. Which is why the field replaced a request-extension publish
 that had briefly served the same purpose: `CurrentUserId` is itself
-derived from `extensions.get::<Arc<CurrentUser>>()`, so the caller struct
+derived from `extensions.get::<Arc<CurrentCaller>>()`, so the caller struct
 was already reachable everywhere the extension was, and one channel beats
 two.
 
 Extensions could not have served a `Gate` in any case — `require(gate,
-caller: &CurrentUser)` passes the caller and nothing else, by design, so
+caller: &CurrentCaller)` passes the caller and nothing else, by design, so
 a condition evaluator has no route to the request. That is what decided
 question: the fact has to be on the caller.
 
@@ -513,7 +513,7 @@ Verified by regenerating `resources/gen/openapi.json`: no diff. CI diffs
 that file, so the skip is guarded by the artifact rather than by a unit
 test.
 
-Follow the precedent in that file: `CurrentUser::role` resolves an
+Follow the precedent in that file: `CurrentCaller::role` resolves an
 unrecognised value to `Anonymous`, "the least privileged answer". Same
 posture — an undetermined scope denies.
 
@@ -1052,7 +1052,7 @@ you must remember to write does. So the value is two narrower things:
    }
 
    impl dyn RequestPolicy {
-       pub async fn require_internal(&self, caller: &CurrentUser)
+       pub async fn require_internal(&self, caller: &CurrentCaller)
            -> Result<InternalCaller, AppError>;
    }
    ```
@@ -1148,22 +1148,22 @@ it is being forced to change. It only exists once step 3 does.)
 a layer is both natural and cheaper there. Extractors are for REST
 handlers only.
 
-### The field `CurrentUser` must carry first
+### The field `CurrentCaller` must carry first
 
 An axis-policy is a field read only if the caller actually carries it,
 and the caller now carries every field the four conditions read:
 
 | condition | reads | carried as |
 |---|---|---|
-| `MinRole` | the role | `Caller::Internal(UserRole)` |
-| `MinPrincipal` | public / visitor / user | the `Caller` variant itself |
+| `MinRole` | the role | `CallerKind::Internal(UserRole)` |
+| `MinPrincipal` | public / visitor / user | the `CallerKind` variant itself |
 | scope | the token's scope set | `PresentedToken` |
 | elevation | the elevation stamp | `PresentedToken` |
 
-`CurrentUser.caller: Caller` is one `Copy` enum:
+`CurrentCaller.kind: CallerKind` is one `Copy` enum:
 
 ```rust
-pub enum Caller {
+pub enum CallerKind {
     Visitor,              // public-share session: no auth.users row
     External,             // role is necessarily User (a schema CHECK)
     Internal(UserRole),   // user | admin | owner
@@ -1284,14 +1284,14 @@ in the per-call read").
 
 | axis | source | changes mid-credential? | evaluated |
 |---|---|---|---|
-| role (`Internal`/`Admin`/`Owner`) | `auth.users`, via `user_flags_cache` | **yes** — promote, demote, guest→internal | already resolved by `auth_middleware` into `CurrentUser.role` |
+| role (`Internal`/`Admin`/`Owner`) | `auth.users`, via `user_flags_cache` | **yes** — promote, demote, guest→internal | already resolved by `auth_middleware` into `CurrentCaller.role` |
 | principal | the credential | no | field read |
 | scope | the credential's `ScopeSet`, frozen at mint | no | mask `&` and compare |
 | elevation | `auth.sessions.elevated_at` | yes — it expires | pending the column |
 
 So a root gate layer adds **no lookup** to an authenticated request: the
 one cached read already happens in `auth_middleware`, and the rest are
-field reads — once `CurrentUser` carries `is_external`.
+field reads — once `CurrentCaller` carries `is_external`.
 
 Cost does not decide placement; staleness does:
 
@@ -1372,7 +1372,7 @@ plan is otherwise balanced. Ranked, because not all denial is equal:
 | 1. **Won't compile** | the omission is a type error | `InternalCaller` token — `auth_user.id` stops type-checking on an ownerless create |
 | 2. **Won't start** | boot panics on a misconfiguration | an unknown job name in `OXICLOUD_JOBS_SCHEDULED` already does this; the scope parser rejecting an unknown resource is the same posture |
 | 3. **Won't pass CI** | the omission fails a test | exhaustiveness test — a route in neither the scope map nor `SCOPELESS` |
-| 4. **Fails closed at runtime** | the default answer is refusal | ceilings as allowlists; `CurrentUser::role` resolving an unknown value to `Anonymous`, "the *least* privileged answer" |
+| 4. **Fails closed at runtime** | the default answer is refusal | ceilings as allowlists; `CurrentCaller::role` resolving an unknown value to `Anonymous`, "the *least* privileged answer" |
 | 5. **Merely visible** | a reviewer must notice | an extractor on a handler — forget it and the route is open. Use only where 1-4 do not fit |
 
 Prefer the lowest number available. Where this plan chose 4 over 1 it
@@ -1600,7 +1600,7 @@ only in a plan file:
 >    from both the scope map and `SCOPELESS` does.
 > 4. **Fails closed at runtime** — the default answer is refusal
 >    (ceilings as allowlists;
->    `CurrentUser::role` resolving an unknown value to `Anonymous`).
+>    `CurrentCaller::role` resolving an unknown value to `Anonymous`).
 > 5. **Merely visible** — a reviewer must notice. An extractor on a
 >    handler is this: forget it and the route is open. Use only where
 >    1-4 cannot express the question.
@@ -1862,7 +1862,7 @@ the `/api` door.
 ### What it requires
 
 The principal must carry **how it authenticated**, not just who it is.
-`CurrentUser` today cannot answer "was this a Basic app password or a
+`CurrentCaller` today cannot answer "was this a Basic app password or a
 Bearer JWT", so the credential kind is threaded alongside `dpop_jkt` —
 which is the precedent: that field exists precisely to answer a
 session-shaped question without a DB round trip.
@@ -2018,7 +2018,7 @@ The halves have opposite risk profiles and must not share a green suite:
 
 | PR | change | acceptance |
 |---|---|---|
-| 1 — gates | `is_external` on `CurrentUser`; `Condition` / `Policy` + `MinRole` / `MinPrincipal`; the compile step and the operation table; then fold three layers plus the `transfer_ownership` check | **behaviour-preserving**, and provable rather than hoped: the compiled table before and after the fold must be IDENTICAL, with `external_users.hurl` green *unchanged* |
+| 1 — gates | `is_external` on `CurrentCaller`; `Condition` / `Policy` + `MinRole` / `MinPrincipal`; the compile step and the operation table; then fold three layers plus the `transfer_ownership` check | **behaviour-preserving**, and provable rather than hoped: the compiled table before and after the fold must be IDENTICAL, with `external_users.hurl` green *unchanged* |
 | 2 — scopes | turns `device_codes.scopes` from an inert column into enforcement | **not** behaviour-preserving; carries every lockout risk below |
 
 Landing them together means PR 2's risk rides in on PR 1's green suite.
@@ -2075,13 +2075,13 @@ change:
 
 ### `sid` is on the caller
 
-`CurrentUser` carries `token: PresentedToken`, whose `session_id` is the
+`CurrentCaller` carries `token: PresentedToken`, whose `session_id` is the
 JWT `sid` (merged with `authn-pipeline.md` part A). So `security` gets
 the per-session form rather than ceiling-only, and `Elevation` reads
 `caller.token.session_id` once `auth.sessions.elevated_at` exists.
 
 It must live on the caller, not in request extensions: a gate is handed
-`&CurrentUser` and nothing else, so extensions can serve a handler but
+`&CurrentCaller` and nothing else, so extensions can serve a handler but
 never a gate.
 
 ## Test plan

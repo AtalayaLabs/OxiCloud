@@ -264,7 +264,7 @@ pub async fn search_groups(
     // list_members. External users have no business enumerating
     // groups; defence-in-depth on top of the ReBAC layer (which
     // already prevents them from being added to any group anyway).
-    let (caller_id, caller) = require_authenticated(&state, &headers).await?;
+    let (caller_id, kind) = require_authenticated(&state, &headers).await?;
     if let Some(auth_svc) = state.auth_service.as_ref()
         && let Err(err) = crate::interfaces::middleware::user::require_internal_user(
             &auth_svc.auth_application_service,
@@ -281,7 +281,7 @@ pub async fn search_groups(
         );
         return Err(err);
     }
-    let can_manage = caller.role().at_least(UserRole::Admin);
+    let can_manage = kind.role().at_least(UserRole::Admin);
     let svc = service(&state)?;
     // The share-dialog autocomplete doesn't render a member-count chip, so
     // emit 0 rather than spending a `COUNT(*)` per row. Frontend consumers

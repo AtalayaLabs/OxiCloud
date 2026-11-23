@@ -11,7 +11,7 @@ use std::sync::Arc;
 use crate::application::ports::folder_ports::FolderUseCase;
 use crate::common::di::AppState;
 use crate::common::errors::DomainError;
-use crate::interfaces::middleware::auth::CurrentUser;
+use crate::interfaces::middleware::auth::CurrentCaller;
 
 /// Drive option rendered on the picker page. `name` is the folder's
 /// display name; `id` is the folder UUID that becomes the `~{marker}`
@@ -242,7 +242,7 @@ async fn resolve_drive_or_complete(
     state: &Arc<AppState>,
     nextcloud: &crate::common::di::NextcloudServices,
     token: &str,
-    current_user: &CurrentUser,
+    current_user: &CurrentCaller,
     label: &'static str,
     mut drives: Vec<crate::application::dtos::folder_dto::FolderDto>,
 ) -> Response {
@@ -335,7 +335,7 @@ pub async fn handle_oidc_login_completion(
         None => return StatusCode::SERVICE_UNAVAILABLE.into_response(),
     };
 
-    // Full user record — needed to build the `CurrentUser` the shared
+    // Full user record — needed to build the `CurrentCaller` the shared
     // helpers expect (email + role in particular). We already have the
     // username from the OIDC claims, but not the rest.
     let user_dto = match auth.auth_application_service.get_user_by_id(user_id).await {
@@ -346,14 +346,14 @@ pub async fn handle_oidc_login_completion(
         }
     };
 
-    let current_user = CurrentUser {
+    let current_user = CurrentCaller {
         // From the DTO this door already loaded. `UserRoleDto` carries only
         // the three roles a row may hold, so the conversion is total — no
         // unparseable case and no `Anonymous` default to fall back to.
-        caller: if user_dto.is_external {
-            crate::domain::entities::user::Caller::External
+        kind: if user_dto.is_external {
+            crate::domain::entities::user::CallerKind::External
         } else {
-            crate::domain::entities::user::Caller::Internal(user_dto.role.into())
+            crate::domain::entities::user::CallerKind::Internal(user_dto.role.into())
         },
         // Login Flow v2 ends in an app password, not a JWT: no claims.
         token: crate::domain::entities::presented_token::PresentedToken::default(),
@@ -441,7 +441,7 @@ async fn complete_flow(
     state: &Arc<AppState>,
     login_flow: &crate::application::services::nextcloud_login_flow_service::NextcloudLoginFlowService,
     token: &str,
-    user: &CurrentUser,
+    user: &CurrentCaller,
     drive_id: Option<&str>,
     // Persisted verbatim as `auth.app_passwords.label`. Callers pass
     // `"Nextcloud"` for the password path and `"Nextcloud (OIDC)"` for
@@ -585,14 +585,14 @@ pub async fn handle_drive_pick(
         tracing::error!(%user_id, "Login Flow v2: pending user has no username — invariant violated");
         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
     };
-    let user = CurrentUser {
+    let user = CurrentCaller {
         // From the DTO this door already loaded. `UserRoleDto` carries only
         // the three roles a row may hold, so the conversion is total — no
         // unparseable case and no `Anonymous` default to fall back to.
-        caller: if user_dto.is_external {
-            crate::domain::entities::user::Caller::External
+        kind: if user_dto.is_external {
+            crate::domain::entities::user::CallerKind::External
         } else {
-            crate::domain::entities::user::Caller::Internal(user_dto.role.into())
+            crate::domain::entities::user::CallerKind::Internal(user_dto.role.into())
         },
         // Login Flow v2 ends in an app password, not a JWT: no claims.
         token: crate::domain::entities::presented_token::PresentedToken::default(),

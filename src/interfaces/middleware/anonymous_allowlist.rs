@@ -50,7 +50,7 @@ use axum::{
 };
 use std::sync::Arc;
 
-use crate::application::dtos::user_dto::CurrentUser;
+use crate::application::dtos::user_dto::CurrentCaller;
 
 /// Route patterns an anonymous public-share session may reach.
 ///
@@ -97,11 +97,11 @@ pub fn anonymous_may_reach(matched_path: Option<&str>, method: &Method) -> bool 
 
 /// `route_layer` middleware enforcing [`anonymous_may_reach`].
 ///
-/// Runs after `auth_middleware` has inserted `Arc<CurrentUser>`, so the role
+/// Runs after `auth_middleware` has inserted `Arc<CurrentCaller>`, so the role
 /// is available. Requests with no principal fall through untouched —
 /// authentication is not this layer's job.
 pub async fn anonymous_allowlist_layer(req: Request, next: Next) -> Response {
-    let Some(current_user) = req.extensions().get::<Arc<CurrentUser>>().cloned() else {
+    let Some(current_user) = req.extensions().get::<Arc<CurrentCaller>>().cloned() else {
         return next.run(req).await;
     };
     if !current_user.is_anonymous() {

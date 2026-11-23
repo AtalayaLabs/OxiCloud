@@ -52,7 +52,7 @@ impl UserRole {
     }
 
     /// Parse a role as carried on a **session** — a JWT claim or
-    /// `CurrentUser`. Unlike [`Self::from_stored`] this can yield
+    /// `CurrentCaller`. Unlike [`Self::from_stored`] this can yield
     /// `Anonymous`: a share visitor has a session role but no user row.
     pub fn from_session(raw: &str) -> Option<Self> {
         match raw {
@@ -105,9 +105,11 @@ impl UserRole {
 
     /// Does this **stringly-typed** role meet `min`?
     ///
-    /// The role crosses several boundaries as a plain `String` — the JWT
-    /// claim, `CurrentUser.role`, `PublicUserDto.role`, the live-role
-    /// string — and before the Owner role existed, six sites compared
+    /// The role crossed several boundaries as a plain `String` — the JWT
+    /// claim, the then-`CurrentCaller.role`, `PublicUserDto.role`, the
+    /// live-role string. The request path no longer does: `CurrentCaller`
+    /// carries a [`CallerKind`], so the comparisons below are on enums.
+    /// Before the Owner role existed, six of those sites compared
     /// those strings to `"admin"` literally. Every one silently denied the
     /// owner, who outranks admin: the admin API, the admin middleware, the
     /// NextCloud OCS group list, group management, dedup ref-counts, and
@@ -201,7 +203,7 @@ impl std::fmt::Display for FederationKind {
 }
 
 /// WHAT the caller is — one value replacing the `(role, is_external)` pair
-/// that `CurrentUser` used to carry.
+/// that `CurrentCaller` used to carry.
 ///
 /// The pair could express three states that cannot exist:
 /// anonymous+internal, anonymous+external, and admin/owner+external — the
@@ -211,9 +213,9 @@ impl std::fmt::Display for FederationKind {
 /// three are unrepresentable here.
 ///
 /// **There is no `Public` variant, and that is the design.** A caller with
-/// no credential has no `CurrentUser` in the request extensions at all, so
+/// no credential has no `CurrentCaller` in the request extensions at all, so
 /// the ABSENCE of the extension is what "public" means. That makes
-/// `Option<Arc<CurrentUser>>` the `Option<Caller>` — no second optional
+/// `Option<Arc<CurrentCaller>>` the `Option<CallerKind>` — no second optional
 /// layer, and it matches what `require_internal_user_layer` already does
 /// when it passes an unauthenticated request straight through.
 ///
@@ -223,7 +225,7 @@ impl std::fmt::Display for FederationKind {
 ///
 /// | caller | satisfies |
 /// |---|---|
-/// | (no `CurrentUser`) | `Public` |
+/// | (no `CurrentCaller`) | `Public` |
 /// | `Visitor` | `Public`, `Visitor` |
 /// | `External` | `Public`, `Visitor`, `User` |
 /// | `Internal(_)` | `Public`, `Visitor`, `User` |
@@ -233,12 +235,12 @@ impl std::fmt::Display for FederationKind {
 /// must, because [`UserRole`] has no `External` variant and that is
 /// precisely the pair being eliminated.
 /// `Default` is `Visitor` — the LEAST privileged value, so a careless
-/// `Caller::default()` fails closed. It exists only because
-/// `#[serde(skip)]` on `CurrentUser::caller` requires it; nothing
-/// deserializes a `CurrentUser` (its `Serialize`/`Deserialize` derives are
+/// `CallerKind::default()` fails closed. It exists only because
+/// `#[serde(skip)]` on `CurrentCaller::kind` requires it; nothing
+/// deserializes a `CurrentCaller` (its `Serialize`/`Deserialize` derives are
 /// vestigial — it appears in no OpenAPI path).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum Caller {
+pub enum CallerKind {
     /// A public-share visitor. Has a session (the ring) and a
     /// `visitor_id`, but **no `auth.users` row** — so neither "internal"
     /// nor "external" is true of them.
@@ -254,14 +256,14 @@ pub enum Caller {
     Internal(UserRole),
 }
 
-impl Caller {
+impl CallerKind {
     /// Build from the live flags — the only production path, which is what
     /// keeps `Internal(Anonymous)` out.
     pub fn from_flags(flags: &UserFlags) -> Self {
         if flags.is_external {
-            Caller::External
+            CallerKind::External
         } else {
-            Caller::Internal(flags.role)
+            CallerKind::Internal(flags.role)
         }
     }
 
@@ -275,9 +277,9 @@ impl Caller {
     /// is invisible here by design.
     pub fn role(self) -> UserRole {
         match self {
-            Caller::Visitor => UserRole::Anonymous,
-            Caller::External => UserRole::User,
-            Caller::Internal(r) => r,
+            CallerKind::Visitor => UserRole::Anonymous,
+            CallerKind::External => UserRole::User,
+            CallerKind::Internal(r) => r,
         }
     }
 
@@ -285,12 +287,12 @@ impl Caller {
     /// false — which is what "internal users only" actually asks, and what
     /// the `(role, is_external)` pair could not state in one read.
     pub fn is_internal(self) -> bool {
-        matches!(self, Caller::Internal(_))
+        matches!(self, CallerKind::Internal(_))
     }
 
     /// A public-share visitor, who has no user row.
     pub fn is_visitor(self) -> bool {
-        matches!(self, Caller::Visitor)
+        matches!(self, CallerKind::Visitor)
     }
 }
 
