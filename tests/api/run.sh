@@ -643,6 +643,7 @@ HURL_FILES=( \
   "$API_DIR/nc_admin_views_other_user.hurl" \
   "$API_DIR/admin_user_ops.hurl" \
   "$API_DIR/admin_role_hierarchy.hurl" \
+  "$API_DIR/gate_matrix.hurl" \
   "$API_DIR/dto_shape_regression_guards.hurl" \
   "$API_DIR/shared_worker_bus_discovery.hurl" \
   "$API_DIR/auth_config_discovery.hurl" \
