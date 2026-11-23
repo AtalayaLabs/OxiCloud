@@ -105,6 +105,16 @@ pub enum PolicyError {
     /// the pure compile module while `Site` lives with the registry that
     /// owns it.
     DuplicateDeclaration { site: String, count: usize },
+
+    /// A declaration that matches no live operation — § 2b's "a policy
+    /// naming no live operation".
+    ///
+    /// Load-bearing rather than belt-and-braces: `axum::Router` cannot be
+    /// asked which paths it holds, so a declaration for a typo'd or
+    /// renamed path is otherwise indistinguishable from one that applies,
+    /// and it silently stops gating anything. Nothing else in the design
+    /// catches it.
+    OrphanedDeclaration { site: String },
     // Reserved, pending `auth.sessions.elevated_at`:
     //
     // PublicWithElevation — elevation is a human re-proving themselves
@@ -158,6 +168,13 @@ impl std::fmt::Display for PolicyError {
                 "{site} carries {count} policy declarations. A repeated \
                  declaration would read as overriding the first, not \
                  adding to it — put every condition in one slice."
+            ),
+            PolicyError::OrphanedDeclaration { site } => write!(
+                f,
+                "{site} matches no live operation — a renamed or deleted \
+                 route, or a typo. It gates nothing, and axum cannot be \
+                 asked which paths exist, so this check is the only thing \
+                 that would notice."
             ),
             PolicyError::ConflictingScopes { op, first, second } => write!(
                 f,

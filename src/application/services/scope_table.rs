@@ -93,7 +93,7 @@ impl PolicyTable {
 /// Collected declarations, before compilation.
 #[derive(Debug, Default)]
 pub struct PolicyRegistry {
-    decls: Vec<(Site, &'static [Condition])>,
+    decls: Vec<(Site, Vec<Condition>)>,
 }
 
 impl PolicyRegistry {
@@ -104,8 +104,8 @@ impl PolicyRegistry {
     /// Record a declaration. Two declarations on the SAME site are
     /// refused at compile time, not here, so every duplicate is reported
     /// together with everything else rather than aborting on the first.
-    pub fn declare(&mut self, site: Site, conditions: &'static [Condition]) -> &mut Self {
-        self.decls.push((site, conditions));
+    pub fn declare(&mut self, site: Site, conditions: impl Into<Vec<Condition>>) -> &mut Self {
+        self.decls.push((site, conditions.into()));
         self
     }
 
@@ -116,14 +116,14 @@ impl PolicyRegistry {
     /// Shorter prefix = closer to the root, so sorting matching prefixes
     /// by length gives the nesting order without having to model the
     /// nesting itself.
-    fn chain_for(&self, op: Op) -> Vec<&'static [Condition]> {
-        let mut matched: Vec<(usize, &'static [Condition])> = Vec::new();
+    fn chain_for(&self, op: Op) -> Vec<&[Condition]> {
+        let mut matched: Vec<(usize, &[Condition])> = Vec::new();
 
         for (site, conds) in &self.decls {
             match (site, op) {
                 (Site::RestPrefix(prefix), Op::Rest(_, path)) => {
                     if path_covered_by(path, prefix) {
-                        matched.push((prefix.len(), conds));
+                        matched.push((prefix.len(), conds.as_slice()));
                     }
                 }
                 // A non-REST op has no path, so only an exact
@@ -131,7 +131,7 @@ impl PolicyRegistry {
                 // base, that is a new `Site` variant and a new match
                 // arm — it cannot change how existing sites resolve.
                 (Site::Exact(declared), _) if *declared == op => {
-                    matched.push((usize::MAX, conds));
+                    matched.push((usize::MAX, conds.as_slice()));
                 }
                 _ => {}
             }
@@ -153,12 +153,16 @@ impl PolicyRegistry {
     /// step 3b-ii.
     pub fn compile_all(&self, ops: &[Op]) -> Result<PolicyTable, Vec<PolicyError>> {
         let mut errors = self.duplicate_sites();
+        errors.extend(self.orphaned_sites(ops).into_iter().map(|site| {
+            PolicyError::OrphanedDeclaration {
+                site: format!("{site:?}"),
+            }
+        }));
         let mut table = BTreeMap::new();
 
         for &op in ops {
             let chain = self.chain_for(op);
-            let slices: Vec<&[Condition]> = chain.iter().map(|c| &**c).collect();
-            match compile(op, &slices) {
+            match compile(op, &chain) {
                 Ok(policy) => {
                     table.insert(op, policy);
                 }
@@ -170,6 +174,35 @@ impl PolicyRegistry {
             Ok(PolicyTable(table))
         } else {
             Err(errors)
+        }
+    }
+
+    /// Sites that matched NO operation in `ops` — § 2b's "a policy naming
+    /// no live operation".
+    ///
+    /// This refusal is load-bearing rather than belt-and-braces, because
+    /// `axum::Router` cannot be asked which paths it holds
+    /// (`has_routes() -> bool` is the whole introspection surface). So a
+    /// declaration for `/api/admni` — or for a path that was renamed last
+    /// month — is otherwise indistinguishable from one that applies, and
+    /// it silently stops gating anything. Nothing else in the design
+    /// catches it.
+    ///
+    /// Reported against the SPEC's operation list, which is why
+    /// `compile_all` takes one rather than deriving it from declarations.
+    pub fn orphaned_sites(&self, ops: &[Op]) -> Vec<Site> {
+        self.decls
+            .iter()
+            .map(|(site, _)| *site)
+            .filter(|site| !ops.iter().any(|op| self.site_covers(*site, *op)))
+            .collect()
+    }
+
+    fn site_covers(&self, site: Site, op: Op) -> bool {
+        match (site, op) {
+            (Site::RestPrefix(prefix), Op::Rest(_, path)) => path_covered_by(path, prefix),
+            (Site::Exact(declared), _) => declared == op,
+            _ => false,
         }
     }
 
@@ -254,8 +287,12 @@ mod tests {
         let mut reg = PolicyRegistry::new();
         reg.declare(Site::RestPrefix("/api/admin"), ADMIN_ONLY);
 
+        // A legitimately-covered op is included so the declaration is
+        // not ORPHANED — otherwise that check fires and masks the
+        // property under test.
         let impostor = Op::Rest("GET", "/api/administrators");
-        let table = reg.compile_all(&[impostor]).expect("compiles");
+        let covered = Op::Rest("GET", "/api/admin/sessions");
+        let table = reg.compile_all(&[impostor, covered]).expect("compiles");
 
         assert_eq!(
             table.get(&impostor).unwrap().role,
@@ -330,8 +367,14 @@ mod tests {
         let mut reg = PolicyRegistry::new();
         reg.declare(Site::RestPrefix("/"), ADMIN_ONLY);
 
+        // Plus one REST op, so the `/` declaration covers something and
+        // the orphan check stays quiet.
         let table = reg
-            .compile_all(&[Op::CollabFrame(0x01), Op::Ws("rt.subscribe")])
+            .compile_all(&[
+                Op::CollabFrame(0x01),
+                Op::Ws("rt.subscribe"),
+                Op::Rest("GET", "/api/anything"),
+            ])
             .expect("compiles");
 
         for op in [Op::CollabFrame(0x01), Op::Ws("rt.subscribe")] {
@@ -360,6 +403,40 @@ mod tests {
             errs[0],
             PolicyError::DuplicateDeclaration { count: 2, .. }
         ));
+    }
+
+    /// § 2b's "a policy naming no live operation", and the check that
+    /// found two tests in this very module declaring prefixes that gated
+    /// nothing. It is the ONLY thing that would notice, because
+    /// `axum::Router` cannot be asked which paths it holds — so a
+    /// declaration for a renamed or typo'd path is otherwise
+    /// indistinguishable from one that applies.
+    #[test]
+    fn a_declaration_covering_no_operation_is_reported() {
+        let mut reg = PolicyRegistry::new();
+        reg.declare(Site::RestPrefix("/api/admni"), ADMIN_ONLY.to_vec());
+
+        let orphans = reg.orphaned_sites(&[Op::Rest("GET", "/api/admin/real")]);
+        assert_eq!(orphans, vec![Site::RestPrefix("/api/admni")]);
+
+        let errs = reg
+            .compile_all(&[Op::Rest("GET", "/api/admin/real")])
+            .expect_err("a typo'd prefix gates nothing");
+        assert!(
+            errs.iter()
+                .any(|e| matches!(e, PolicyError::OrphanedDeclaration { .. }))
+        );
+    }
+
+    /// An exact declaration for an operation that no longer exists — a
+    /// deleted WS method or frame kind — is caught the same way.
+    #[test]
+    fn an_exact_declaration_for_a_dead_operation_is_reported() {
+        let mut reg = PolicyRegistry::new();
+        reg.declare(Site::Exact(Op::Ws("rt.removed")), ADMIN_ONLY.to_vec());
+
+        let orphans = reg.orphaned_sites(&[Op::Ws("rt.subscribe")]);
+        assert_eq!(orphans, vec![Site::Exact(Op::Ws("rt.removed"))]);
     }
 
     /// All errors at once. A boot failure naming one of nine bad

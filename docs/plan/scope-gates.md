@@ -2031,7 +2031,7 @@ Landing them together means PR 2's risk rides in on PR 1's green suite.
 | 2 | `Condition` / `Policy` + `MinRole` / `MinPrincipal` (`application/ports/scope_ports.rs`) | **done** — `7ce329192`, inert |
 | 3a | the compile step + the five chain-local boot refusals | **done** — `1167e58ba`, inert |
 | 3b-i | the registry, the table, and the DUMP | **done** — `5b7ddb403`, inert |
-| 3b-ii | `.policy()` on the router + the two spec cross-checks | not started |
+| 3b-ii | `.policy()` + the orphan cross-check | **done** — `interfaces/api/policy_router.rs`, inert |
 | 4 | fold three layers + the `transfer_ownership` check | not started |
 
 Step 1 landed as `CurrentCaller.kind: CallerKind`, not the `is_external`
@@ -2059,32 +2059,47 @@ machinery — which is why step 3 splits:
 | a role declaration that widens | the folded chain | **3a** |
 | a principal declaration that widens | the folded chain | **3a** |
 | the same axis twice in ONE slice | the slice | **3a** |
-| an operation with no policy | the table × `openapi.json` / `asyncapi.json` | 3b-ii |
-| a policy naming no live operation | the same cross-check | 3b-ii |
-| two `.policy()` on one site | the registry | **3b-i** |
+| an operation with no policy | — | **rejected**, see below |
+| a policy naming no live operation | the table × the spec's operation list | **3b-ii** |
+| two `.policy()` on one site | nothing — it does not COMPILE | **3b-ii** |
 | `public`/`visitor` + elevation | a `Condition::Elevated` variant | blocked |
 
-**Open, and § 2b row 5 contradicts § Authentication by default.** Row 5
-refuses "an operation with **no** policy" at boot, because
-"deny-by-default means an undeclared operation is a boot failure, not an
-open door". But § Authentication by default has the opposite mechanism:
-`Policy::default()` is an authenticated user, so "no declaration ⇒
-authentication required" FALLS OUT of the type and an undeclared
-operation is already closed to anonymous callers.
+**Row 5 is REJECTED — it contradicted § Authentication by default, and
+that section is the better mechanism.** Row 5 refused "an operation with
+no policy" at boot on deny-by-default grounds, but `Policy::default()`
+IS an authenticated user, so an undeclared operation is already closed to
+anonymous callers and the property falls out of the type instead of
+needing a check. Refusing it would have meant declaring all 279 REST
+operations and keeping them in sync, to catch an exposure that a nest
+declaration already covers wherever a nest exists.
 
-Both cannot hold. 3b-i implements the second — an undeclared operation
-compiles to the safe default — because that is what the type does today.
-Deciding row 5 means deciding whether all 279 REST operations need an
-EXPLICIT declaration:
+So a bare `Router` or handler needs no `.policy()` call, and an
+undeclared operation compiles to the safe default. The residual risk is
+named rather than hidden: an operation that *should* be admin-only and
+sits under no admin nest gets `principal=User` — any authenticated user.
+That is the fold's job to catch in step 4, by comparing the dump against
+what the layers enforce today.
 
-| | cost | what it buys |
-|---|---|---|
-| default is enough | nothing | an undeclared op denies anonymous; a forgotten PUBLIC op 401s, which is loud and safe |
-| explicit required | 279 declarations, kept in sync | catches an op that should be admin-only and was never declared — the default gives it `principal=User`, i.e. ANY authenticated user |
+**Row 8 got stronger than specified.** It asked for a boot error on two
+`.policy()` declarations for one operation. `.policy()` returns a
+`Gated<T>` that does not itself implement `Policied`, so
+`.policy(..).policy(..)` does not COMPILE — a contradiction the compiler
+refuses beats one the server refuses at boot. The array literal is what
+makes one slice the natural way to write several conditions.
 
-The second case is the real exposure, and a nest declaration already
-covers it wherever a nest exists (`/api/admin`). So the question is
-whether the surfaces WITHOUT a nest justify declaring everything.
+**Row 6 is load-bearing, not belt-and-braces.** `axum::Router` cannot be
+asked which paths it holds (`has_routes() -> bool` is the whole public
+introspection surface), so a declaration for a renamed or typo'd path is
+otherwise indistinguishable from one that applies, and it silently stops
+gating anything. Nothing else in the design notices. It immediately
+earned its place by catching two tests in `scope_table` that declared
+prefixes covering no operation.
+
+**`.policy()` cannot record its own path**, for the same reason: neither
+a `Router` nor a `MethodRouter` knows where it will be mounted. It
+attaches conditions, and the `Site` is learned at the `nest` / `route`
+call — so the path is still written exactly once, which is the property
+the syntax was reaching for.
 
 Step 3a also found a gap in § 2. Compile: scope is specified to fold as
 "union of what is required", but `Policy::scope` holds a SINGLE pair, so

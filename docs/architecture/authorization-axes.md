@@ -254,10 +254,25 @@ Three things worth reading off the diagram:
 
 ## How the axes compose — worked, in the planned form
 
-> **Not implemented.** The syntax below is `docs/plan/scope-gates.md`'s
-> request-time engine. The *composition* it shows is real today, spread
-> across five middleware layers and `authz.require`; what changes is that
-> each operation states its requirements in one place.
+> **Partly implemented.** The `.policy([...])` syntax below exists
+> (`interfaces/api/policy_router.rs`), and so does the engine it feeds
+> (`application/services/scope_policy.rs` and `scope_table.rs`) — but
+> nothing is wired: `routes.rs` does not declare, and the five middleware
+> layers still enforce. The *composition* shown is real today, spread
+> across those layers and `authz.require`; what changes is that each
+> operation states its requirements in one place.
+>
+> Two corrections to what the examples imply:
+>
+> - **`.policy()` cannot record the path**, because neither a `Router`
+>   nor a `MethodRouter` knows where it will be mounted — axum's whole
+>   public introspection surface is `has_routes() -> bool`. So
+>   `.policy()` attaches conditions and the path is learned at the
+>   `nest` / `route` call, through `GatedRouter`. The path is still
+>   written exactly once; the examples below are accurate about that.
+> - **`Condition::elevated()` does not exist yet.** It needs
+>   `auth.sessions.elevated_at` (`session-elevation.md`), so the two
+>   examples using it are the planned form, not today's.
 
 Three nests, because each shows a different composition.
 
