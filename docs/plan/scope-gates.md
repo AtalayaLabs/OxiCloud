@@ -2028,7 +2028,7 @@ Landing them together means PR 2's risk rides in on PR 1's green suite.
 | # | step | state |
 |--:|---|---|
 | 1 | the caller carries what the conditions read | **done** — `f481cfa8f` · `17f44e3b4` · `401c250a5` |
-| 2 | `Condition` / `Policy` + `MinRole` / `MinPrincipal` (`application/ports/scope_ports.rs`) | not started |
+| 2 | `Condition` / `Policy` + `MinRole` / `MinPrincipal` (`application/ports/scope_ports.rs`) | **done** — `7ce329192`, inert |
 | 3 | the compile step, the six boot refusals, and the operation table | not started |
 | 4 | fold three layers + the `transfer_ownership` check | not started |
 
@@ -2047,8 +2047,15 @@ snapshot byte-identical after folding. Reversing the two reduces PR 1 to
 "the suite is still green", which is the hoped-for-not-proven outcome this
 table exists to rule out.
 
-Open before step 2: how a route records its policy — an axum `.policy()`
-extension trait, or an explicit builder.
+Step 2 added `Axis` to the types above: the compile step has to tell a
+repeated axis within ONE slice (a boot error — the declaration is
+ambiguous) from a repeat across a nest CHAIN (legal inheritance), and it
+needs the axis without the payload to do it. `public()` and
+`visitor_allowed()` share the `Principal` axis, which is why declaring
+both in one slice is ambiguous rather than additive.
+
+Still open, and now blocking step 3: how a route records its policy — an
+axum `.policy()` extension trait, or an explicit builder.
 
 #### Not in PR 1 — the externals audit
 
