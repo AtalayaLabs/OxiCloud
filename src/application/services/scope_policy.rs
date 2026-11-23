@@ -96,6 +96,15 @@ pub enum PolicyError {
     /// field should become a `ScopeSet`, and that decision should be
     /// forced rather than papered over.
     ConflictingScopes { op: Op, first: Scope, second: Scope },
+    /// Two declarations on ONE site — § 2b's last row. Ambiguous rather
+    /// than additive: repeated builder calls conventionally OVERRIDE, so
+    /// accumulating would read as the second replacing the first.
+    /// Conditions that belong together go in one slice.
+    ///
+    /// `site` is pre-rendered rather than typed, so this error stays in
+    /// the pure compile module while `Site` lives with the registry that
+    /// owns it.
+    DuplicateDeclaration { site: String, count: usize },
     // Reserved, pending `auth.sessions.elevated_at`:
     //
     // PublicWithElevation — elevation is a human re-proving themselves
@@ -143,6 +152,12 @@ impl std::fmt::Display for PolicyError {
                 "`{op}` declares the {axis:?} axis twice in ONE slice. \
                  Put one condition per axis; inheritance across a nest \
                  chain is what folds."
+            ),
+            PolicyError::DuplicateDeclaration { site, count } => write!(
+                f,
+                "{site} carries {count} policy declarations. A repeated \
+                 declaration would read as overriding the first, not \
+                 adding to it — put every condition in one slice."
             ),
             PolicyError::ConflictingScopes { op, first, second } => write!(
                 f,
