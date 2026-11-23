@@ -182,6 +182,58 @@ impl Requires {
 }
 ```
 
+### At the declaration site
+
+```rust
+// A SUBTREE: /admin is admin-only. Declared once; every route under it
+// inherits, including ones added later.
+let admin = admin_handler::admin_routes(app_state)
+    .policy(Requires::role(MinRole::Admin));
+
+// ONE ROUTE TIGHTENS: elevation on top of the inherited Admin.
+// `elevated()` leaves `role: None`, so the fold keeps Admin.
+.route("/sessions/{id}", delete(revoke_session)
+    .policy(Requires::elevated()))
+
+// TWO CONDITIONS on one route, chained on the VALUE:
+.route("/change-password", put(change_password)
+    .policy(Requires::scope(Scope::Security, Access::ReadWrite)
+                .elevated()))
+```
+
+The last one needs both and they are independent: `security:rw` says the
+credential was issued for credential operations, `elevated()` says a
+human proved themselves recently. An app password fails the first, a
+week-old browser session the second.
+
+**Chain on `Requires`, never by calling `.policy()` twice** — and a
+second `.policy()` on one operation is a **boot error**. Repeated builder
+calls in Rust conventionally OVERRIDE (`.timeout()` twice gives the
+second), so two accumulating `.policy()` calls would read as the second
+replacing the first, and a reader would conclude the route requires only
+elevation. Refusing the ambiguous form costs nothing and removes the
+misreading.
+
+**`.policy()` has to RECORD, and that is the open implementation
+question.** A `Policy` is not a layer — it goes into the compiled table —
+but axum's `Router` is opaque, with nowhere to accumulate a
+`(path, method, Requires)` triple. Two shapes, and PR 1 should try the
+first before settling:
+
+1. an extension trait on `MethodRouter` / `Router` that records into a
+   registry while returning the router, keeping the syntax above;
+2. failing that, an explicit builder we own —
+   `api.route("/auth/change-password", put(h), Requires::scope(…))`,
+   returning `(Router, PolicyTable)` from `build()`.
+
+The second always works and reads worse. Since the ergonomics of the
+declaration site is half of why this design is worth building, the
+difference is worth an afternoon's attempt rather than an assumption.
+
+Either way the registry must be constructible **without a running app**,
+because `generate-openapi` has no database — § The spec is rendered FROM
+the policy table.
+
 Adding an axis means one `Option` field, one constructor and one fold
 rule. It cannot change how the existing axes fold, and it cannot change
 any existing declaration — which is the property that makes this worth
@@ -327,6 +379,7 @@ layers has no moment where all the declarations are in one place.
 | a role declaration that **widens** its parent's | `Owner` nest, `Internal` child: the fold is `max`, so the child's intent is silently discarded. Better to refuse than to ignore. |
 | an operation with **no** policy | from the spec cross-check below. Deny-by-default means an undeclared operation is a boot failure, not an open door. |
 | a policy naming **no live operation** | a policy left behind by a deleted route, which would otherwise sit unmatched forever. |
+| **two `.policy()` declarations** on one operation | ambiguous: repeated builder calls conventionally override, so accumulating would read as the second replacing the first. Chain on `Requires` instead — § At the declaration site. |
 
 The first row is the one worth having. An implementor writing
 `anonymous_allowed()` on a route under `/admin` means *"make this
