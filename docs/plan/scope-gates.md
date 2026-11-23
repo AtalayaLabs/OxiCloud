@@ -2031,7 +2031,7 @@ Landing them together means PR 2's risk rides in on PR 1's green suite.
 | 2 | `Condition` / `Policy` + `MinRole` / `MinPrincipal` (`application/ports/scope_ports.rs`) | **done** — `7ce329192`, inert |
 | 3a | the compile step + the five chain-local boot refusals | **done** — `1167e58ba`, inert |
 | 3b-i | the registry, the table, and the DUMP | **done** — `5b7ddb403`, inert |
-| 3b-ii | `.policy()` + the orphan cross-check | **done** — `interfaces/api/policy_router.rs`, inert |
+| 3b-ii | `.policy()` + the orphan cross-check | **done** — `9f2525edd`, inert |
 | 4 | fold three layers + the `transfer_ownership` check | not started |
 
 Step 1 landed as `CurrentCaller.kind: CallerKind`, not the `is_external`
