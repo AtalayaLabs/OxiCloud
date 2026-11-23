@@ -96,7 +96,7 @@ engine evaluates (total — every axis resolved by the compile step).
 Within the Gate axis there are four independent **conditions** — role,
 credential-kind, anonymity, session-binding. ("Facet" because this
 document uses *axis* for Gate-vs-Scope-vs-Grant, § Three axes.) Each is
-a field, so `[NotAppPassword, PermitAppPassword]` cannot be constructed
+a field, so a contradictory pair cannot be constructed
 at all — § Maximise deny-by-default's "won't compile" over "won't start".
 
 ```rust
@@ -1397,9 +1397,11 @@ architecture. The intent is that **app passwords disappear in favour of
 OIDC for interactive login and the device flow for everything else**,
 with OxiCloud's own client replacing the NextCloud one.
 
-That makes `PermitAppPassword` a **deprecation instrument** rather than a
-permanent gate: five mounts today, three once NC support goes, zero at
-the end. Each removal is a reviewable step instead of a flag day.
+That makes the app-password CEILING a **deprecation instrument** rather
+than a permanent allowance: as each sync surface moves to the device
+flow, the ceiling narrows by one area, and when the last goes the
+credential type can be retired. Each step is reviewable instead of a
+flag day.
 
 Two notes for whoever picks that up:
 
@@ -2066,10 +2068,28 @@ field into an enforced one:
   `/api/files`, `/api/grants` and `POST /api/auth/app-passwords`. The
   last is the escalation that matters — a leaked app password must not
   be able to mint another.
-- Unit: the permit set is exactly `{webdav, caldav, carddav,
-  remote.php, ocs}` and **no `/api` operation carries
-  `PermitAppPassword`**. A new mount that opts in without review fails
-  here, which is the point of the positive marker.
+- Unit: the app-password CEILING is exactly `files,calendar,contacts`,
+  so no `security` or `account` operation is reachable with one. A
+  ceiling widened without review fails here — the ceiling table is the
+  one artifact to audit.
+- Unit: a multi-axis `Policy` is **conjunction** — a caller holding
+  elevation but not `Admin` is REFUSED by a policy requiring both, and so
+  is one holding `Admin` but not elevation. Pin both halves: a disjunctive
+  implementation passes the first silently and hands admin mutations to
+  any user who re-authenticated.
+- Unit: reduction — a chain declaring `MinRole::Internal`, then `Admin`,
+  then `Owner` compiles to `Owner` and still refuses a plain user. A
+  declaration that would WIDEN the role (an `Owner` nest, an `Internal`
+  child) fails at boot rather than resolving silently.
+- Unit: reduction is per condition. The role chain above compiles to
+  `Owner` while the anonymity condition keeps its own value — a role
+  conjunction must not reach across and alter another condition. Pin the
+  independence, not just the role result: that is what a global reduction
+  would silently break.
+- Unit: the boot refusals in § 2b. `anonymous_allowed()` beside any
+  `MinRole` is REFUSED — structurally unsatisfiable, since
+  `UserRole::Anonymous` is never stored in `auth.users`. Likewise
+  anonymity with elevation, and anonymity with a scope.
 - Unit: the public set — once § Authentication by default lands, every
   route reachable without a session carries `AnonymousAllowed`, and the
   set is exactly the login flows, the share-link surface, `/status.php`,
@@ -2080,22 +2100,6 @@ field into an enforced one:
   claim, an app-password row backfilled from NULL, and a `device_codes`
   row still holding the legacy `webdav,caldav,carddav`. Each keeps
   working. This is the pin that prevents a silent lockout on upgrade.
-- Unit: a multi-axis `Policy` is **conjunction** — a caller holding
-  elevation but not `Admin` is REFUSED by a policy requiring both, and so
-  is one holding `Admin` but not elevation. Pin both halves: a disjunctive
-  implementation passes the first silently and hands admin mutations to
-  any user who re-authenticated.
-- Unit: normalisation — `[Internal, Admin, Owner]` reduces to `[Owner]`
-  and still refuses a plain user; `[PermitAppPassword]` cancels the
-  default `NotAppPassword`; `[NotAppPassword, PermitAppPassword]` fails
-  at startup rather than resolving silently.
-- Unit: per-axis reduction. `[Internal, Admin, Owner]` yields exactly
-  `[Owner, NotAppPassword]` — the role axis collapses to its strongest,
-  the anonymity axis collapses because `Owner ⇒ NotAnonymous`, and the
-  credential axis keeps its default because no role can imply it. Pin
-  the last part especially: an Owner presenting an app password is a
-  coherent caller this plan intends to refuse, so a reduction that drops
-  `NotAppPassword` is a privilege widening.
 - Unit: **the subsumption lattice and the invariant under it.** Assert
   `Owner.at_least(Admin)` AND that `users_external_not_privileged` still
   reads `NOT (is_external AND role <> 'user')`. The reduction
