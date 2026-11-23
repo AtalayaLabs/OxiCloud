@@ -2787,9 +2787,11 @@ async fn handle_move(
     let path = source_path.clone();
     let destination_path = dst_scope.db_path;
 
-    // RFC 4918 §9.9.3: MOVE to self MUST return 403 Forbidden.
-    if destination_path == path {
-        return Err(AppError::forbidden("Cannot MOVE a resource to itself"));
+    // MOVE to self → 403, into own subtree / onto own ancestor → 409 (#906).
+    if src_drive_id == dst_drive_id
+        && let Some(err) = super::dav_paths::move_copy_overlap_error(&path, &destination_path)
+    {
+        return Err(err);
     }
 
     // Active-lock guard on the SOURCE (RFC 4918 §9.10.4): the move
@@ -2820,6 +2822,12 @@ async fn handle_move(
     let file_retrieval_service = &state.applications.file_retrieval_service;
     let file_management_service = &state.applications.file_management_service;
     let folder_service = &state.applications.folder_service;
+
+    // Resolve the source BEFORE the Overwrite delete below: a missing
+    // source must be a plain 404 with the destination untouched (#906).
+    let resolved = resolve_or_legacy(&state, &source_path, src_drive_id)
+        .await
+        .ok_or_else(|| AppError::not_found(format!("Resource not found: {}", source_path)))?;
 
     // Probe destination existence for Overwrite semantics and 201 vs 204.
     let dest_existed = if let Some(resolver) = &state.path_resolver {
@@ -2870,9 +2878,6 @@ async fn handle_move(
     }
 
     let _ = file_retrieval_service;
-    let resolved = resolve_or_legacy(&state, &source_path, src_drive_id)
-        .await
-        .ok_or_else(|| AppError::not_found(format!("Resource not found: {}", source_path)))?;
 
     let dest_name = destination_path
         .rsplit('/')
@@ -3085,9 +3090,12 @@ async fn handle_copy(
     let source_path = src_scope.db_path;
     let destination_path = dst_scope.db_path;
 
-    // RFC 4918 §9.8.5: COPY to self MUST return 403 Forbidden.
-    if destination_path == source_path {
-        return Err(AppError::forbidden("Cannot COPY a resource to itself"));
+    // COPY to self → 403, into own subtree / onto own ancestor → 409 (#906).
+    if src_drive_id == dst_drive_id
+        && let Some(err) =
+            super::dav_paths::move_copy_overlap_error(&source_path, &destination_path)
+    {
+        return Err(err);
     }
 
     // Active-lock guard on the destination (RFC 4918 §9.10.4).
@@ -3115,6 +3123,12 @@ async fn handle_copy(
     // Scope already resolved above; keep `path` alias for downstream code
     // that still reads `path` under its original name.
     let _path = source_path.clone();
+
+    // Resolve the source BEFORE the Overwrite delete below: a missing
+    // source must be a plain 404 with the destination untouched (#906).
+    let resolved = resolve_or_legacy(&state, &source_path, src_drive_id)
+        .await
+        .ok_or_else(|| AppError::not_found(format!("Resource not found: {}", source_path)))?;
 
     // Probe destination existence for Overwrite semantics and 201 vs 204.
     let dest_existed = if let Some(resolver) = &state.path_resolver {
@@ -3165,9 +3179,6 @@ async fn handle_copy(
     }
 
     let _ = file_retrieval_service;
-    let resolved = resolve_or_legacy(&state, &source_path, src_drive_id)
-        .await
-        .ok_or_else(|| AppError::not_found(format!("Resource not found: {}", source_path)))?;
 
     let dest_name = destination_path
         .rsplit('/')

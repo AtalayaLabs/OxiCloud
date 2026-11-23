@@ -1522,6 +1522,22 @@ async fn handle_move(
     // `authz.require(Read, …)` explicitly and the downstream delete
     // enforces `Permission::Delete`.
     let dest_internal_precheck = nc_to_internal_path(chroot, &dest_subpath)?;
+
+    // #906: overlap + source checks BEFORE the Overwrite delete below.
+    // Path-only overlap is enough here: source and destination share one chroot.
+    if let Some(err) = crate::interfaces::api::handlers::dav_paths::move_copy_overlap_error(
+        &src_internal,
+        &dest_internal_precheck,
+    ) {
+        return Err(err);
+    }
+    if nc_resolve_or_fallback(&state, &src_internal, chroot.drive_id)
+        .await
+        .is_none()
+    {
+        return Err(AppError::not_found("Resource not found"));
+    }
+
     let dest_existing =
         nc_resolve_or_fallback(&state, &dest_internal_precheck, chroot.drive_id).await;
     let dest_existed_before = dest_existing.is_some();
