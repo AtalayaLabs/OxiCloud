@@ -322,7 +322,7 @@
 			case 'users':
 				return t('admin.users', 'Users');
 			case 'sessions':
-				return t('admin.sessions', 'Sessions');
+				return t('admin.sessions.tab', 'Sessions');
 			case 'drives':
 				return t('admin.drives', 'Drives');
 			case 'policies':

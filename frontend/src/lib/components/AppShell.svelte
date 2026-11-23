@@ -290,7 +290,7 @@
 			},
 			{
 				href: '/admin/sessions',
-				label: t('admin.sessions', 'Sessions'),
+				label: t('admin.sessions.tab', 'Sessions'),
 				icon: 'key',
 				section: 'admin-sessions'
 			},
@@ -310,7 +310,7 @@
 		if (serverConfig.features.external_mounts) {
 			links.push({
 				href: '/admin/mounts',
-				label: t('admin.mounts', 'External Mounts'),
+				label: t('admin.mounts.tab', 'External Mounts'),
 				icon: 'folder',
 				section: 'admin-mounts'
 			});

@@ -79,7 +79,10 @@
     "readonly_banner_aria": "Server maintenance in progress",
     "readonly_title": "Server maintenance in progress",
     "readonly_progress": "Migrating storage to `{{target}}` — {{percent}}% ({{migrated}} / {{total}} blobs). Uploads, renames, deletes, and shares are refused; reads and downloads work as normal.",
-    "readonly_body": "Uploads, renames, deletes, and shares are refused temporarily. Reads and downloads work as normal."
+    "readonly_body": "Uploads, renames, deletes, and shares are refused temporarily. Reads and downloads work as normal.",
+    "rotating_title": "Storage key rotation in progress",
+    "rotating_body": "A background key rotation is normalising storage. All operations continue normally.",
+    "rotating_banner_aria": "Storage key rotation in progress"
   },
   "app": {
     "title": "OxiCloud",
@@ -184,7 +187,12 @@
     "shared_with_me": "Shared with me",
     "toggle": "Toggle navigation menu",
     "section_library": "Library",
-    "section_sharing": "Sharing"
+    "section_sharing": "Sharing",
+    "contacts": "Contacts",
+    "calendars": "Calendars",
+    "skip_to_content": "Skip to content",
+    "expand": "Expand sidebar",
+    "collapse": "Collapse sidebar"
   },
   "photos": {
     "empty_state": "No photos yet",
@@ -334,7 +342,11 @@
     "selected_count": "{{n}} selected",
     "share_added": "Shared.",
     "track_count": "{{n}} tracks",
-    "tracks_added": "Added {{n}} track(s)."
+    "tracks_added": "Added {{n}} track(s).",
+    "player": "Player",
+    "clear_queue": "Clear queue",
+    "nothing_playing": "Nothing playing.",
+    "browse": "Browse music"
   },
   "actions": {
     "search": "Search files...",
@@ -509,7 +521,10 @@
     "policy_no_links": "This drive does not allow public links.",
     "policy_password_required": "This drive requires a password on public links.",
     "policy_expiry_required": "This drive caps public links — set an expiry on or before {{date}}.",
-    "policy_expiry_too_far": "This drive caps public links at {{date}}."
+    "policy_expiry_too_far": "This drive caps public links at {{date}}.",
+    "externalUser": "External user",
+    "userOnline": "Online",
+    "empty": "This shared folder is empty."
   },
   "share_dialogTitle": "Share Link",
   "share_linkLabel": "Share Link:",
@@ -628,7 +643,8 @@
       "presentation": "Presentation",
       "archive": "Archive",
       "installer": "Installer",
-      "code": "Code"
+      "code": "Code",
+      "unknown": "Unknown"
     },
     "owner": "Owner",
     "add_favorites": "Add to favorites",
@@ -714,7 +730,14 @@
     "new_text_file_prompt": "Filename (e.g. notes.md)",
     "new_text_file_hint": "Include the extension in the filename (e.g. .md, .txt, .c, .py, .rs).",
     "new_text_file_binary_ext_title": "Non-text extension",
-    "new_text_file_binary_ext_message": "\"{{name}}\" doesn't look like a text file. The editor will open it as text — that usually breaks binary formats. Continue anyway?"
+    "new_text_file_binary_ext_message": "\"{{name}}\" doesn't look like a text file. The editor will open it as text — that usually breaks binary formats. Continue anyway?",
+    "upload_interrupted_one": "Upload interrupted: {{description}}. Re-drop to resume — already-uploaded chunks are reused.",
+    "upload_interrupted_many": "{{n}} uploads interrupted. Re-drop the files to resume — already-uploaded chunks are reused.",
+    "folder_was_deleted": "This folder was moved to trash.",
+    "folder_access_revoked": "Your access to this folder was revoked.",
+    "upload_cancelled_partial": "Upload cancelled — {{done}} of {{total}} files uploaded",
+    "upload_cancelled": "Upload cancelled",
+    "n_files_batch": "{{n}} files"
   },
   "dialogs": {
     "rename_folder": "Rename folder",
@@ -798,6 +821,9 @@
       "shared_drive": "Shared drive: {{name}}",
       "direct_share": "Shared with you",
       "token": "Via shared link"
+    },
+    "subject": {
+      "group_tooltip": "Shared with group: {{name}}"
     }
   },
   "trash": {
@@ -812,14 +838,16 @@
     "empty_confirm": "Are you sure you want to empty the trash? This will permanently delete all items.",
     "groupby": {
       "remaining_days": "Remaining days",
-      "trashed_time": "Trashed time"
+      "trashed_time": "Trashed time",
+      "drive": "Drive"
     },
     "confirm_delete": "Permanently delete this item? This cannot be undone.",
     "confirm_empty": "Empty the trash? This cannot be undone.",
     "delete": "Delete permanently",
     "empty_action": "Empty trash",
     "restored": "Restored",
-    "expires_at": "Expires at"
+    "expires_at": "Expires at",
+    "empty_drive_title": "Empty drive trash"
   },
   "daysRemaining": {
     "expired": "Expired",
@@ -920,7 +948,13 @@
     "login_error_callback_failed": "SSO sign-in couldn't complete. Please try again.",
     "login_error_email_not_verified_at_idp": "Your identity provider reports that your email address is not verified. Confirm your email at your identity provider, then try signing in again.",
     "login_error_email_verification_required": "This server requires a verified email. Your identity provider did not include an email-verification claim. Contact your administrator.",
-    "login_error_generic": "SSO sign-in was refused. Please try again."
+    "login_error_generic": "SSO sign-in was refused. Please try again.",
+    "password_too_short": "Password must be at least {{min}} characters long",
+    "email_not_verified": "Your email is not verified. We sent a verification link to your inbox — click it, then sign in again. If it did not arrive, submit the form again.",
+    "password_login_disabled": "Password login is disabled on this server. Leave the password blank to receive a sign-in link, or use SSO.",
+    "username_optional": "Username (optional)",
+    "password_optional": "Password (optional — leave blank for a sign-in link)",
+    "register_email_only": "Send me a sign-in link"
   },
   "storage": {
     "title": "Storage",
@@ -936,7 +970,11 @@
     "zoom_in": "Zoom in",
     "zoom_out": "Zoom out",
     "zoom_reset": "Reset zoom",
-    "zoom": "Zoom"
+    "zoom": "Zoom",
+    "exit_fullscreen": "Exit full screen",
+    "fullscreen": "Full screen",
+    "open_in_window": "Open in a window",
+    "edit_in_office": "Edit in Office"
   },
   "language_selector": {
     "title": "Welcome!",
@@ -967,7 +1005,8 @@
     "added_title": "Added to favorites",
     "added_msg": "added to favorites",
     "removed_title": "Removed from favorites",
-    "removed_msg": "removed from favorites"
+    "removed_msg": "removed from favorites",
+    "added_n": "Added {{n}} item(s) to favorites"
   },
   "changes": {
     "empty_state": "No recent changes",
@@ -1010,7 +1049,17 @@
     "share_success": "Shared link created successfully",
     "upload_files_section_title": "Upload not available here",
     "upload_files_section_body": "Go to the Files section to upload files",
-    "clear": "Clear all"
+    "clear": "Clear all",
+    "share_granted": {
+      "verb": "shared"
+    },
+    "persistent": {
+      "generic": "Notification ({{kind}}).",
+      "share_granted": "Someone shared \"{{resource}}\" with you ({{role}}).",
+      "new_device_login": "A new device signed into your account.",
+      "job_completed": "Job \"{{name}}\" finished.",
+      "quota_threshold": "You are approaching your storage quota."
+    }
   },
   "batch": {
     "one_selected": "1 item selected",
@@ -1393,7 +1442,8 @@
         "oidc": "SSO",
         "device": "Device",
         "unknown": "Unknown"
-      }
+      },
+      "tab": "Sessions"
     },
     "settings_saved_ok": "Settings saved.",
     "smtp": "Email (SMTP)",
@@ -1548,7 +1598,8 @@
       "revoking": "Revoking…",
       "revoke_confirm": "Revoke",
       "revoke_confirm_title": "Revoke {{name}}’s non-compliant shares?",
-      "revoke_confirm_body": "{{n}} link(s) and grant(s) on this drive will be revoked. Anyone using them loses access immediately, and this cannot be undone. Other drives are untouched."
+      "revoke_confirm_body": "{{n}} link(s) and grant(s) on this drive will be revoked. Anyone using them loses access immediately, and this cannot be undone. Other drives are untouched.",
+      "policy": "Policy"
     },
     "drive_policy": {
       "forbid_sharing": "Forbid per-resource sharing",
@@ -1714,7 +1765,30 @@
       "triggered_ok": "{{name}} triggered successfully",
       "triggered_err": "{{name}} failed: {{message}}",
       "cancel_requested": "Cancel requested — {{name}} will pause at the next safe boundary",
-      "cancel_noop": "Nothing to cancel — {{name}} is not running"
+      "cancel_noop": "Nothing to cancel — {{name}} is not running",
+      "pause_requested": "Pause requested — {{name}} will pause at the next checkpoint (progress preserved)",
+      "pause_noop": "Nothing to pause — {{name}} is not running",
+      "cancel_confirm": "Cancel run of {{name}}? The run will be marked as Cancelled and cannot be resumed. Progress bytes on disk stay put — this only affects the run row.",
+      "state_paused": "paused",
+      "state_cancelling": "cancelling",
+      "state_cancelled": "cancelled",
+      "state_completed": "completed",
+      "state_failed": "failed",
+      "outcome_unknown": "—",
+      "status_running": "Running",
+      "status_paused": "Paused",
+      "status_ending": "Ending",
+      "status_completed": "Completed",
+      "status_failed": "Failed",
+      "status_cancelled": "Cancelled",
+      "resume_progress": "Resume ({{scanned}}/{{total}})",
+      "resume": "Resume",
+      "resume_title": "Continue the paused run from its last checkpoint.",
+      "cancel_paused_title": "Abandon the paused run — marks it as Cancelled. Not resumable.",
+      "run_with_param": "Run with {{param}}",
+      "pause_title": "Signal a graceful pause at the next batch boundary. Run row stays as `Paused` — Resume picks up from the checkpoint.",
+      "pause": "Pause",
+      "cancel_running_title": "Abandon the run — marks it as Cancelled at the next batch boundary. Not resumable."
     },
     "quota_usage": "Quota usage",
     "quota_usage_hint": "Pre-dedup, logical file sizes. Includes trashed files until permanent deletion.",
@@ -1735,7 +1809,47 @@
       "refresh": "Refresh",
       "refreshed": "Theme files reloaded. Reload the page to apply CSS changes.",
       "recovery": "The operator has forced the built-in theme for recovery. The saved selection is preserved."
-    }
+    },
+    "drive_owners_aria": "Drive owners",
+    "storage_audit_triggered": "blobs_consistency triggered for `{{name}}` — watch it on the Jobs tab.",
+    "storage_migrate_confirm": "Migrate all blobs to `{{name}}` and set it as the active entry? The server enters read-only mode during the copy; the live backend swaps automatically on completion (no restart needed).",
+    "backend_rotate_confirm": "Start a background rotation on `{{name}}`? Every existing blob is rewritten under the entry’s head pair (v1 header + head key). All operations continue normally during rotation — no read-only mode. Progress shows in the top banner and on the Jobs tab.",
+    "backend_rotate_triggered": "Rotation started on `{{name}}` — watch it on the Jobs tab (`backend_rotate`).",
+    "active_ws_sessions_tooltip": "Currently-connected message-bus WebSocket sessions — one per open browser tab reaching a folder view",
+    "active_ws_sessions": "Live WS sessions",
+    "quota_shared": "Shared drives",
+    "quota_unlimited": "{{n}} unlimited",
+    "storage_content_stats_title": "Content store",
+    "storage_content_stats_hint": "Aggregate over the chunk store — independent of which backend entry holds the bytes.",
+    "storage_move_hint": "To move to another backend storage: declare a new entry in your `.env` (keep the current one), restart the server so it picks it up, then trigger a migration from this page. Cutover happens automatically when the copy completes — no second restart needed.",
+    "storage_no_entries": "No OXICLOUD_STORAGE_ENTRIES declared. Running on the legacy single-backend fallback ({{backend}}). Migrate to the multi-entry model — see docs/config/env.md.",
+    "mig_readonly_title": "Server in migration read-only mode",
+    "mig_readonly_body": "All writes (upload, rename, delete, share) are refused until the migration completes. Reads (browse, download) are unaffected. When the copy finishes the server switches to the new backend automatically — no restart needed.",
+    "entry_active": "active",
+    "entry_inactive": "available",
+    "storage_testing": "Testing…",
+    "storage_audit": "Blob consistency",
+    "storage_migrate_activate": "Migrate & activate",
+    "backend_rotate_disabled_migration": "Cannot rotate while a migration is in flight.",
+    "backend_rotate_tooltip": "Normalise every blob on this entry to the head pair’s format (upgrade legacy blobs, re-encrypt under a new key, etc.).",
+    "backend_rotate": "Rotate key",
+    "entry_backend": "Backend",
+    "entry_location": "Location",
+    "storage_pair_list": "Encryption keys",
+    "storage_pair_head": "head",
+    "storage_pair_help": "Head is the write key. After a successful rotation with 0 failures, any non-head key can be safely removed from `.env`.",
+    "storage_test_elapsed": "{{ms}} ms",
+    "storage_test_cleanup_warn": "cleanup DELETE failed",
+    "mig_status": "Migration status",
+    "gen_key_fingerprint": "Fingerprint",
+    "gen_key_fingerprint_hint": "appears in the boot log and the pair chain above once loaded from `.env`.",
+    "has_password_title": "User has a password on file (legacy or admin-set)",
+    "auth_password": "password",
+    "opaque_migrated_title": "User has completed at least one OPAQUE login",
+    "opaque_registered_title": "OPAQUE envelope on file — waiting for the user to complete an OPAQUE login",
+    "opaque_envelope": "envelope",
+    "mail_login_title": "No password, no OPAQUE envelope, no SSO — user logs in via magic-link only",
+    "auth_mail": "mail"
   },
   "profile": {
     "page_title": "Profile",
@@ -1842,7 +1956,17 @@
     "sso_disconnect_confirm_message": "You'll only be able to sign in with your password or OPAQUE credential after this.",
     "sso_disconnect_confirm_button": "Disconnect",
     "sso_unlinked_success": "Single sign-on disconnected.",
-    "sso_unlink_no_alt_auth": "Set a password first — otherwise you would be locked out."
+    "sso_unlink_no_alt_auth": "Set a password first — otherwise you would be locked out.",
+    "password_unchanged": "New password must differ from the current one.",
+    "sso_linked_success": "Single sign-on connected successfully.",
+    "sso_link_error_email_mismatch": "The email from your SSO provider doesn't match your OxiCloud account email.",
+    "sso_link_error_email_not_provided": "Your SSO provider didn't return an email address, so we can't verify the link.",
+    "sso_link_error_already_linked_elsewhere": "This SSO identity is already linked to a different OxiCloud account.",
+    "sso_link_error_already_linked": "Your account is already linked to a different SSO identity. Disconnect first.",
+    "sso_link_error_session_expired": "Your session expired during the SSO round-trip. Please sign in again.",
+    "sso_link_error_generic": "SSO link failed. Please try again.",
+    "mandatory_change_title": "Please change your password to continue.",
+    "mandatory_change_body": "An administrator has set a temporary password for your account. Choose your own password below before you can access the rest of the application."
   },
   "upload": {
     "uploading": "Uploading...",
@@ -1880,7 +2004,9 @@
     "createdAt": "Added date",
     "size": "Size",
     "justAdded": "New",
-    "folders": "Folders"
+    "folders": "Folders",
+    "sharedBy": "Shared by",
+    "sharedAt": "Shared date"
   },
   "dateBucket": {
     "today": "Today",
@@ -2060,7 +2186,8 @@
     "dismiss": "Dismiss",
     "saving": "Saving…",
     "filter": "Filter",
-    "deleting": "Deleting…"
+    "deleting": "Deleting…",
+    "back": "Back"
   },
   "device": {
     "approve": "Approve",
@@ -2248,7 +2375,10 @@
     "storage": "Storage",
     "usage": "Usage",
     "used": "Used",
-    "members_personal_immutable": "Personal drives have a fixed single-owner membership."
+    "members_personal_immutable": "Personal drives have a fixed single-owner membership.",
+    "picker": "Drives",
+    "settings_aria": "Drive settings",
+    "usage_aria": "Drive usage"
   },
   "group": {
     "members_empty": "No members",
@@ -2270,5 +2400,62 @@
       "body": "Please try again in a moment."
     },
     "go_home": "Go home"
+  },
+  "offline": {
+    "title": "You are offline",
+    "body": "Uploads and changes will fail until the connection comes back."
+  },
+  "contacts": {
+    "system_badge": "System",
+    "readonly_badge": "Read only",
+    "new": "New contact",
+    "sources": "Contact sources",
+    "address_books_tab": "Address books",
+    "directory_tab": "Directory",
+    "address_book": "Address book",
+    "shared_book": "shared",
+    "source": "Source",
+    "search_placeholder": "Search contacts…",
+    "empty_state": "No address books yet",
+    "empty_hint": "Create an address book in your CardDAV client to get started.",
+    "list_label": "Contacts",
+    "no_matches": "No contacts match your search",
+    "no_directory_users": "No other users",
+    "no_contacts": "No contacts yet",
+    "no_matches_hint": "Try a different name, e-mail or organisation.",
+    "no_directory_hint": "Internal users of this OxiCloud instance appear here.",
+    "no_contacts_hint": "Contacts synced through CardDAV appear here.",
+    "new_title": "New contact",
+    "edit_title": "Edit contact",
+    "first_name": "First Name",
+    "last_name": "Last Name",
+    "full_name": "Display Name",
+    "nickname": "Nickname",
+    "organization": "Organisation",
+    "title": "Job Title",
+    "emails": "E-Mail",
+    "email_placeholder": "name@example.com",
+    "email": "E-Mail",
+    "type": "Type",
+    "add_email": "Add e-mail",
+    "phones": "Phone",
+    "phone_placeholder": "+1 555 0100",
+    "phone": "Phone",
+    "add_phone": "Add phone",
+    "addresses": "Address",
+    "street": "Street",
+    "city": "City",
+    "postal_code": "Postal Code",
+    "state": "State",
+    "country": "Country",
+    "add_address": "Add address",
+    "notes": "Notes",
+    "select_contact": "Select a contact",
+    "select_contact_hint": "Choose someone from the list to see their details.",
+    "edit": "Edit",
+    "details": "Details",
+    "birthday": "Birthday",
+    "anniversary": "Anniversary",
+    "updated_at": "Updated {{date}}"
   }
 }
