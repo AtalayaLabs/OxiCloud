@@ -1092,6 +1092,35 @@ you must remember to write does. So the value is two narrower things:
 allowlist and must stay `route_layer` (it needs `MatchedPath`). Fold the
 *decision* and leave the allowlist where it is.
 
+**When a gate check may leave the service layer: only with ONE door.**
+AGENTS.md puts AuthZ in the service layer, and the reason is coverage —
+REST, DAV and WS share service methods, so a gate on one door is a hole
+in the other. A router policy can only gate the door it is attached to.
+Hence:
+
+- **two or more doors** → the check STAYS in the service, or every door's
+  `Op` is declared. Declaring one and deleting the service check is the
+  `create_calendar` / `create_address_book` bug again (AGENTS.md § Grant
+  vs scope).
+- **exactly one door** → the router is where a GATE belongs, since the
+  service layer is the GRANT layer and a role check names no resource.
+
+`transfer_ownership` is the one-door case, verified:
+`auth_application_service::transfer_ownership` has a single caller in
+`interfaces/` (`admin_handler.rs`). Its check is
+`caller.role != UserRole::Owner` — a gate sitting in the grant layer, so
+folding it to the router files it correctly rather than weakening it.
+
+**But folding it changes an audit event, and that needs a decision.**
+Today the denial emits `event = "server_owner.transfer_rejected"`,
+`reason = "caller_not_owner"`. A router policy denial emits an `authz.*`
+event instead. AGENTS.md: `event` "stays stable — log aggregators key off
+it". So this fold silently retires an event an operator's alerting may
+key on — and neither the policy dump (fields only) nor a status-code
+matrix (HTTP only) would notice. Either keep emitting the old event from
+the policy denial path for this operation, or treat it as a breaking
+audit change and say so in the release notes.
+
 ### Not axes: integrity checks
 
 A separate category, and keeping it separate is what stops the axis list
