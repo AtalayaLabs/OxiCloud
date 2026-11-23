@@ -55,7 +55,7 @@ than merely odd.
 | word | means | does NOT mean |
 |---|---|---|
 | **axis** | one of the three authorization questions — Gate / Scope / Grant (`docs/architecture/authorization-axes.md`) | a field of a `Policy` — those are *conditions* |
-| **`Condition`** (and "condition") | ONE requirement on ONE axis: `MinRole`, anonymity, scope, elevation. An operation declares a SLICE of them; the compile step resolves each into a field of `Policy` | an axis — a `Policy` spans two axes, so its fields cannot be axes |
+| **`Condition`** (and "condition") | ONE requirement on ONE axis: `MinRole`, `MinPrincipal`, scope, elevation. An operation declares a SLICE of them; the compile step resolves each into a field of `Policy` | an axis — a `Policy` spans two axes, so its fields cannot be axes |
 | **`Policy`** | declared `Condition`s folded root→leaf. Total, one per operation | a declaration |
 | **`RequestPolicy`** | the trait evaluated PER REQUEST — axum, DAV dispatch, WS bus | anything at login |
 | **`AdmissionPolicy`** | the trait evaluated PER AUTHN PHASE — login, refresh | anything per request |
@@ -68,7 +68,7 @@ than merely odd.
 
 - **"gate" as a TYPE name** — it named three different things: the Gate
   axis, any caller-kind check, and `gate_layer`. No type carries it now
-  (`MinRole`, `Anonymity`, `RequestPolicy`). **"Gate axis"** and
+  (`MinRole`, `MinPrincipal`, `RequestPolicy`). **"Gate axis"** and
   **"Gate-axis condition"** remain correct, since Gate *is* one of the
   three axes; a bare "a gate" meaning "a check" is tolerated in prose but
   *condition* or *check* is preferred. This document's own title is
@@ -106,15 +106,19 @@ order-free and additive, and the slice needs no entry point: `[a, b]` and
 /// refused at startup.
 pub enum Condition {
     Role(MinRole),
-    AnonymousAllowed,
+    Principal(MinPrincipal),
     Scope(Scope, Access),
     // Elevated,                  // with auth.sessions.elevated_at
 }
 
 impl Condition {
     pub const fn role(r: MinRole) -> Self;
-    /// The whole public surface, greppable: § Authentication by default.
-    pub const fn anonymous_allowed() -> Self;
+    /// No credential at all. The whole public surface, greppable:
+    /// § Authentication by default.
+    pub const fn public() -> Self;
+    /// A public-share session (the ring) suffices. Also admits a user —
+    /// `/api/files/{id}` serves both.
+    pub const fn visitor_allowed() -> Self;
     pub const fn scope(s: Scope, a: Access) -> Self;
     // pub const fn elevated() -> Self;
 }
@@ -128,8 +132,12 @@ pub struct Policy {
     /// `None` = any authenticated principal. Folds by MAXIMUM; a
     /// declaration that would widen is a boot error.
     pub role: Option<MinRole>,
-    /// Anonymity condition. § Authentication by default.
-    pub anonymous: Anonymity,
+    /// The least privileged principal admitted. NOT an `Option`: unlike
+    /// role, there is no "any" answer — every operation admits some
+    /// least principal, and the default is `User`, which is what makes
+    /// "no declaration ⇒ authentication required" fall out rather than
+    /// be enforced. § Authentication by default.
+    pub principal: MinPrincipal,
     // pub elevation: Option<Elevation>,   // with auth.sessions.elevated_at
     /// Resolved scope requirement. Scope is its own AXIS, not a Gate-axis
     /// condition: client-requestable and frozen at mint, so it is checked
@@ -150,14 +158,35 @@ pub enum MinRole {
     Owner,      // UserRole::Owner, NOT storage.grant_role
 }
 
-/// Deny-by-default likewise — § Authentication by default. The handful of
-/// genuinely public routes declare `Allowed`; publicness stops being
-/// inferred from which router a handler was mounted on.
+/// The LEAST privileged principal an operation admits. Three states, not
+/// two — "no credential at all" and "a share session" are different
+/// things today and were both called *anonymous*:
+///
+///   * `Public`  — no credential. Public by MOUNT today (no
+///     `auth_middleware`): `/api/auth/login`, `/api/setup`,
+///     `/api/s/{token}`.
+///   * `Visitor` — a public-share session exists, carrying a
+///     `visitor_id` that "matches no `auth.users` row"
+///     (`middleware/auth.rs`), password-challenged or not. Confined
+///     today by `anonymous_allowlist_layer`, whose route list IS this
+///     set: `/api/files/{id}`, `/api/folders/{id}/download`, …
+///   * `User`    — an authenticated user session. The DEFAULT.
+///
+/// ORDERED ascending in strictness, so the fold takes the MAX, like
+/// `MinRole` — and admitting a visitor also admits a user, which it must,
+/// since `/api/files/{id}` serves both.
+///
+/// The password challenge on a protected share is NOT a fourth state: it
+/// runs before the ring is minted, so by the time any operation sees the
+/// caller there is simply a ring. That makes it an `AdmissionPolicy`
+/// concern — no operation has an opinion about whether the share had a
+/// password.
 #[derive(Default)]
-pub enum Anonymity {
+pub enum MinPrincipal {
+    Public,
+    Visitor,
     #[default]
-    Denied,
-    Allowed,
+    User,
 }
 
 /// NOT a v1 axis — there is no elevation state in the schema yet.
@@ -235,7 +264,7 @@ rule. It cannot change how the existing axes fold, and it cannot change
 any existing declaration — which is the property that makes this worth
 building rather than hand-wiring the next check too.
 
-**Four axes at request time: scope, role, anonymity, elevation.** The
+**Four axes at request time: scope, role, principal, elevation.** The
 first three ship in PR 1; elevation is not optional, only blocked —
 `auth.sessions.elevated_at` does not exist yet, and three classes of
 operation need it (§ Declaring session elevation: non-safe
@@ -351,7 +380,7 @@ Per axis, **tighten-only**:
 |---|---|---|
 | role | `max` (`Owner > Admin > Internal`) | **boot error** |
 | app-password | `Denied` wins | needs an explicit `Override` |
-| anonymity | `Denied` wins | needs an explicit `Override` — this is what `anonymous_allowlist_layer` already is |
+| principal | strictest wins (`User` > `Visitor` > `Public`) | a declaration that WIDENS is a boot error — which is what `anonymous_allowlist_layer` already is |
 | scope | union of what is required | — |
 
 The result is a `Policy`: **total**, every axis resolved, no `Option`
@@ -367,9 +396,9 @@ layers has no moment where all the declarations are in one place.
 
 | refused at boot | why |
 |---|---|
-| `anonymous_allowed()` **+ any role** | structurally unsatisfiable: `UserRole::Anonymous` is "**never stored in `auth.users`**… it exists only on a session and its JWT, and `from_stored` deliberately cannot produce it" (`user.rs:21`). No role can ever be satisfied, so the route is unreachable and one of the two declarations is a lie. |
-| `anonymous_allowed()` **+ elevation** | elevation is a human re-proving themselves against an account. There is no account. |
-| `anonymous_allowed()` **+ a scope** | a share-ring visitor carries no `ScopeSet`; the requirement can never be met. |
+| `public()` or `visitor_allowed()` **+ any role** | structurally unsatisfiable: `UserRole::Anonymous` is "**never stored in `auth.users`**… it exists only on a session and its JWT, and `from_stored` deliberately cannot produce it" (`user.rs:21`). No role can ever be satisfied, so the route is unreachable and one of the two declarations is a lie. |
+| `public()` or `visitor_allowed()` **+ elevation** | elevation is a human re-proving themselves against an account. There is no account. |
+| `public()` or `visitor_allowed()` **+ a scope** | a share-ring visitor carries no `ScopeSet`; the requirement can never be met. |
 | a role declaration that **widens** its parent's | `Owner` nest, `Internal` child: the fold is `max`, so the child's intent is silently discarded. Better to refuse than to ignore. |
 | an operation with **no** policy | from the spec cross-check below. Deny-by-default means an undeclared operation is a boot failure, not an open door. |
 | a policy naming **no live operation** | a policy left behind by a deleted route, which would otherwise sit unmatched forever. |
@@ -377,7 +406,7 @@ layers has no moment where all the declarations are in one place.
 | **two `.policy()` declarations** on one operation | ambiguous: repeated builder calls conventionally override, so accumulating would read as the second replacing the first. Put both conditions in one slice. |
 
 The first row is the one worth having. An implementor writing
-`anonymous_allowed()` on a route under `/admin` means *"make this
+`public()` on a route under `/admin` means *"make this
 public"*, while the nest says *"admins only"* — and whichever wins, the
 other declaration was wrong. Stacked layers resolve that to
 "unreachable" in silence; the compile step makes someone decide.
@@ -515,7 +544,7 @@ no scope string can supply it.
 
 **Vocabulary.** The three rows above are the **axes** — separate types.
 Inside the Gate axis are four independent **conditions** — role,
-credential-kind, anonymity, session-binding — which are fields of one
+role, principal, scope, elevation — which are fields of one
 type (§ Goal), and reduction never crosses between them (§ Reduction is
 per condition).
 
@@ -535,12 +564,12 @@ All three axes, on one request:
 
 | axis | check | where |
 |---|---|---|
-| Gate | the anonymity condition at its default `Denied` — enforced today by `anonymous_allowlist_layer` | router layer |
+| Gate | the principal condition at its default `User` — enforced today by `anonymous_allowlist_layer` | router layer |
 | Scope | `oxicloud:sharing:rw` | router layer / extractor |
 | Grant | `authz.require(Subject::User(caller), Permission::Share, resource)` — owners short-circuit | `grant_handler.rs` |
 
 The condition is ANONYMITY, **not** role — and the difference is easy to
-blur. `Anonymity::Denied` refuses a visitor with no user row;
+blur. `MinPrincipal::User` refuses a visitor with no user row;
 `MinRole::Internal` refuses an external USER, who has one.
 
 An external user has an `auth.users` row and legitimately re-shares what
@@ -559,8 +588,9 @@ refusal for neighbours like `/api/users/{id}`, `/api/groups/search` and
 `/api/auth/app-passwords`.
 
 So this row folds in rather than appearing: per § Fold in,
-`anonymous_allowlist_layer` becomes `the anonymity condition at its default`
-and keeps its allowlist.
+`anonymous_allowlist_layer`'s route list IS the `Visitor` set, so each of
+its entries becomes `[Condition::visitor_allowed()]` on that route and the
+layer goes away.
 
 Neither the scope nor the grant substitutes for the other, and that is the
 design working rather than redundancy:
@@ -1055,7 +1085,7 @@ you must remember to write does. So the value is two narrower things:
 | `require_internal_user_layer` (11 sites) | `[Condition::role(MinRole::Internal)]` |
 | admin middleware on `/api/admin/*` (3 sites) | `[Condition::role(MinRole::Admin)]` |
 | hand-rolled owner check in `transfer_ownership` | `[Condition::role(MinRole::Owner)]` |
-| `anonymous_allowlist_layer` (1 site) | `[Condition::anonymous_allowed()]` on the allowlisted routes; keeps the allowlist itself, and is the mechanism § Authentication by default would promote to the root |
+| `anonymous_allowlist_layer` (1 site) | `[Condition::visitor_allowed()]` on the allowlisted routes; keeps the allowlist itself, and is the mechanism § Authentication by default would promote to the root |
 | `require_no_password_change_pending_layer` (8 sites) | **untouched** — a scope narrowing, deleted later by `authn-pipeline.md` part B. Below. |
 | `require_dpop_layer` (8 sites) | **untouched** — an integrity check, not an axis. § Not axes: integrity checks |
 
@@ -1210,7 +1240,7 @@ for the other.
 | decided at | checks | the question |
 |---|---|---|
 | **AuthN phase** — login, and **re-run at every refresh** | account active · verified email · OPAQUE migration · credential-kind → scope ceiling · forced-reset narrowing | *may this account have a credential at all, and what is it issued for?* Failure means **no session**, not a refused request. |
-| **Per request** | role · anonymity · scope · elevation | *may this caller reach this operation?* Failure is a refused request on a valid session. |
+| **Per request** | role · principal · scope · elevation | *may this caller reach this operation?* Failure is a refused request on a valid session. |
 
 **Verified email is the worked example**, because it looks like it could
 be an axis and is not. The question is whether the account may hold a
@@ -1236,7 +1266,7 @@ in the per-call read").
 | axis | source | changes mid-credential? | evaluated |
 |---|---|---|---|
 | role (`Internal`/`Admin`/`Owner`) | `auth.users`, via `user_flags_cache` | **yes** — promote, demote, guest→internal | already resolved by `auth_middleware` into `CurrentUser.role` |
-| anonymity | the credential | no | field read |
+| principal | the credential | no | field read |
 | scope | the credential's `ScopeSet`, frozen at mint | no | mask `&` and compare |
 | elevation | `auth.sessions.elevated_at` | yes — it expires | pending the column |
 
@@ -1252,7 +1282,7 @@ Cost does not decide placement; staleness does:
    - **Yes** — it is an axis; question 2 places it.
 2. **Can the fact change while the credential is alive?**
    - **No** — read it off the credential per request: free, no
-     staleness, nothing to invalidate. Anonymity and scope are here.
+     staleness, nothing to invalidate. Principal and scope are here.
    - **Yes** — per-call read. `user_flags_cache` makes it free and
      `invalidate_user_flags` closes the TTL window. Role, `is_external`
      and elevation are here.
@@ -1266,7 +1296,7 @@ This belongs in `src/AGENTS.md` — § Required: amend.
 ### The defaults put a check on every request
 
 "Cold by design" holds for the named gates, not for the defaults.
-`Anonymity::Denied` only bites if every
+`MinPrincipal::User` as the default only bites if every
 route is gated — the root choke point § Authentication by default argues
 for — so the design does put a check on listing and thumbnails.
 
@@ -1510,7 +1540,7 @@ The rule to add, under § AuthZ enforcement points:
 > **Every route declares all three axes explicitly. There is no default.**
 >
 > - **Gate** — which KIND of caller may reach this surface, as a slice of `Condition`s
->   value naming the conditions it needs (role, credential-kind, anonymity,
+>   value naming the conditions it needs (role, principal, scope, elevmity,
 >   session-binding). Declared even when the answer is "any
 >   authenticated caller", which is an empty slice and still written
 >   down.
@@ -1969,7 +1999,7 @@ The halves have opposite risk profiles and must not share a green suite:
 
 | PR | change | acceptance |
 |---|---|---|
-| 1 — gates | `is_external` on `CurrentUser`; `Condition` / `Policy` + `MinRole` / `Anonymity`; the compile step and the operation table; then fold three layers plus the `transfer_ownership` check | **behaviour-preserving**, and provable rather than hoped: the compiled table before and after the fold must be IDENTICAL, with `external_users.hurl` green *unchanged* |
+| 1 — gates | `is_external` on `CurrentUser`; `Condition` / `Policy` + `MinRole` / `MinPrincipal`; the compile step and the operation table; then fold three layers plus the `transfer_ownership` check | **behaviour-preserving**, and provable rather than hoped: the compiled table before and after the fold must be IDENTICAL, with `external_users.hurl` green *unchanged* |
 | 2 — scopes | turns `device_codes.scopes` from an inert column into enforcement | **not** behaviour-preserving; carries every lockout risk below |
 
 Landing them together means PR 2's risk rides in on PR 1's green suite.
@@ -2130,14 +2160,14 @@ field into an enforced one:
   declaration that would WIDEN the role (an `Owner` nest, an `Internal`
   child) fails at boot rather than resolving silently.
 - Unit: reduction is per condition. The role chain above compiles to
-  `Owner` while the anonymity condition keeps its own value — a role
+  `Owner` while the principal condition keeps its own value — a role
   conjunction must not reach across and alter another condition. Pin the
   independence, not just the role result: that is what a global reduction
   would silently break.
-- Unit: the boot refusals in § 2b. `anonymous_allowed()` beside any
+- Unit: the boot refusals in § 2b. `public()` beside any
   `MinRole` is REFUSED — structurally unsatisfiable, since
   `UserRole::Anonymous` is never stored in `auth.users`. Likewise
-  anonymity with elevation, and anonymity with a scope.
+  `visitor_allowed()` with elevation, and with a scope.
 - Unit: the public set — once § Authentication by default lands, every
   route reachable without a session carries `AnonymousAllowed`, and the
   set is exactly the login flows, the share-link surface, `/status.php`,

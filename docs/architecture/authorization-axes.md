@@ -28,7 +28,7 @@ before the design settled.
 | word | means | does NOT mean |
 |---|---|---|
 | **axis** | one of the three questions above — Gate / Scope / Grant | a field of a policy — those are *conditions* |
-| **condition** | one dimension a request-time policy checks: minimum role, anonymity, scope, elevation | an axis; a policy spans two axes, so its fields cannot be axes |
+| **condition** | one dimension a request-time policy checks: minimum role, minimum principal, scope, elevation | an axis; a policy spans two axes, so its fields cannot be axes |
 | **grant** | may this caller touch THIS resource — service layer, `authz.require` | a policy or a condition |
 | **integrity** | signature, DPoP proof, CSRF — is the REQUEST authentic | an axis or a condition (below) |
 | **authn phase** | login, refresh — where admission is decided | "session phase": an app password creates no session yet still runs phases on every request |
