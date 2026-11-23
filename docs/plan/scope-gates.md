@@ -2030,7 +2030,8 @@ Landing them together means PR 2's risk rides in on PR 1's green suite.
 | 1 | the caller carries what the conditions read | **done** — `f481cfa8f` · `17f44e3b4` · `401c250a5` |
 | 2 | `Condition` / `Policy` + `MinRole` / `MinPrincipal` (`application/ports/scope_ports.rs`) | **done** — `7ce329192`, inert |
 | 3a | the compile step + the five chain-local boot refusals | **done** — `1167e58ba`, inert |
-| 3b | the registry, `.policy()`, the spec cross-check, the table DUMP | not started |
+| 3b-i | the registry, the table, and the DUMP | **done** — `5b7ddb403`, inert |
+| 3b-ii | `.policy()` on the router + the two spec cross-checks | not started |
 | 4 | fold three layers + the `transfer_ownership` check | not started |
 
 Step 1 landed as `CurrentCaller.kind: CallerKind`, not the `is_external`
@@ -2058,10 +2059,32 @@ machinery — which is why step 3 splits:
 | a role declaration that widens | the folded chain | **3a** |
 | a principal declaration that widens | the folded chain | **3a** |
 | the same axis twice in ONE slice | the slice | **3a** |
-| an operation with no policy | the table × `openapi.json` / `asyncapi.json` | 3b |
-| a policy naming no live operation | the same cross-check | 3b |
-| two `.policy()` on one operation | the registry | 3b |
+| an operation with no policy | the table × `openapi.json` / `asyncapi.json` | 3b-ii |
+| a policy naming no live operation | the same cross-check | 3b-ii |
+| two `.policy()` on one site | the registry | **3b-i** |
 | `public`/`visitor` + elevation | a `Condition::Elevated` variant | blocked |
+
+**Open, and § 2b row 5 contradicts § Authentication by default.** Row 5
+refuses "an operation with **no** policy" at boot, because
+"deny-by-default means an undeclared operation is a boot failure, not an
+open door". But § Authentication by default has the opposite mechanism:
+`Policy::default()` is an authenticated user, so "no declaration ⇒
+authentication required" FALLS OUT of the type and an undeclared
+operation is already closed to anonymous callers.
+
+Both cannot hold. 3b-i implements the second — an undeclared operation
+compiles to the safe default — because that is what the type does today.
+Deciding row 5 means deciding whether all 279 REST operations need an
+EXPLICIT declaration:
+
+| | cost | what it buys |
+|---|---|---|
+| default is enough | nothing | an undeclared op denies anonymous; a forgotten PUBLIC op 401s, which is loud and safe |
+| explicit required | 279 declarations, kept in sync | catches an op that should be admin-only and was never declared — the default gives it `principal=User`, i.e. ANY authenticated user |
+
+The second case is the real exposure, and a nest declaration already
+covers it wherever a nest exists (`/api/admin`). So the question is
+whether the surfaces WITHOUT a nest justify declaring everything.
 
 Step 3a also found a gap in § 2. Compile: scope is specified to fold as
 "union of what is required", but `Policy::scope` holds a SINGLE pair, so
