@@ -766,9 +766,16 @@ would hand the dangerous half to an rclone credential.
 | `/api/auth/app-passwords` | **mints credentials** |
 | `/api/auth/device/devices`, `/device/verify` | lists, revokes and *approves* device credentials |
 
-Plus 2FA/TOTP when it lands — none exists yet — and self-service session
-revocation, which also does not exist: `/api/admin/sessions` is
-`MinRole::Admin`, not `security`.
+Plus 2FA/TOTP when it lands — none exists yet.
+
+Self-service session management SHIPPED (`7fab8811c`) and belongs here:
+`GET /api/auth/sessions` is `security:ro`, `DELETE /api/auth/sessions/{id}`
+is `security:rw` — revoking a credential is a credential operation.
+`/api/admin/sessions` is the other exposition of the same low-level
+functions and is `MinRole::Admin` instead, which is the pattern worth
+noting: two operations, two policies, one implementation
+(`list_sessions_scoped`, `revoke_session_and_invalidate`). The policy is
+per-operation; the logic is shared.
 
 **Why a named scope rather than an exception list**, on three counts:
 
@@ -1761,27 +1768,51 @@ Bearer JWT", so the credential kind is threaded alongside `dpop_jkt` —
 which is the precedent: that field exists precisely to answer a
 session-shaped question without a DB round trip.
 
-### Not in the spec's security array
+### The spec is rendered FROM the policy table, not read into it
 
-The other gates declare as pseudo-scopes (`role:admin`, `elevated`)
-because they are *requirements*. `PermitAppPassword` is a
-**relaxation**, and an array of required scopes is the wrong place for
-one — it would read as "this route requires an app password".
+`openapi.json` already carries the structure: 228 operations emit
+`security: [{"bearerAuth": []}]` — an empty scope array — and 21 emit
+`security: []` for public routes. So showing scopes needs no new
+mechanism, only a non-empty array.
 
-It also does not need to be there. The permit set is five mounts, none
-of which appears in `resources/gen/openapi.json` (§ Deliberately
-scopeless records that the spec holds no non-`/api` paths). So the
-assertion is mount-level, not per-operation:
+The direction matters, and it is engine → spec:
 
-> No `/api` operation carries `PermitAppPassword`, and the permit set is
-> exactly `{webdav, caldav, carddav, remote.php, ocs}`.
+| | |
+|---|---|
+| spec → engine | declarations become stringly-typed; inheritance is lost (`role:admin` repeated per operation instead of once on the nest); a docs-only edit changes enforcement; and the DAV / WS surfaces carry no `#[utoipa::path]` at all |
+| **engine → spec** | one declaration site, with inheritance; the spec is accurate **by construction** because it renders the compiled `Policy`; `generate-openapi` plus CI's existing drift check (`ci.yml:303`) turn a forgotten regeneration into a CI failure |
 
-### Ceiling tightening that follows
+So the compiled table is the source and the spec is a projection of it.
+A policy change then reaches Swagger and the generated TypeScript client
+automatically, and cannot silently disagree with what is enforced —
+which is stronger than the cross-check this plan proposed earlier, since
+drift becomes impossible rather than merely detectable.
 
-With `/api` closed to app passwords, their scope ceiling drops `account`
-— `/api/auth/me*` is unreachable by them anyway, and the NC avatar path
-sits under `/remote.php/dav/avatars`, which is permitted. New ceiling:
-`files,calendar,contacts`.
+**Constraint this imposes:** `generate-openapi` runs with no database, so
+the declarations must be constructible without a running app. `Requires`
+therefore lives on a route registry built from `const` values, never
+assembled inside `AppState`.
+
+Gate conditions project as pseudo-scopes (`role:admin`, `elevated`)
+because they are requirements, even though no client may request one. A
+*relaxation* must never appear there — it would read as "this route
+requires an app password" — which is moot now that credential kind is a
+mint-time input (§ Credential-kind gating) rather than a condition.
+
+### Ceiling: app passwords get no `account`
+
+`/api/auth/me*` is in the `account` area, and an app password has no
+business reading or writing a profile — the credential exists for sync
+clients. The NC avatar path sits under `/remote.php/dav/avatars`, which
+is `files`-shaped, so dropping `account` costs DAVx5 and rclone nothing.
+
+Ceiling: `files,calendar,contacts`.
+
+This used to be derived from "`/api` is closed to app passwords, so
+`account` is unreachable anyway". That argument died with the
+credential-kind condition — nothing closes `/api` by credential type any
+more. The tightening stands on its own: the ceiling is an allowlist, and
+`account` was never justified in it.
 
 ## Required: documentation
 

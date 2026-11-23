@@ -103,6 +103,21 @@ scope set lacks `security`, not because anything noticed it was an app
 password. Being an allowlist, a credential kind added without thought
 about `security` gets it **withheld**.
 
+### Where a scope is visible
+
+OpenAPI's own `security` array, which the spec already carries: 228
+operations emit `security: [{"bearerAuth": []}]` today — the structure
+with an empty scope list — and 21 emit `security: []` for public routes.
+Filling that array is how a scope becomes visible in `openapi.json`, in
+Swagger UI, and in the generated TypeScript client, with no new
+mechanism.
+
+The planned direction is **engine → spec**: the array is rendered from
+the enforced policy rather than read as its source, so the documentation
+cannot disagree with enforcement. `generate-openapi` plus CI's spec-drift
+check make a stale array a build failure. See
+`docs/plan/scope-gates.md` § The spec is rendered FROM the policy table.
+
 ### Not to be confused with OIDC client scopes
 
 `config.oidc.scopes` is unrelated: those are the scopes **OxiCloud
