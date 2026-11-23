@@ -1092,24 +1092,26 @@ you must remember to write does. So the value is two narrower things:
 allowlist and must stay `route_layer` (it needs `MatchedPath`). Fold the
 *decision* and leave the allowlist where it is.
 
-**When a gate check may leave the service layer: only with ONE door.**
-AGENTS.md puts AuthZ in the service layer, and the reason is coverage —
-REST, DAV and WS share service methods, so a gate on one door is a hole
-in the other. A router policy can only gate the door it is attached to.
-Hence:
+**Gate and Scope on the declaration; Grant in the service.** This is what
+the whole design reduces to, and it is why the table is keyed by
+OPERATION rather than by route. AGENTS.md puts AuthZ in the service layer
+for coverage — REST, DAV and WS share service methods, so a gate on one
+door is a hole in the other — and a router layer can only gate the door
+it is attached to. `Op::Rest` / `Op::Dav` / `Op::Ws` / `Op::CollabFrame`
+name every door of one service method, so **declaring each door is the
+remedy, not keeping the gate in the service.**
 
-- **two or more doors** → the check STAYS in the service, or every door's
-  `Op` is declared. Declaring one and deleting the service check is the
-  `create_calendar` / `create_address_book` bug again (AGENTS.md § Grant
-  vs scope).
-- **exactly one door** → the router is where a GATE belongs, since the
-  service layer is the GRANT layer and a role check names no resource.
+A role check inside a service is therefore misfiled rather than
+deliberate. Count the doors before moving one —
+`git grep '<method>(' -- src/ | grep interfaces/` — to be sure every one
+is declared; declaring a single door and deleting the service check is
+the `create_calendar` / `create_address_book` bug again.
 
-`transfer_ownership` is the one-door case, verified:
-`auth_application_service::transfer_ownership` has a single caller in
-`interfaces/` (`admin_handler.rs`). Its check is
-`caller.role != UserRole::Owner` — a gate sitting in the grant layer, so
-folding it to the router files it correctly rather than weakening it.
+`transfer_ownership` is the easy case, verified:
+`auth_application_service::transfer_ownership` has exactly one caller in
+`interfaces/` (`admin_handler.rs`), so one `Op::Rest` declaration
+replaces its `caller.role != UserRole::Owner` with nothing left
+uncovered.
 
 **But folding it changes an audit event, and that needs a decision.**
 Today the denial emits `event = "server_owner.transfer_rejected"`,

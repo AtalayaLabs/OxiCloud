@@ -300,27 +300,28 @@ adding one:
 - pin it in `tests/api/external_users.hurl`: the refusal **and** an allowed
   caller succeeding — a gate that refuses everyone passes the refusal pin.
 
-**A scope check may legitimately sit in a SERVICE, and moving it depends on
-the door count.** The split above puts scope in the router, so a role check
-found inside a service reads as misfiled — but it is often deliberate: the
-service is the one place every surface passes through, so a check there
-covers REST, DAV and WS at once, where a router policy covers only the door
-it is attached to. `transfer_ownership`'s `caller.role != UserRole::Owner`
-(`auth_application_service.rs`) is one of these.
+**So: Gate and Scope on the declaration, Grant in the service.** That is the
+whole rule, and the door problem is why the declaration is keyed by
+OPERATION rather than by route: a router layer can only gate the door it is
+attached to, but `Op::Rest` / `Op::Dav` / `Op::Ws` / `Op::CollabFrame` can
+name every door of one service method. Declaring each is the remedy —
+*not* keeping the gate in the service.
 
-Before moving such a check, count the doors —
-`git grep '<method>(' -- src/ | grep interfaces/`:
+A role check found inside a service is therefore misfiled, not deliberate:
+`transfer_ownership`'s `caller.role != UserRole::Owner`
+(`auth_application_service.rs`) is a gate in the grant layer. Still count
+the doors before moving one — `git grep '<method>(' -- src/ | grep
+interfaces/` — but to be sure you DECLARE them all, not to decide where the
+check lives. Declaring one and deleting the service check is the
+`create_calendar` bug above.
 
-- **2+ doors** → it STAYS in the service. Moving it to one router gates one
-  door and opens the rest, which is the `create_calendar` bug above. The
-  only alternative is declaring every door.
-- **1 door** → the router is the right home, since the service layer is the
-  grant layer and a role check names no resource.
-
-Moving one also changes its **audit event** — e.g.
+Moving a check also changes its **audit event** — e.g.
 `server_owner.transfer_rejected` / `caller_not_owner` becomes an `authz.*`
 event. `event` must stay stable (below), so either keep emitting the
 original from the new denial path or treat it as a breaking audit change.
+
+The engine is in `docs/architecture/authorization-axes.md` (concepts) and
+`docs/plan/scope-gates.md` (design and rollout).
 
 ### Audit logging for denials and rejections
 
