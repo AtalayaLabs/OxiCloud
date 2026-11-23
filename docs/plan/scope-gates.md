@@ -1150,17 +1150,37 @@ handlers only.
 
 ### The field `CurrentUser` must carry first
 
-An axis is a field read only if the caller actually carries it. One does
-not:
+An axis-policy is a field read only if the caller actually carries it,
+and the caller now carries every field the four conditions read:
 
-| field | why | today |
+| condition | reads | carried as |
 |---|---|---|
-| `is_external` | `MinRole::Internal` has nothing to read | `UserFlags` has it, but `LiveRole::Active(SmolStr)` returns only the role, so `require_internal_user` calls `get_user_flags` a SECOND time per request |
+| `MinRole` | the role | `Caller::Internal(UserRole)` |
+| `MinPrincipal` | public / visitor / user | the `Caller` variant itself |
+| scope | the token's scope set | `PresentedToken` |
+| elevation | the elevation stamp | `PresentedToken` |
 
-It resolves in the pass that already holds the flags, and follows
-`token: PresentedToken` (`9a42e4299`): the middleware knows the fact,
-drops it, and a consumer re-derives it or cannot ask. Adding
-`is_external` also removes the duplicate lookup.
+`CurrentUser.caller: Caller` is one `Copy` enum:
+
+```rust
+pub enum Caller {
+    Visitor,              // public-share session: no auth.users row
+    External,             // role is necessarily User (a schema CHECK)
+    Internal(UserRole),   // user | admin | owner
+}
+```
+
+It replaced a `role: SmolStr` + `is_external: bool` pair that could
+express three states which cannot exist (anonymous+internal,
+anonymous+external, admin/owner+external — the last already forbidden by
+`CHECK (NOT (is_external AND role <> 'user'))`). `MinPrincipal` therefore
+compares variants rather than parsing a string and consulting a bool, and
+`require_internal_user` no longer issues a second `get_user_flags` per
+DAV request: the flags pass that resolves the role resolves the kind.
+
+This follows `token: PresentedToken` (`9a42e4299`) — the middleware holds
+the fact once, rather than dropping it and leaving a consumer to
+re-derive it or to be unable to ask.
 
 ### Per-route conditions to retire
 

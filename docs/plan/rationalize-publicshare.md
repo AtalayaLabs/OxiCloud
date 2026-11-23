@@ -87,11 +87,12 @@ folder is immediately visible, under either.
 | `GET /api/rt/ws` self-authenticates from a raw `Authorization: Bearer` | `rt_ws.rs:240-255` |
 
 Also: **`OptionalUserId` has zero call sites** — dead code, so "it yields `None`
-for anonymous" was a no-op protection. And **`CurrentUser.role` is a `SmolStr`,
-not the `UserRole` enum**: adding a variant produces *zero* compile errors in
-`src/interfaces/`. The single-`role` safety property still holds (a string cannot
-be both `"anonymous"` and `"admin"`), but nothing guides the change — hence
-`require_user_role` as the single grep point.
+for anonymous" was a no-op protection. ~~And **`CurrentUser.role` is a `SmolStr`, not the `UserRole` enum**: adding a
+variant produces *zero* compile errors in `src/interfaces/`.~~ **Fixed on
+`feat/scopes`:** `CurrentUser` carries a `Caller` enum
+(`Visitor | External | Internal(UserRole)`), so a new variant now DOES produce
+compile errors wherever the kind is matched, and the grep point is no longer
+the only guide.
 
 **Rejected: handlers taking `Option<CurrentUser>` plus an assertion.** That
 inverts the default from deny to allow — a handler that forgets the call silently
@@ -682,7 +683,7 @@ Still to do:
 | Risk | Severity | Mitigation |
 |---|---|---|
 | A fifth auth bypass is added later | **Critical** | Route-coverage test over the assembled router; allowlist constant |
-| `role` is a `SmolStr` — no compile error guides the change | **High** | `CurrentUser::is_anonymous()` as the single grep point |
+| ~~`role` is a `SmolStr` — no compile error guides the change~~ | ~~High~~ **Resolved** | `CurrentUser.caller` is a `Caller` enum (`feat/scopes`); the compiler guides the change |
 | Anonymous refresh outliving share revocation | ~~High~~ **Resolved by design** | Stateless sessions cannot refresh, and the engine re-checks the token grant per request — deleting a share denies every outstanding token immediately, whatever its TTL |
 | Outstanding token survives a share **password** change until TTL | **Low** | Bounded by `OXICLOUD_SHARE_SESSION_EXPIRY_SECS` (4 h). The pre-existing `oxi_share_unlock_{token}` cookie already has this property, so it is not a regression |
 | Cookie collision downgrades a logged-in user's session | **High** | Distinct share-scoped cookie name |

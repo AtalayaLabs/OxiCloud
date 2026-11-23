@@ -171,10 +171,10 @@ pub async fn basic_auth_middleware(
         .verify_basic_auth(username, &password)
         .await
     {
-        // `_cached_role` is deliberately dropped: it comes from the
-        // 300 s Basic-auth verification cache, so it can name a role the
-        // user no longer holds. The live one is read below.
-        Ok((user_id, uname, email, _cached_role)) => {
+        // No role in this tuple, deliberately: the Basic-auth cache has a
+        // 300 s TTL, so a role from it can name one the user no longer
+        // holds. The live one is read below, from the 30 s flags cache.
+        Ok((user_id, uname, email)) => {
             // Reset lockout counter on success
             if let Some(auth_svc) = state.auth_service.as_ref() {
                 auth_svc.login_lockout.record_success(username, &client_ip);

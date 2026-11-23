@@ -3,9 +3,9 @@
 //! Sections (all pure CPU, no Postgres):
 //!   1. Authenticated-request identity build (Bearer/cookie hit path):
 //!      BEFORE `String` claims clone ×2 + live-role `to_string` + `Arc::new`
-//!      vs AFTER `Arc<str>` refcount bumps + inline `SmolStr` + `Arc::new`.
+//!      vs AFTER `Arc<str>` refcount bumps + a `Copy` `Caller` + `Arc::new`.
 //!   2. Basic-auth cache hit: BEFORE `CachedBasicAuthResult{String}` moka
-//!      value clone vs AFTER `Arc<str>`/`SmolStr` bumps.
+//!      value clone vs AFTER `Arc<str>` bumps (no role: it was removed).
 //!   3. NC PROPFIND per-row integer props (`oc:fileid`, `nc:creation_time`,
 //!      `nc:upload_time`): BEFORE `to_string()` per field vs AFTER
 //!      `common::fmt` stack render. Gate: byte-identical XML.
@@ -31,8 +31,6 @@ use std::hint::black_box;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
-
-use smol_str::SmolStr;
 
 // ─── Counting allocator ─────────────────────────────────────────────────────
 
@@ -165,7 +163,7 @@ fn section_identity(iters: u64) {
     let (bn, ba) = measure("BEFORE String clones + role to_string", iters, || {
         before::bearer_identity(black_box(&old_claims), black_box("user"))
     });
-    let (an, aa) = measure("AFTER  Arc bumps + inline SmolStr", iters, || {
+    let (an, aa) = measure("AFTER  Arc bumps + Copy Caller", iters, || {
         // The shipped middleware tail: LiveRole render + CurrentUser build.
         Arc::new(CurrentUser {
             id: uuid::Uuid::nil(),
@@ -210,11 +208,14 @@ fn section_basic_hit(iters: u64) {
         email: "dav.client.user@example.com".to_string(),
         role: "user".to_string(),
     };
+    // Mirrors `CachedBasicAuthResult`, which no longer carries a role:
+    // both callers dropped it as stale (300 s cache, 30 s live flags), so
+    // it was removed. The AFTER side is therefore smaller than when this
+    // benchmark was written, and the gap it measures is wider.
     struct NewCachedBasic {
         user_id: uuid::Uuid,
         username: Arc<str>,
         email: Arc<str>,
-        role: SmolStr,
     }
     impl Clone for NewCachedBasic {
         fn clone(&self) -> Self {
@@ -222,7 +223,6 @@ fn section_basic_hit(iters: u64) {
                 user_id: self.user_id,
                 username: Arc::clone(&self.username),
                 email: Arc::clone(&self.email),
-                role: self.role.clone(),
             }
         }
     }
@@ -230,7 +230,6 @@ fn section_basic_hit(iters: u64) {
         user_id: uuid::Uuid::nil(),
         username: Arc::from("dav.client.user"),
         email: Arc::from("dav.client.user@example.com"),
-        role: SmolStr::new_static("user"),
     };
 
     let (bn, ba) = measure("BEFORE moka value clone (3 Strings)", iters, || {
@@ -239,13 +238,14 @@ fn section_basic_hit(iters: u64) {
     });
     let (an, aa) = measure("AFTER  moka value clone (bumps)", iters, || {
         let v = black_box(&new_val).clone();
-        (v.user_id, v.username, v.email, v.role)
+        (v.user_id, v.username, v.email)
     });
     let o = old_val.clone();
     let n = new_val.clone();
     assert_eq!(o.username, *n.username);
     assert_eq!(o.email, *n.email);
-    assert_eq!(o.role, n.role.as_str());
+    // No role to compare: the AFTER struct no longer carries one. The BEFORE
+    // side keeps its `role: String` because that is what it measured.
     println!(
         "    gate: identity fields identical ✓   ({bn:.0}→{an:.0} ns, {ba:.2}→{aa:.2} allocs)"
     );

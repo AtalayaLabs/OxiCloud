@@ -440,9 +440,9 @@ pub async fn auth_middleware(
                                 }
                             };
                             // `username`/`email` are `Arc<str>` refcount
-                            // bumps out of the cached claims; `role` is an
-                            // inline SmolStr — the whole build is 1 alloc
-                            // (the `Arc::new`) instead of 4.
+                            // bumps out of the cached claims; `caller` is a
+                            // one-byte `Copy` enum — the whole build is 1
+                            // alloc (the `Arc::new`) instead of 4.
                             let current_user = Arc::new(CurrentUser {
                                 id: user_id,
                                 caller,
@@ -499,7 +499,7 @@ pub async fn auth_middleware(
 
                 if let Some(app_pw_service) = state.app_password_service.as_ref() {
                     match app_pw_service.verify_basic_auth(username, password).await {
-                        Ok((user_id, uname, email, role)) => {
+                        Ok((user_id, uname, email)) => {
                             tracing::debug!(
                                 "App password authentication successful for user: {}",
                                 uname
@@ -576,7 +576,15 @@ pub async fn auth_middleware(
                             let caller = match crate::interfaces::middleware::user::resolve_live_role(
                                 auth_svc.auth_application_service.as_ref(),
                                 user_id,
-                                &role,
+                                // No claim to pass: an app password carries
+                                // no role of its own. `claim_role` exists
+                                // only for the anonymous short-circuit, and
+                                // `from_session("")` rejects this, so the
+                                // live read is always taken — which is what
+                                // should happen. The previous value came
+                                // from the 300 s Basic-auth cache and said
+                                // nothing this branch could use.
+                                "",
                                 // An app password is not a JWT: no `iat`,
                                 // no `sid`. So neither revocation form
                                 // reaches it — it is revoked by DELETING

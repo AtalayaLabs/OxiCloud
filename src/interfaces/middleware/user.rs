@@ -184,7 +184,6 @@ pub enum LiveRole {
     /// `require_internal_user` issue a SECOND `get_user_flags` on every
     /// request to a DAV surface. `Caller` is `Copy` and one byte wider
     /// than the discriminant, so nothing is allocated per request —
-    /// which is what the old `SmolStr` was there to achieve.
     Active(Caller),
     /// The account is deactivated or deleted: the request must be rejected
     /// even though its token is still cryptographically valid.

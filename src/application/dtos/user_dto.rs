@@ -626,9 +626,8 @@ pub struct UpgradeToInternalDto {
 ///
 /// Built once per authenticated request in the auth middlewares.
 /// `username`/`email` are `Arc<str>` (refcount-bump clones from the cached
-/// `TokenClaims` / Basic-auth cache — JSON shape unchanged) and `role` is an
-/// inline `SmolStr` ("admin"/"user" fit the 23-byte inline buffer, so the
-/// per-request live-role render allocates nothing).
+/// `TokenClaims` / Basic-auth cache — JSON shape unchanged) and `caller` is
+/// a `Copy` enum one byte wide, so the per-request build allocates nothing.
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
 pub struct CurrentUser {
     pub id: Uuid,

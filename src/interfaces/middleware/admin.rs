@@ -8,13 +8,12 @@
 //! for audit / ownership purposes.
 
 use axum::http::{HeaderMap, StatusCode, header};
-use smol_str::SmolStr;
 use uuid::Uuid;
 
 use crate::application::ports::auth_ports::TokenServicePort;
 use crate::common::di::AppState;
 use crate::domain::entities::presented_token::PresentedToken;
-use crate::domain::entities::user::UserRole;
+use crate::domain::entities::user::{Caller, UserRole};
 use crate::interfaces::api::cookie_auth::{ACCESS_COOKIE, extract_cookie_value};
 use crate::interfaces::errors::AppError;
 use crate::interfaces::middleware::user::{LiveRole, indeterminate_app_error, resolve_live_role};
@@ -29,7 +28,7 @@ use crate::interfaces::middleware::user::{LiveRole, indeterminate_app_error, res
 pub async fn require_admin(
     state: &AppState,
     headers: &HeaderMap,
-) -> Result<(Uuid, SmolStr), AppError> {
+) -> Result<(Uuid, Caller), AppError> {
     let auth = state
         .auth_service
         .as_ref()
@@ -69,17 +68,15 @@ pub async fn require_admin(
         // reports `User` for an external, which is what the CHECK
         // guarantees, so an external can never satisfy this.
         LiveRole::Active(caller) if caller.role().at_least(UserRole::Admin) => {
-            let role = SmolStr::new_static(caller.role().as_str());
-            Ok((user_id, role))
+            Ok((user_id, caller))
         }
         LiveRole::Active(caller) => {
-            let role = SmolStr::new_static(caller.role().as_str());
             tracing::info!(
                 target: "audit",
                 event = "authz.admin_denied",
                 reason = "not_admin",
                 caller_id = %user_id,
-                role = %role,
+                role = caller.role().as_str(),
                 "👮🏻‍♂️ admin-only endpoint denied for non-admin caller"
             );
             Err(AppError::new(
@@ -105,7 +102,7 @@ pub async fn require_admin(
 pub async fn require_authenticated(
     state: &AppState,
     headers: &HeaderMap,
-) -> Result<(Uuid, SmolStr), AppError> {
+) -> Result<(Uuid, Caller), AppError> {
     let auth = state
         .auth_service
         .as_ref()
@@ -140,27 +137,27 @@ pub async fn require_authenticated(
     .await
     {
         LiveRole::Active(caller) => {
-            let role = SmolStr::new_static(caller.role().as_str());
             // This function re-parses the token itself and never touches the
             // `AuthUser` / `CurrentUserId` extractors, so any rule added there
             // does not reach it. An anonymous public-share session must not
             // satisfy "is authenticated" — its one consumer,
             // `GET /api/groups/search`, is a group-directory enumeration.
             // See `src/AGENTS.md` § AuthZ enforcement points.
-            if crate::domain::entities::user::UserRole::from_session(&role)
-                .is_none_or(|r| r.is_anonymous())
-            {
+            // `is_visitor()` rather than parsing a role string and asking
+            // whether it is anonymous: the state is named now, and an
+            // unparseable value is no longer possible.
+            if caller.is_visitor() {
                 tracing::info!(
                     target: "audit",
                     event = "authz.denied",
                     reason = "anonymous_not_authenticated",
                     caller_id = %user_id,
-                    role = %role,
+                    role = caller.role().as_str(),
                     "👮🏻‍♂️ anonymous session refused a user-scoped endpoint",
                 );
                 return Err(AppError::forbidden("This endpoint requires a user account"));
             }
-            Ok((user_id, role))
+            Ok((user_id, caller))
         }
         LiveRole::Revoked => Err(AppError::unauthorized("Account is no longer active")),
         // Same reasoning as `require_admin` above: unknown is not
