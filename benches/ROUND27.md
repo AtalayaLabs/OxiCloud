@@ -90,7 +90,7 @@ asserts the two serializations decode back to the same DTOs.
 
 ## Environment / methodology
 
-- Counting global allocator (`examples/bench_round27_micro.rs`), no Postgres. Each
+- Counting global allocator (`benches/bench_round27_micro.rs`), no Postgres. Each
   section is BEFORE (replica of the shipped-before shape) vs AFTER (replica of the
   shipped-after shape, which the source now matches), with a value-equivalence
   assertion (H1: identical `oc:id` bytes; P2: identical serialized JSONB) and a

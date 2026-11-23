@@ -93,7 +93,7 @@ pub struct SearchService {
 /// `String` headers, `Vec` slots and allocator slop. Same pattern as the
 /// file-content cache and the dedup manifest cache.
 ///
-/// `pub` so `examples/bench_search_cache_mem.rs` can recompute retained
+/// `pub` so `benches/bench_search_cache_mem.rs` can recompute retained
 /// bytes with the exact production formula.
 pub fn search_results_entry_weight(_key: &(Uuid, u64), value: &Arc<SearchResultsDto>) -> u32 {
     /// Fixed per-row overhead: struct scalars + one 24-B header per `String`
@@ -136,7 +136,7 @@ pub fn search_results_entry_weight(_key: &(Uuid, u64), value: &Arc<SearchResults
 /// Build the search-results cache exactly as production wires it: a byte
 /// budget enforced through [`search_results_entry_weight`], plus TTL.
 ///
-/// Shared with `examples/bench_search_cache_mem.rs` so the benchmark
+/// Shared with `benches/bench_search_cache_mem.rs` so the benchmark
 /// measures the identical cache configuration that serves requests.
 pub fn build_search_results_cache(
     cache_ttl_secs: u64,
@@ -678,7 +678,7 @@ impl SearchService {
 #[cfg(feature = "bench")]
 impl SearchService {
     /// Public wrapper over the private `enrich_file` so
-    /// `examples/bench_search_enrich.rs` can measure it.
+    /// `benches/bench_search_enrich.rs` can measure it.
     pub fn enrich_file_for_bench(file: FileDto, query_lower: &str) -> SearchFileResultDto {
         Self::enrich_file(file, query_lower)
     }

@@ -26,7 +26,7 @@ pub mod integration_test_support;
 mod mount_it_support;
 
 // Phase 0 perf-benchmark support: deterministic image corpus generation/loading
-// shared by `benches/thumbnails.rs` and `examples/bench_thumbnails_mem.rs`.
+// shared by `benches/thumbnails.rs` and `benches/bench_thumbnails_mem.rs`.
 // Gated behind the `bench` feature so it adds nothing to normal builds.
 #[cfg(feature = "bench")]
 pub mod bench_support;

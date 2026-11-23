@@ -4659,6 +4659,7 @@ dependencies = [
  "jsonwebtoken",
  "kamadak-exif",
  "lettre",
+ "libc",
  "lopdf",
  "lru 0.16.4",
  "md-5 0.11.0",

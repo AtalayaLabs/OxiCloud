@@ -216,7 +216,7 @@ async fn reap_replace_tmpfiles_in(dir: &Path) {
 }
 
 /// Bench-only public wrapper (feature = "bench") over the private chunk
-/// writer so `examples/bench_storage_micro.rs` can A/B the open strategy.
+/// writer so `benches/bench_storage_micro.rs` can A/B the open strategy.
 #[cfg(feature = "bench")]
 pub async fn write_blob_bytes_for_bench(
     blob_path: &Path,
@@ -259,7 +259,7 @@ pub struct LocalBlobBackend {
 /// Default chunk-open read-ahead for the local backend (overrides the trait's
 /// conservative `1`).
 ///
-/// Benchmarked with `examples/bench_blob_prefetch` on SSD-class storage: a small
+/// Benchmarked with `benches/bench_blob_prefetch` on SSD-class storage: a small
 /// read-ahead is the sweet spot for the *disk-bound* read paths — localhost/LAN
 /// downloads and, importantly, the internal blob reads that drain as fast as the
 /// disk delivers (thumbnail render, transcode, ZIP export, content extraction),

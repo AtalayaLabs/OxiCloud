@@ -1599,7 +1599,7 @@ impl WebDavAdapter {
 }
 
 /// Thin public wrappers over the private per-row PROPFIND writers so
-/// `examples/bench_propfind_xml.rs` can measure them. Gated behind the
+/// `benches/bench_propfind_xml.rs` can measure them. Gated behind the
 /// `bench` feature — adds nothing to prod builds.
 #[cfg(feature = "bench")]
 pub mod bench {
