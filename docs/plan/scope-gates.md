@@ -2018,10 +2018,50 @@ The halves have opposite risk profiles and must not share a green suite:
 
 | PR | change | acceptance |
 |---|---|---|
-| 1 — gates | `is_external` on `CurrentCaller`; `Condition` / `Policy` + `MinRole` / `MinPrincipal`; the compile step and the operation table; then fold three layers plus the `transfer_ownership` check | **behaviour-preserving**, and provable rather than hoped: the compiled table before and after the fold must be IDENTICAL, with `external_users.hurl` green *unchanged* |
+| 1 — gates | a caller carrying what the conditions read; `Condition` / `Policy` + `MinRole` / `MinPrincipal`; the compile step, the boot refusals and the operation table; then fold three layers plus the `transfer_ownership` check | **behaviour-preserving**, and provable rather than hoped: the compiled table before and after the fold must be IDENTICAL, with `external_users.hurl` green *unchanged* |
 | 2 — scopes | turns `device_codes.scopes` from an inert column into enforcement | **not** behaviour-preserving; carries every lockout risk below |
 
 Landing them together means PR 2's risk rides in on PR 1's green suite.
+
+#### PR 1 — status
+
+| # | step | state |
+|--:|---|---|
+| 1 | the caller carries what the conditions read | **done** — `f481cfa8f` · `17f44e3b4` · `401c250a5` |
+| 2 | `Condition` / `Policy` + `MinRole` / `MinPrincipal` (`application/ports/scope_ports.rs`) | not started |
+| 3 | the compile step, the six boot refusals, and the operation table | not started |
+| 4 | fold three layers + the `transfer_ownership` check | not started |
+
+Step 1 landed as `CurrentCaller.kind: CallerKind`, not the `is_external`
+bool this section first called for: the bool could express three states
+that cannot exist, so `MinPrincipal` compares enum variants instead of a
+bool plus a parsed role string. `SmolStr` roles and the stale role on
+`CachedBasicAuthResult` went with it.
+
+**Step 3 must ship the table DUMP, not just the table.** This section's
+acceptance — the compiled table identical before and after the fold — is
+unprovable today, because nothing can render that table. The snapshot has
+to be taken while the gates still live in middleware and handlers, so
+step 3 lands the renderer and its snapshot test, and step 4 asserts the
+snapshot byte-identical after folding. Reversing the two reduces PR 1 to
+"the suite is still green", which is the hoped-for-not-proven outcome this
+table exists to rule out.
+
+Open before step 2: how a route records its policy — an axum `.policy()`
+extension trait, or an explicit builder.
+
+#### Not in PR 1 — the externals audit
+
+`CallerKind::role()` reproduces the pre-`f481cfa8f` `role` field exactly:
+`External` reports `User`. That was deliberate, because an external user's
+role IS `user`, so every site reading the role alone matched externals
+before and still does — rewriting them as `matches!(.., Internal(User))`
+during the migration would have silently stopped matching them.
+
+Which of those ~25 sites SHOULD exclude externals is therefore unexamined.
+It is independent of the policy engine and belongs in its own diff: each
+site is a judgement call that is either a fix or a regression, and folding
+them into a rename or into step 4 hides them from review.
 
 ### Absent means FULL, everywhere
 

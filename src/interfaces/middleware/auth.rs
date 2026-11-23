@@ -42,6 +42,15 @@ impl std::ops::Deref for AuthUser {
 /// Reusable extractor that gets the user_id of the authenticated user.
 /// Automatically extracted from the `CurrentCaller` inserted by the auth middleware.
 ///
+/// **Not `CallerId`, deliberately.** `caller_id` is this codebase's generic
+/// "whoever is calling" — every service method takes one, and a visitor can
+/// be one. This extractor refuses visitors (`require_role(.., User)` below),
+/// so it guarantees a real `auth.users` row, which `caller_id` does not
+/// imply. The two families are worth keeping apart: `CurrentCaller` is any
+/// caller and may be a visitor, while `AuthUser` and `CurrentUserId` reject
+/// one at extraction. That is what closes the message-bus door for free —
+/// see the comment on the impl.
+///
 /// Usage in handlers:
 /// ```ignore
 /// async fn my_handler(CurrentUserId(user_id): CurrentUserId) -> impl IntoResponse { ... }
