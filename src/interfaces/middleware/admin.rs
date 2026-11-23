@@ -65,10 +65,15 @@ pub async fn require_admin(
     .await
     {
         // Rank, not spelling — the owner outranks admin and must pass.
-        LiveRole::Active { role, .. } if UserRole::str_at_least(&role, UserRole::Admin) => {
+        // Rank on the typed role, not a string compare: `Caller::role()`
+        // reports `User` for an external, which is what the CHECK
+        // guarantees, so an external can never satisfy this.
+        LiveRole::Active(caller) if caller.role().at_least(UserRole::Admin) => {
+            let role = SmolStr::new_static(caller.role().as_str());
             Ok((user_id, role))
         }
-        LiveRole::Active { role, .. } => {
+        LiveRole::Active(caller) => {
+            let role = SmolStr::new_static(caller.role().as_str());
             tracing::info!(
                 target: "audit",
                 event = "authz.admin_denied",
@@ -134,7 +139,8 @@ pub async fn require_authenticated(
     )
     .await
     {
-        LiveRole::Active { role, .. } => {
+        LiveRole::Active(caller) => {
+            let role = SmolStr::new_static(caller.role().as_str());
             // This function re-parses the token itself and never touches the
             // `AuthUser` / `CurrentUserId` extractors, so any rule added there
             // does not reach it. An anonymous public-share session must not

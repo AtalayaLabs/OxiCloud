@@ -167,15 +167,15 @@ fn section_identity(iters: u64) {
     });
     let (an, aa) = measure("AFTER  Arc bumps + inline SmolStr", iters, || {
         // The shipped middleware tail: LiveRole render + CurrentUser build.
-        let role = SmolStr::new_static("user");
         Arc::new(CurrentUser {
             id: uuid::Uuid::nil(),
             username: Arc::clone(&black_box(&new_claims).username),
             email: Arc::clone(&new_claims.email),
-            role,
+            caller: oxicloud::domain::entities::user::Caller::Internal(
+                oxicloud::domain::entities::user::UserRole::User,
+            ),
             dpop_jkt: None,
             token: Default::default(),
-            is_external: false,
         })
     });
 
@@ -185,14 +185,15 @@ fn section_identity(iters: u64) {
         id: uuid::Uuid::nil(),
         username: Arc::clone(&new_claims.username),
         email: Arc::clone(&new_claims.email),
-        role: SmolStr::new_static("user"),
+        caller: oxicloud::domain::entities::user::Caller::Internal(
+            oxicloud::domain::entities::user::UserRole::User,
+        ),
         dpop_jkt: None,
         token: Default::default(),
-        is_external: false,
     });
     assert_eq!(old.username, *new.username);
     assert_eq!(old.email, *new.email);
-    assert_eq!(old.role, new.role.as_str());
+    assert_eq!(old.role, new.caller.role().as_str());
     let json_old = serde_json::to_string(&*old).unwrap();
     let json_new = serde_json::to_string(&*new).unwrap();
     assert_eq!(json_old, json_new, "CurrentUser JSON shape must not change");

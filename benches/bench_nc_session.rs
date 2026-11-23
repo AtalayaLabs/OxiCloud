@@ -128,10 +128,11 @@ fn fixture_user(id: uuid::Uuid) -> CurrentUser {
         id,
         username: Arc::from("alice.longname"),
         email: Arc::from("alice.longname@example.com"),
-        role: smol_str::SmolStr::new_static("user"),
+        caller: oxicloud::domain::entities::user::Caller::Internal(
+            oxicloud::domain::entities::user::UserRole::User,
+        ),
         dpop_jkt: None,
         token: Default::default(),
-        is_external: false,
     }
 }
 
@@ -167,7 +168,7 @@ async fn main() {
         assert_eq!(old.user.id, new.user.id);
         assert_eq!(old.user.username, new.user.username);
         assert_eq!(old.user.email, new.user.email);
-        assert_eq!(old.user.role, new.user.role);
+        assert_eq!(old.user.caller, new.user.caller);
         assert_eq!(old.raw_username, new.raw_username);
         let (oc, nc) = (old.chroot.as_ref().unwrap(), new.require_chroot().unwrap());
         assert_eq!(oc.name, nc.name);

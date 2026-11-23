@@ -1,7 +1,6 @@
 use crate::domain::entities::user::{FederationKind, User, UserRole};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use smol_str::SmolStr;
 use std::sync::Arc;
 use utoipa::ToSchema;
 use uuid::Uuid;
@@ -59,6 +58,19 @@ impl UserRoleDto {
             UserRoleDto::Owner => "owner",
             UserRoleDto::Admin => "admin",
             UserRoleDto::User => "user",
+        }
+    }
+}
+
+impl From<UserRoleDto> for UserRole {
+    /// The DTO carries exactly the three roles a row may hold, so this is
+    /// total — no `Anonymous` case to consider, which is the same reason
+    /// `UserRole::from_stored` refuses `"anonymous"`.
+    fn from(d: UserRoleDto) -> Self {
+        match d {
+            UserRoleDto::Owner => UserRole::Owner,
+            UserRoleDto::Admin => UserRole::Admin,
+            UserRoleDto::User => UserRole::User,
         }
     }
 }
@@ -624,14 +636,20 @@ pub struct CurrentUser {
     pub username: Arc<str>,
     #[schema(value_type = String)]
     pub email: Arc<str>,
-    #[schema(value_type = String)]
-    pub role: SmolStr,
-    /// DPoP session-binding thumbprint threaded from the JWT's
-    /// RFC 9449 §5 `cnf.jkt` claim. `None` for unbound sessions
-    /// (app passwords, NC clients, pre-DPoP). The DPoP middleware
-    /// reads it to enforce "bound → proof required" from an
-    /// already-validated token — no session-row lookup on the
-    /// hot path (see `docs/plan/dpop.md` Gate 9).
+    /// WHO this caller is — one value, replacing the `role` +
+    /// `is_external` pair. The pair could express three states that cannot
+    /// exist, one of which the schema already forbids; see [`Caller`].
+    ///
+    /// There is no "public" value because a caller with no credential has
+    /// no `CurrentUser` at all, so the absence of this extension IS
+    /// "public".
+    ///
+    /// `#[serde(skip)]` like the fields below. Safe to drop from the wire
+    /// shape: `CurrentUser` is in no OpenAPI path and is serialized
+    /// nowhere — its `Serialize` / `ToSchema` derives are vestigial.
+    #[serde(skip)]
+    pub caller: crate::domain::entities::user::Caller,
+
     #[serde(skip)]
     pub dpop_jkt: Option<String>,
 
@@ -659,24 +677,6 @@ pub struct CurrentUser {
     /// must not change the wire shape.
     #[serde(skip)]
     pub token: crate::domain::entities::presented_token::PresentedToken,
-
-    /// Whether this caller is an EXTERNAL user, resolved live from
-    /// `auth.users` in the same pass that produced `role`.
-    ///
-    /// Here because the flags lookup already answered it and
-    /// `LiveRole::Active` was discarding it — so `require_internal_user`
-    /// called `get_user_flags` a SECOND time on every request to
-    /// `/webdav`, `/caldav` and `/carddav`. Both reads hit the same 30 s
-    /// moka cache, so the cost was small; the duplication was the point.
-    ///
-    /// `true` for a public-share visitor, who has no `auth.users` row at
-    /// all. Neither value is true of them — see `anonymous_live_role` in
-    /// `middleware/user.rs` for why `true` is the fail-closed answer and
-    /// what replaces this bool.
-    ///
-    /// `#[serde(skip)]`, as above: internal request state, not wire shape.
-    #[serde(skip)]
-    pub is_external: bool,
 }
 
 impl CurrentUser {
@@ -689,8 +689,7 @@ impl CurrentUser {
     /// real user. Here it becomes the principal that can reach almost
     /// nothing.
     pub fn role_enum(&self) -> crate::domain::entities::user::UserRole {
-        crate::domain::entities::user::UserRole::from_session(&self.role)
-            .unwrap_or(crate::domain::entities::user::UserRole::Anonymous)
+        self.caller.role()
     }
 
     /// True for a principal with no `auth.users` row behind it — today,

@@ -347,13 +347,19 @@ pub async fn handle_oidc_login_completion(
     };
 
     let current_user = CurrentUser {
-        is_external: user_dto.is_external,
+        // From the DTO this door already loaded. `UserRoleDto` carries only
+        // the three roles a row may hold, so the conversion is total — no
+        // unparseable case and no `Anonymous` default to fall back to.
+        caller: if user_dto.is_external {
+            crate::domain::entities::user::Caller::External
+        } else {
+            crate::domain::entities::user::Caller::Internal(user_dto.role.into())
+        },
         // Login Flow v2 ends in an app password, not a JWT: no claims.
         token: crate::domain::entities::presented_token::PresentedToken::default(),
         id: user_id,
         username: std::sync::Arc::from(username),
         email: std::sync::Arc::from(user_dto.email.as_str()),
-        role: smol_str::SmolStr::new(user_dto.role.as_str()),
         // NC login-flow-v2 mints an app password — no browser, no
         // WebCrypto, always unbound. DPoP middleware exempts.
         dpop_jkt: None,
@@ -580,13 +586,19 @@ pub async fn handle_drive_pick(
         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
     };
     let user = CurrentUser {
-        is_external: user_dto.is_external,
+        // From the DTO this door already loaded. `UserRoleDto` carries only
+        // the three roles a row may hold, so the conversion is total — no
+        // unparseable case and no `Anonymous` default to fall back to.
+        caller: if user_dto.is_external {
+            crate::domain::entities::user::Caller::External
+        } else {
+            crate::domain::entities::user::Caller::Internal(user_dto.role.into())
+        },
         // Login Flow v2 ends in an app password, not a JWT: no claims.
         token: crate::domain::entities::presented_token::PresentedToken::default(),
         id: user_id,
         username: std::sync::Arc::from(username.as_str()),
         email: std::sync::Arc::from(user_dto.email.as_str()),
-        role: smol_str::SmolStr::new(user_dto.role.as_str()),
         // NC login-flow-v2 mints an app password — no browser, no
         // WebCrypto, always unbound. DPoP middleware exempts.
         dpop_jkt: None,

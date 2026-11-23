@@ -2582,13 +2582,16 @@ impl AuthApplicationService {
         Ok(crate::application::dtos::user_dto::CurrentUser {
             id: user.id(),
             // Straight off the entity this door already loaded and admitted.
-            is_external: user.is_external(),
+            caller: if user.is_external() {
+                crate::domain::entities::user::Caller::External
+            } else {
+                crate::domain::entities::user::Caller::Internal(user.role())
+            },
             // This door mints an app password, not a JWT — no claims to
             // record.
             token: crate::domain::entities::presented_token::PresentedToken::default(),
             username: std::sync::Arc::from(user.username().unwrap_or("")),
             email: std::sync::Arc::from(user.email()),
-            role: smol_str::SmolStr::new_static(user.role().as_str()),
             // The one caller is the NextCloud Login Flow v2
             // (`nextcloud/login_v2_handler.rs`), whose clients hold an
             // app password and are exempt from DPoP; the middleware

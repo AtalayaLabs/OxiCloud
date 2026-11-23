@@ -438,8 +438,8 @@ async fn handle_session(
             )
             .await
             {
-                crate::interfaces::middleware::user::LiveRole::Active { role, .. } => {
-                    role.to_string()
+                crate::interfaces::middleware::user::LiveRole::Active(caller) => {
+                    caller.role().as_str().to_string()
                 }
                 crate::interfaces::middleware::user::LiveRole::Revoked => {
                     // Account revoked between ticket-issue and now.
@@ -664,8 +664,8 @@ async fn handle_session(
                     )
                     .await
                     {
-                        crate::interfaces::middleware::user::LiveRole::Active { role, .. } => {
-                            caller_role = role.to_string();
+                        crate::interfaces::middleware::user::LiveRole::Active(caller) => {
+                            caller_role = caller.role().as_str().to_string();
                         }
                         crate::interfaces::middleware::user::LiveRole::Revoked => {
                             tracing::info!(

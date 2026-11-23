@@ -13,6 +13,7 @@ use crate::common::di::AppState;
 pub use crate::application::dtos::user_dto::CurrentUser;
 use crate::application::ports::auth_ports::TokenServicePort;
 use crate::domain::entities::presented_token::PresentedToken;
+use crate::domain::entities::user::Caller;
 use crate::domain::entities::user::UserRole;
 use crate::domain::services::authorization::Subject;
 use crate::infrastructure::services::share_ring;
@@ -85,7 +86,7 @@ pub fn require_role(cu: &CurrentUser, min: UserRole) -> Result<(), AuthError> {
         event = "authz.denied",
         reason = "insufficient_role",
         caller_id = %cu.id,
-        role = %cu.role,
+        role = cu.caller.role().as_str(),
         required = min.as_str(),
         "👮🏻‍♂️ principal role is below the minimum this endpoint requires",
     );
@@ -158,7 +159,7 @@ where
                 event = "authz.denied",
                 reason = "no_credentials",
                 caller_id = %cu.id,
-                role = %cu.role,
+                role = %cu.caller.role().as_str(),
                 "👮🏻‍♂️ principal carries no usable credential",
             );
             return Err(AuthError::AccessDenied("No usable credential".to_string()));
@@ -420,7 +421,7 @@ pub async fn auth_middleware(
                                 issued_at: Some(claims.iat),
                                 session_id: claims.sid,
                             };
-                            let (role, is_external) = match resolve_live_role(
+                            let caller = match resolve_live_role(
                                 auth_service.auth_application_service.as_ref(),
                                 user_id,
                                 &claims.role,
@@ -428,7 +429,7 @@ pub async fn auth_middleware(
                             )
                             .await
                             {
-                                LiveRole::Active { role, is_external } => (role, is_external),
+                                LiveRole::Active(caller) => caller,
                                 LiveRole::Revoked => return Err(AuthError::AccountInactive),
                                 // Unknown, not inactive. `AccountInactive`
                                 // is a 401, which would tell a Bearer
@@ -444,11 +445,10 @@ pub async fn auth_middleware(
                             // (the `Arc::new`) instead of 4.
                             let current_user = Arc::new(CurrentUser {
                                 id: user_id,
-                                is_external,
+                                caller,
                                 token: presented,
                                 username: Arc::clone(&claims.username),
                                 email: Arc::clone(&claims.email),
-                                role,
                                 dpop_jkt: claims.dpop_jkt.clone(),
                             });
                             record_principal_on_span(&current_user);
@@ -573,7 +573,7 @@ pub async fn auth_middleware(
                             let Some(auth_svc) = state.auth_service.as_ref() else {
                                 return Err(AuthError::AuthServiceUnavailable);
                             };
-                            let (role, is_external) = match crate::interfaces::middleware::user::resolve_live_role(
+                            let caller = match crate::interfaces::middleware::user::resolve_live_role(
                                 auth_svc.auth_application_service.as_ref(),
                                 user_id,
                                 &role,
@@ -588,10 +588,7 @@ pub async fn auth_middleware(
                             )
                             .await
                             {
-                                crate::interfaces::middleware::user::LiveRole::Active {
-                                    role: r,
-                                    is_external: ext,
-                                } => (r, ext),
+                                crate::interfaces::middleware::user::LiveRole::Active(caller) => caller,
                                 crate::interfaces::middleware::user::LiveRole::Revoked => {
                                     tracing::info!(
                                         target: "audit",
@@ -621,13 +618,12 @@ pub async fn auth_middleware(
                             // exempts them.
                             let current_user = Arc::new(CurrentUser {
                                 id: user_id,
-                                is_external,
+                                caller,
                                 // An app password is not a JWT: no `sid`, no
                                 // `iat`. Revoked by deleting it.
                                 token: PresentedToken::default(),
                                 username: uname,
                                 email,
-                                role,
                                 dpop_jkt: None,
                                 // Basic auth is app-password only.
                             });
@@ -700,14 +696,13 @@ pub async fn auth_middleware(
                         )
                         .await
                         {
-                            LiveRole::Active { role, is_external } => {
+                            LiveRole::Active(caller) => {
                                 let current_user = Arc::new(CurrentUser {
                                     id: user_id,
-                                    is_external,
+                                    caller,
                                     token: presented,
                                     username: Arc::clone(&claims.username),
                                     email: Arc::clone(&claims.email),
-                                    role,
                                     dpop_jkt: claims.dpop_jkt.clone(),
                                 });
                                 record_principal_on_span(&current_user);
@@ -783,10 +778,10 @@ pub async fn auth_middleware(
     // "anonymous implies a share credential" structural rather than checked.
     if let Some(ring) = request.extensions().get::<ShareRing>().cloned() {
         let current_user = Arc::new(CurrentUser {
-            // A visitor has no `auth.users` row, so neither value is true of
-            // them. `true` is fail-closed — it keeps the internal-user gate
-            // refusing them, as today's `NotFound` arm does.
-            is_external: true,
+            // Named rather than inferred from a bool pair: a visitor has no
+            // `auth.users` row, so "internal" and "external" were both
+            // false of them and the old pair had to assert one.
+            caller: Caller::Visitor,
             // A share ring is not a session: no `sid`, no `iat`.
             token: PresentedToken::default(),
             // The ring's visitor id: stable across this visit, matching no
@@ -796,7 +791,6 @@ pub async fn auth_middleware(
             // inventing a name would be indistinguishable from a real one.
             username: Arc::from(""),
             email: Arc::from(""),
-            role: smol_str::SmolStr::new_static(UserRole::Anonymous.as_str()),
             // Unbound: no DPoP keypair, so the middleware exempts it exactly
             // as it does app passwords.
             dpop_jkt: None,
@@ -857,7 +851,7 @@ pub async fn require_admin(request: Request, next: Next) -> Response {
             event = "authz.admin_denied",
             reason = "not_admin",
             caller_id = %current_user.id,
-            role = %current_user.role,
+            role = %current_user.caller.role().as_str(),
             "👮🏻‍♂️ admin-only route denied for non-admin caller"
         );
         return AuthError::AccessDenied("Admin role required".to_string()).into_response();
@@ -875,16 +869,17 @@ pub async fn require_admin(request: Request, next: Next) -> Response {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use smol_str::SmolStr;
 
-    fn principal(role: &str) -> CurrentUser {
+    /// Takes a `CallerKind`-shaped role rather than a string: these tests
+    /// exercise the role gate, and a string would reintroduce the parse
+    /// this change removed.
+    fn principal(caller: Caller) -> CurrentUser {
         CurrentUser {
             id: Uuid::new_v4(),
             username: "visitor".into(),
             email: "".into(),
-            role: SmolStr::new(role),
+            caller,
             dpop_jkt: None,
-            is_external: false,
             // These tests assert on role resolution, not on revocation.
             token: PresentedToken::default(),
         }
@@ -896,35 +891,57 @@ mod tests {
     /// reachable by a share-link visitor.
     #[test]
     fn anonymous_is_refused_a_user_role() {
-        let err = require_role(&principal("anonymous"), UserRole::User)
+        let err = require_role(&principal(Caller::Visitor), UserRole::User)
             .expect_err("anonymous must not satisfy a user requirement");
         assert!(matches!(err, AuthError::AccessDenied(_)));
 
-        require_role(&principal("user"), UserRole::User).expect("a user satisfies user");
-        require_role(&principal("admin"), UserRole::User).expect("an admin satisfies user");
+        require_role(&principal(Caller::Internal(UserRole::User)), UserRole::User)
+            .expect("a user satisfies user");
+        require_role(
+            &principal(Caller::Internal(UserRole::Admin)),
+            UserRole::User,
+        )
+        .expect("an admin satisfies user");
     }
 
     #[test]
     fn only_admin_satisfies_admin() {
-        require_role(&principal("admin"), UserRole::Admin).expect("admin satisfies admin");
-        assert!(require_role(&principal("user"), UserRole::Admin).is_err());
-        assert!(require_role(&principal("anonymous"), UserRole::Admin).is_err());
+        require_role(
+            &principal(Caller::Internal(UserRole::Admin)),
+            UserRole::Admin,
+        )
+        .expect("admin satisfies admin");
+        assert!(
+            require_role(
+                &principal(Caller::Internal(UserRole::User)),
+                UserRole::Admin
+            )
+            .is_err()
+        );
+        assert!(require_role(&principal(Caller::Visitor), UserRole::Admin).is_err());
     }
 
-    /// An unrecognised role resolves to the LEAST privileged answer, not the
-    /// most. Every other parse site in the tree uses `_ => UserRole::User`,
-    /// which is fail-open: a corrupt or future value silently becomes a real
-    /// user. Here a garbage role can reach nothing.
+    /// The fail-closed property this used to test is now UNREPRESENTABLE,
+    /// which is the better outcome and worth recording rather than losing.
+    ///
+    /// It iterated garbage role strings (`""`, `"superuser"`, `"Admin"`,
+    /// `"root"`, `"user "`) and asserted each degraded to anonymous rather
+    /// than to a real user — guarding against the `_ => UserRole::User`
+    /// habit found at every other parse site, which is fail-OPEN. With
+    /// `Caller` there is no string to be garbage: the only constructors are
+    /// `from_flags` (whose role comes from `UserRole::from_stored`, which
+    /// returns `None` for anything unrecognised) and the typed variants.
+    ///
+    /// What still CAN regress is the default, so that is what this pins:
+    /// `Caller::default()` must stay the least privileged value, because it
+    /// exists only to satisfy `#[serde(skip)]` and a careless
+    /// `Caller::default()` must fail closed.
     #[test]
-    fn unknown_roles_fail_closed_not_open() {
-        for role in ["", "superuser", "Admin", "ANONYMOUS", "root", "user "] {
-            let cu = principal(role);
-            assert!(
-                cu.is_anonymous(),
-                "unrecognised role {role:?} must degrade to anonymous, not user",
-            );
-            assert!(require_role(&cu, UserRole::User).is_err());
-        }
+    fn caller_default_is_least_privileged() {
+        let cu = principal(Caller::default());
+        assert_eq!(cu.caller, Caller::Visitor);
+        assert!(cu.is_anonymous());
+        assert!(require_role(&cu, UserRole::User).is_err());
     }
 
     #[test]
@@ -995,7 +1012,7 @@ mod tests {
     /// bug behind a plausible 404.
     #[test]
     fn an_anonymous_visitor_contributes_no_user_subject() {
-        let visitor = principal("anonymous");
+        let visitor = principal(Caller::Visitor);
         let share = Uuid::new_v4();
         let ring = share_ring::Ring {
             visitor_id: visitor.id,
@@ -1017,7 +1034,7 @@ mod tests {
     /// the first check and never pays for the ring.
     #[test]
     fn a_logged_in_user_carries_their_identity_and_the_ring() {
-        let alice = principal("user");
+        let alice = principal(Caller::Internal(UserRole::User));
         let first = Uuid::new_v4();
         let second = Uuid::new_v4();
         let ring = share_ring::Ring {
@@ -1038,7 +1055,7 @@ mod tests {
     /// No ring is the overwhelmingly common case and must cost nothing.
     #[test]
     fn a_user_without_a_ring_is_a_single_subject() {
-        let alice = principal("user");
+        let alice = principal(Caller::Internal(UserRole::User));
         assert_eq!(subjects_for(&alice, None), vec![Subject::User(alice.id)]);
     }
 
@@ -1048,7 +1065,7 @@ mod tests {
     /// subject list could read as "nothing objected".
     #[test]
     fn an_anonymous_principal_without_a_ring_yields_nothing() {
-        assert!(subjects_for(&principal("anonymous"), None).is_empty());
+        assert!(subjects_for(&principal(Caller::Visitor), None).is_empty());
     }
 
     #[test]

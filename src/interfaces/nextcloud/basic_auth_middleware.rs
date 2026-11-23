@@ -250,7 +250,6 @@ pub async fn basic_auth_middleware(
                 );
                 return Err(NextcloudAuthError::Unauthorized);
             }
-            let role = smol_str::SmolStr::new_static(flags.role.as_str());
             // Populate the deferred `user_id` field on the request
             // tracing span (declared in `middleware/trace_span.rs::ClientIpMakeSpan`).
             // Mirrors what `interfaces/middleware/auth.rs` does for the
@@ -272,13 +271,12 @@ pub async fn basic_auth_middleware(
             let current_user = Arc::new(CurrentUser {
                 // The same single flags read that answered `active` and the
                 // live role — § the one-read rule in this file's header.
-                is_external: flags.is_external,
+                caller: crate::domain::entities::user::Caller::from_flags(&flags),
                 // NextCloud Basic auth: no JWT, so no `sid` or `iat`.
                 token: crate::domain::entities::presented_token::PresentedToken::default(),
                 id: user_id,
                 username: uname,
                 email,
-                role,
                 dpop_jkt: None,
             });
 
