@@ -40,9 +40,10 @@ check, and a router layer) and **"facet"** (superseded by *condition*).
 three axes.
 
 The planned request-time engine in `docs/plan/scope-gates.md` adds
-`Requires` (what an operation declares), `Policy` (the compiled result),
-and two traits split by moment — `RequestPolicy` and `AdmissionPolicy`.
-Those are not implemented; the Gate axis is still five hand-wired layers.
+`Condition` (an operation declares a slice of them), `Policy` (the
+compiled result), and two traits split by moment — `RequestPolicy` and
+`AdmissionPolicy`. Those are not implemented; the Gate axis is still five
+hand-wired layers.
 
 ## The Scope axis
 

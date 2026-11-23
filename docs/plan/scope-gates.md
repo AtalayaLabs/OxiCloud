@@ -20,7 +20,7 @@ document — see the two § Required sections.
 
 | item | status |
 |---|---|
-| Policy engine — `Requires`, the compile step, the operation table | **not started** — PR 1, and 2 and 3 below depend on it |
+| Policy engine — `Condition`, the compile step, the operation table | **not started** — PR 1, and 2 and 3 below depend on it |
 | Credential scopes — `Scope`, `ScopeSet`, the 235-operation map | **not started** — PR 2 |
 | Authentication by default (`NotAnonymous` inverted) | **not started** — needs the fold |
 | A password-change condition | **never** — it is a scope narrowing, not a condition; the layer is deleted by `authn-pipeline.md` part B after PR 2. § Fold in |
@@ -55,9 +55,8 @@ than merely odd.
 | word | means | does NOT mean |
 |---|---|---|
 | **axis** | one of the three authorization questions — Gate / Scope / Grant (`docs/architecture/authorization-axes.md`) | a field of a `Policy` — those are *conditions* |
-| **condition** | one field of a `Policy`: `MinRole`, anonymity, scope, elevation | an axis; a `Policy` spans two axes, so its fields cannot be axes |
-| **`Requires`** | what ONE operation declares. Partial — `Option` per condition, `None` = "says nothing" | the thing evaluated |
-| **`Policy`** | a `Requires` chain compiled root→leaf. Total, one per operation | a declaration |
+| **`Condition`** (and "condition") | ONE requirement on ONE axis: `MinRole`, anonymity, scope, elevation. An operation declares a SLICE of them; the compile step resolves each into a field of `Policy` | an axis — a `Policy` spans two axes, so its fields cannot be axes |
+| **`Policy`** | declared `Condition`s folded root→leaf. Total, one per operation | a declaration |
 | **`RequestPolicy`** | the trait evaluated PER REQUEST — axum, DAV dispatch, WS bus | anything at login |
 | **`AdmissionPolicy`** | the trait evaluated PER AUTHN PHASE — login, refresh | anything per request |
 | **`Admission`** | what `AdmissionPolicy` returns: `AdmittedCaller` + the minted `ScopeSet` | a check |
@@ -88,34 +87,41 @@ middleware layers that each decide the same class of question with their
 own fail-open policy. Five exist; PR 1 folds THREE (§ Fold in) — of the
 other two, one is a scope narrowing and one is an integrity check.
 
-One field per axis, in two shapes: `Requires` is what an implementor
-writes (partial — `None` means "I say nothing"), `Policy` is what the
-engine evaluates (total — every axis resolved by the compile step).
+Two shapes: an operation declares a **slice of `Condition`s**, and the
+compile step folds those into a `Policy` — total, every axis resolved.
 § Declare, compile, evaluate.
 
-Within the Gate axis there are four independent **conditions** — role,
-credential-kind, anonymity, session-binding. ("Facet" because this
-document uses *axis* for Gate-vs-Scope-vs-Grant, § Three axes.) Each is
-a field, so a contradictory pair cannot be constructed
-at all — § Maximise deny-by-default's "won't compile" over "won't start".
+A `Condition` is one requirement on one axis. Declaring is therefore
+order-free and additive, and the slice needs no entry point: `[a, b]` and
+`[b, a]` compile to the same `Policy`.
 
 ```rust
 // application/ports/scope_ports.rs
 
-/// What an operation DECLARES. Partial: `None` = "this requirement says
-/// nothing about that axis", which is why a child can add elevation
-/// without re-asserting — and thereby revoking — a parent's opt-in.
-#[derive(Default)]
-pub struct Requires {
-    pub role: Option<MinRole>,
-    pub anonymous: Option<Anonymity>,
-    pub scope: Option<(Scope, Access)>,
-    // pub elevation: Option<Elevation>,   // with auth.sessions.elevated_at
+/// ONE requirement on ONE axis. An operation declares a slice of these.
+///
+/// Every variant TIGHTENS except `AnonymousAllowed`, which widens — and
+/// whose conflict with a role is a boot error (§ 2b). So a slice cannot
+/// express a silent contradiction; the only two it can express are both
+/// refused at startup.
+pub enum Condition {
+    Role(MinRole),
+    AnonymousAllowed,
+    Scope(Scope, Access),
+    // Elevated,                  // with auth.sessions.elevated_at
 }
 
-/// What the engine EVALUATES: a `Requires` chain folded root→leaf. Total
-/// — the compile step resolves every axis, so no `Option` survives and
-/// the check is field reads.
+impl Condition {
+    pub const fn role(r: MinRole) -> Self;
+    /// The whole public surface, greppable: § Authentication by default.
+    pub const fn anonymous_allowed() -> Self;
+    pub const fn scope(s: Scope, a: Access) -> Self;
+    // pub const fn elevated() -> Self;
+}
+
+/// What the engine EVALUATES: the declared `Condition`s folded root→leaf.
+/// Total — the compile step resolves every axis, so no `Option` survives
+/// and the check is field reads.
 ///
 /// Properties of the CALLER. Never client-requestable — § Three axes.
 pub struct Policy {
@@ -163,23 +169,6 @@ pub enum Anonymity {
 /// DPoP binding is deliberately NOT here — § Not axes: integrity checks.
 // pub enum Elevation { Required }
 
-/// `const` constructors — one per axis, each setting ONE field and
-/// leaving the rest `None`. So a declaration says exactly what it says,
-/// and chaining adds without disturbing:
-///
-///   Requires::role(MinRole::Internal)
-///   Requires::scope(Scope::Security, Access::ReadWrite)
-///   Requires::anonymous_allowed()
-///
-/// `const` so a declaration is a compile-time constant and the compile
-/// step folds constants, not runtime values.
-impl Requires {
-    pub const fn role(r: MinRole) -> Self;
-    /// The whole public surface, greppable: § Authentication by default.
-    pub const fn anonymous_allowed() -> Self;
-    pub const fn scope(s: Scope, a: Access) -> Self;
-    // pub const fn elevated(self) -> Self;   // with auth.sessions.elevated_at
-}
 ```
 
 ### At the declaration site
@@ -188,17 +177,17 @@ impl Requires {
 // A SUBTREE: /admin is admin-only. Declared once; every route under it
 // inherits, including ones added later.
 let admin = admin_handler::admin_routes(app_state)
-    .policy(Requires::role(MinRole::Admin));
+    .policy([Condition::role(MinRole::Admin)]);
 
 // ONE ROUTE TIGHTENS: elevation on top of the inherited Admin.
-// `elevated()` leaves `role: None`, so the fold keeps Admin.
+// Says nothing about role, so the fold keeps Admin.
 .route("/sessions/{id}", delete(revoke_session)
-    .policy(Requires::elevated()))
+    .policy([Condition::elevated()]))
 
-// TWO CONDITIONS on one route, chained on the VALUE:
+// TWO CONDITIONS on one route. Order is free.
 .route("/change-password", put(change_password)
-    .policy(Requires::scope(Scope::Security, Access::ReadWrite)
-                .elevated()))
+    .policy([Condition::elevated(),
+             Condition::scope(Scope::Security, Access::ReadWrite)]))
 ```
 
 The last one needs both and they are independent: `security:rw` says the
@@ -206,24 +195,31 @@ credential was issued for credential operations, `elevated()` says a
 human proved themselves recently. An app password fails the first, a
 week-old browser session the second.
 
-**Chain on `Requires`, never by calling `.policy()` twice** — and a
-second `.policy()` on one operation is a **boot error**. Repeated builder
-calls in Rust conventionally OVERRIDE (`.timeout()` twice gives the
-second), so two accumulating `.policy()` calls would read as the second
-replacing the first, and a reader would conclude the route requires only
-elevation. Refusing the ambiguous form costs nothing and removes the
-misreading.
+**One `.policy()` per operation, and each axis at most once inside it.**
+Both duplicates are boot errors (§ 2b):
+
+- a second `.policy()` would be ambiguous, because repeated builder calls
+  in Rust conventionally OVERRIDE — a reader would take the second as
+  replacing the first;
+- the same axis twice in one slice —
+  `[Condition::role(Admin), Condition::role(Owner)]` — has no legitimate
+  meaning. Across a NEST CHAIN that same pair is ordinary inheritance and
+  folds to `Owner`; within one declaration it is someone writing two
+  things where they meant one.
+
+The distinction is the scope of the rule: **folding is for chains,
+not for the slice.**
 
 **`.policy()` has to RECORD, and that is the open implementation
 question.** A `Policy` is not a layer — it goes into the compiled table —
 but axum's `Router` is opaque, with nowhere to accumulate a
-`(path, method, Requires)` triple. Two shapes, and PR 1 should try the
+`(path, method, [Condition])` triple. Two shapes, and PR 1 should try the
 first before settling:
 
 1. an extension trait on `MethodRouter` / `Router` that records into a
    registry while returning the router, keeping the syntax above;
 2. failing that, an explicit builder we own —
-   `api.route("/auth/change-password", put(h), Requires::scope(…))`,
+   `api.route("/auth/change-password", put(h), [Condition::scope(…)])`,
    returning `(Router, PolicyTable)` from `build()`.
 
 The second always works and reads worse. Since the ergonomics of the
@@ -254,7 +250,7 @@ why the list is this short:
   `effective = (requested ?? type_default) ∩ type_maximum`, § Defaults —
   so an app password reaching `/api/auth/password` is refused because its
   `ScopeSet` lacks `security`, not because something noticed it was an
-  app password. `Requires::scope(Scope::Security)` is the whole
+  app password. `Condition::scope(Scope::Security, …)` is the whole
   mechanism; a credential-kind condition would be a second implementation of
   a decision already made once.
 - **integrity checks** — JWT signature, DPoP proof, CSRF — § Not axes.
@@ -317,7 +313,7 @@ pub trait AdmissionPolicy {
 ```
 
 Note the asymmetry, which is the structural reason these are two traits:
-**only the request side is declarative.** Operations declare `Requires`,
+**only the request side is declarative.** Operations declare conditions,
 compiled to a per-operation `Policy`. Admission has no per-operation
 declaration — it is global config plus the credential's ceiling
 (§ Defaults). The absence is correct, not missing.
@@ -328,26 +324,24 @@ Three stages, because the two things wanted of this design pull in
 different directions: declaring a requirement must be easy, and deciding
 one must be cheap and total.
 
-### 1. Declare — `Requires`, partial
+### 1. Declare — a slice of `Condition`s
 
 An implementor says only what they constrain. One method per axis:
 
 ```rust
-/admin              Requires::role(MinRole::Admin)
-/admin/sessions/*   Requires::elevated()              // inherits Admin
-/admin/fake-route   Requires::role(MinRole::Owner)   // tightens role only
-/api/auth/password  Requires::scope(Scope::Security)
+/admin              [Condition::role(MinRole::Admin)]
+/admin/sessions/*   [Condition::elevated()]            // inherits Admin
+/admin/fake-route   [Condition::role(MinRole::Owner)]  // tightens role only
+/api/auth/password  [Condition::scope(Scope::Security, RW)]
 ```
 
-`Requires` is `Option` per axis, and `None` means **"I say nothing about
-this"** — distinct from "I require the safe value". That distinction is
-the whole point of the type: without it a child that only wants to add
-elevation also re-asserts the safe value on every other axis, silently
-overtightening what a parent had widened.
+A declaration names only the axes it constrains. An axis it omits is
+**inherited**, which is what lets a child add elevation without
+re-asserting — and thereby overtightening — what a parent had widened.
 
-A new axis is a new `Option` field plus a constructor. It cannot change
-how existing axes fold, which is what makes the engine extensible
-without a rewrite.
+A new axis is a new `Condition` variant plus a constructor and a fold
+rule. It cannot change how existing axes fold, nor any existing
+declaration, which is what makes the engine extensible without a rewrite.
 
 ### 2. Compile — fold root→leaf, once at startup
 
@@ -379,7 +373,8 @@ layers has no moment where all the declarations are in one place.
 | a role declaration that **widens** its parent's | `Owner` nest, `Internal` child: the fold is `max`, so the child's intent is silently discarded. Better to refuse than to ignore. |
 | an operation with **no** policy | from the spec cross-check below. Deny-by-default means an undeclared operation is a boot failure, not an open door. |
 | a policy naming **no live operation** | a policy left behind by a deleted route, which would otherwise sit unmatched forever. |
-| **two `.policy()` declarations** on one operation | ambiguous: repeated builder calls conventionally override, so accumulating would read as the second replacing the first. Chain on `Requires` instead — § At the declaration site. |
+| **the same axis twice in ONE declaration** | `[Condition::role(Admin), Condition::role(Owner)]` has no legitimate meaning — someone wrote two things where they meant one. Across a NEST CHAIN the same pair is ordinary inheritance and folds to `Owner`; folding is for chains, not for the slice. |
+| **two `.policy()` declarations** on one operation | ambiguous: repeated builder calls conventionally override, so accumulating would read as the second replacing the first. Put both conditions in one slice. |
 
 The first row is the one worth having. An implementor writing
 `anonymous_allowed()` on a route under `/admin` means *"make this
@@ -1057,10 +1052,10 @@ you must remember to write does. So the value is two narrower things:
 
 | Today | Becomes |
 |---|---|
-| `require_internal_user_layer` (11 sites) | `Requires::role(MinRole::Internal)` |
-| admin middleware on `/api/admin/*` (3 sites) | `Requires::role(MinRole::Admin)` |
-| hand-rolled owner check in `transfer_ownership` | `Requires::role(MinRole::Owner)` |
-| `anonymous_allowlist_layer` (1 site) | `Requires::anonymous_allowed()` on the allowlisted routes; keeps the allowlist itself, and is the mechanism § Authentication by default would promote to the root |
+| `require_internal_user_layer` (11 sites) | `[Condition::role(MinRole::Internal)]` |
+| admin middleware on `/api/admin/*` (3 sites) | `[Condition::role(MinRole::Admin)]` |
+| hand-rolled owner check in `transfer_ownership` | `[Condition::role(MinRole::Owner)]` |
+| `anonymous_allowlist_layer` (1 site) | `[Condition::anonymous_allowed()]` on the allowlisted routes; keeps the allowlist itself, and is the mechanism § Authentication by default would promote to the root |
 | `require_no_password_change_pending_layer` (8 sites) | **untouched** — a scope narrowing, deleted later by `authn-pipeline.md` part B. Below. |
 | `require_dpop_layer` (8 sites) | **untouched** — an integrity check, not an axis. § Not axes: integrity checks |
 
@@ -1514,10 +1509,10 @@ The rule to add, under § AuthZ enforcement points:
 
 > **Every route declares all three axes explicitly. There is no default.**
 >
-> - **Gate** — which KIND of caller may reach this surface, as a `Requires`
+> - **Gate** — which KIND of caller may reach this surface, as a slice of `Condition`s
 >   value naming the conditions it needs (role, credential-kind, anonymity,
 >   session-binding). Declared even when the answer is "any
->   authenticated caller", which is an empty `Requires` and still written
+>   authenticated caller", which is an empty slice and still written
 >   down.
 > - **Scope** — what the CREDENTIAL was issued for
 >   (`oxicloud:<area>:<ro|rw>`), or an explicit `SCOPELESS` entry with
@@ -1690,7 +1685,7 @@ conjunction belongs in a method name, where it cannot be misread:
 // One call, and the conjunction is in the value rather than in the
 // reader's head. `.elevated()` joins the builders in § Goal when the
 // elevation axis exists — not v1.
-policy.require(compiled, caller).await?;   // Requires::role(Admin) + Requires::elevated()
+policy.require(compiled, caller).await?;   // [role(Admin)] + [elevated()]
 
 // Two calls are EQUIVALENT here, and that is a property of the conditions
 // being independent: `role` and `elevation` cannot overwrite one
@@ -1698,7 +1693,7 @@ policy.require(compiled, caller).await?;   // Requires::role(Admin) + Requires::
 // The single call is preferred for being one audit line, not because
 // the pair is wrong.
 // Declared separately, folded by the compile step into ONE `Policy`:
-//   /admin  Requires::role(Admin)   +   /admin/sessions  Requires::elevated()
+//   /admin [role(Admin)]  +  /admin/sessions [elevated()]
 ```
 
 No gate combination in this design means "either". If one ever appears
@@ -1775,7 +1770,7 @@ in the hole above is in the `security` area — § Defaults classifies
 `/oidc/unlink`, `/upgrade-to-internal`, `/opaque/register/*`,
 `/device/devices` and `/device/verify` there — and the app-password
 ceiling grants **no `security`**. So an app password minting another one
-is refused by `Requires::scope(Scope::Security)`, not by anything
+is refused by `Condition::scope(Scope::Security, …)`, not by anything
 noticing it was an app password.
 
 That makes credential kind a MINT-time input rather than a request-time
@@ -1844,7 +1839,7 @@ which is stronger than the cross-check this plan proposed earlier, since
 drift becomes impossible rather than merely detectable.
 
 **Constraint this imposes:** `generate-openapi` runs with no database, so
-the declarations must be constructible without a running app. `Requires`
+the declarations must be constructible without a running app. The registry
 therefore lives on a route registry built from `const` values, never
 assembled inside `AppState`.
 
@@ -1884,7 +1879,7 @@ ReBAC remaining the deep dive for Grant.
 
 Written ahead of the fold because the gate/grant distinction and the
 request path are true TODAY; what is not yet enforced says so. Still
-owed once PR 1 and PR 2 land: the `Requires` / `Policy` types, the scope vocabulary
+owed once PR 1 and PR 2 land: the `Condition` / `Policy` types, the scope vocabulary
 table, and elevation.
 
 
@@ -1974,7 +1969,7 @@ The halves have opposite risk profiles and must not share a green suite:
 
 | PR | change | acceptance |
 |---|---|---|
-| 1 — gates | `is_external` on `CurrentUser`; `Requires` / `Policy` + `MinRole` / `Anonymity`; the compile step and the operation table; then fold three layers plus the `transfer_ownership` check | **behaviour-preserving**, and provable rather than hoped: the compiled table before and after the fold must be IDENTICAL, with `external_users.hurl` green *unchanged* |
+| 1 — gates | `is_external` on `CurrentUser`; `Condition` / `Policy` + `MinRole` / `Anonymity`; the compile step and the operation table; then fold three layers plus the `transfer_ownership` check | **behaviour-preserving**, and provable rather than hoped: the compiled table before and after the fold must be IDENTICAL, with `external_users.hurl` green *unchanged* |
 | 2 — scopes | turns `device_codes.scopes` from an inert column into enforcement | **not** behaviour-preserving; carries every lockout risk below |
 
 Landing them together means PR 2's risk rides in on PR 1's green suite.
