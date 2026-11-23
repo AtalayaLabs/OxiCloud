@@ -44,6 +44,73 @@ The planned request-time engine in `docs/plan/scope-gates.md` adds
 and two traits split by moment — `RequestPolicy` and `AdmissionPolicy`.
 Those are not implemented; the Gate axis is still five hand-wired layers.
 
+## The Scope axis
+
+A scope is **what a credential was issued for** — the only axis a client
+may request, and the only one frozen at mint.
+
+> **Status: designed, collected, enforced nowhere.**
+> `auth.app_passwords.scopes` and `auth.device_codes.scopes` both exist,
+> both default to `'webdav,caldav,carddav'`, and both are displayed in
+> the UI. **No authorization decision reads either.** A credential
+> showing "scopes: webdav,caldav,carddav" today is unrestricted.
+> `docs/plan/scope-gates.md` is the enforcement plan.
+
+### Bound to the (session, user) pair
+
+Effective permission is `what the credential was issued for ∩ what the
+user is currently allowed`. Both halves matter: a scope can only
+**narrow**, never grant. An admin's app password scoped `files:ro`
+administers nothing — not because the scope says "not admin", but
+because `/api/admin` asks a Gate question no scope string can answer.
+
+### Frozen at mint — and why that is safe
+
+Scope is the one axis legitimately baked into a credential, because it
+**cannot change under that credential**: narrowing an app password's
+scopes means issuing a different one. So there is nothing to invalidate
+and no staleness window — unlike role or `is_external`, which are re-read
+live per request (§ What a classic API request actually checks).
+
+### Vocabulary: areas, not protocols
+
+Designed as eight resource **areas**, each with `ro` or `rw`, written
+`oxicloud:<area>:<ro|rw>` on the wire:
+
+`files` · `calendar` · `contacts` · `photos` · `music` · `sharing` ·
+`account` (profile, preferences) · `security` (password, identities,
+credentials)
+
+Resource-shaped on purpose. Today's stored values are
+*protocol*-shaped — `webdav,caldav,carddav` — which cannot express
+"read-only" and does not survive a client reaching the same files over
+REST instead of DAV. `files` covers the data wherever it is reached from.
+
+### The ceiling is where credential kind is enforced
+
+Each credential kind has a maximum, as an **allowlist**:
+`effective = (requested ?? type_default) ∩ type_maximum`.
+
+| credential | maximum |
+|---|---|
+| app password | `files,calendar,contacts` — **no `security`, no `account`** |
+| device flow | + `account` — **no `security`** |
+| interactive session | every area, `security` included |
+
+This is why credential kind is not a request-time condition: an app
+password reaching `/api/auth/change-password` is refused because its
+scope set lacks `security`, not because anything noticed it was an app
+password. Being an allowlist, a credential kind added without thought
+about `security` gets it **withheld**.
+
+### Not to be confused with OIDC client scopes
+
+`config.oidc.scopes` is unrelated: those are the scopes **OxiCloud
+requests from an identity provider** at login (`openid`, `profile`,
+`email`). They are real and in use. Credential scopes are what
+OxiCloud's **own** credentials are limited to, and are the inert ones.
+Same word, opposite direction.
+
 ## A fourth thing, which is not an axis: integrity
 
 Three checks on the request path answer **"is this request authentic?"**
