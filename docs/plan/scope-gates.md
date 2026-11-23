@@ -2064,7 +2064,9 @@ Landing them together means PR 2's risk rides in on PR 1's green suite.
 | 3b-i | the registry, the table, and the DUMP | **done** — `5b7ddb403`, inert |
 | 3b-ii | `.policy()` + the orphan cross-check | **done** — `9f2525edd`, inert |
 | 4a | the gate matrix — a behavioural baseline, before any layer moves | **done** — `4fc3fd79f`, green |
-| 4 | fold three layers + the `transfer_ownership` check | not started |
+| 4-i | `evaluate` — one caller against one policy, audit-neutral | **done** — `479e5f38b`, inert |
+| 4-ii | transcribe the four folded gates | **done** — `a037c5ab7`, inert |
+| 4-iii | enforce from the table, then remove the layers | not started |
 
 Step 1 landed as `CurrentCaller.kind: CallerKind`, not the `is_external`
 bool this section first called for: the bool could express three states
