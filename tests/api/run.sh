@@ -589,6 +589,7 @@ HURL_FILES=( \
   "$API_DIR/transcode_import.hurl" \
   "$API_DIR/dedup_admin_gate.hurl" \
   "$API_DIR/admin_jobs.hurl" \
+  "$API_DIR/admin_oidc_env_locked.hurl" \
   # Both read/write admin-scoped global state and clean up after themselves
   # (ops_banners asserts an empty list at the end). admin_advisories pins
   # dashboard flags derived from the ACTIVE BACKEND, so it must stay above the

@@ -364,7 +364,9 @@ pub async fn get_config(State(state): State<Arc<AppState>>) -> Json<ServerConfig
     let allowed = &state.core.config.auth.allowed_auth_methods;
     let password_login_enabled = allowed.contains(&crate::common::config::AuthMethod::Password);
     let magic_link_login_enabled = allowed.contains(&crate::common::config::AuthMethod::MagicLink);
-    let oidc_method_enabled = allowed.contains(&crate::common::config::AuthMethod::Oidc);
+    // Live provider state, not the boot allowlist: OIDC switched on in the
+    // admin panel is served, so it must be offered too (#251).
+    let oidc_method_enabled = auth_app.as_ref().is_some_and(|a| a.oidc_enabled());
 
     // First-run initialization probe; the FE login page gates the setup
     // wizard on it. Same rule `/api/setup` enforces.
@@ -392,12 +394,6 @@ pub async fn get_config(State(state): State<Arc<AppState>>) -> Json<ServerConfig
     // Cache-only lookup to keep this unauthenticated endpoint from
     // becoming a DoS amplifier against the IdP.
     //
-    // Gated on `oidc_method_enabled` (direct AUTH_METHODS check) — not
-    // on `auth_app.oidc_enabled()`. The boot panic in main.rs ensures
-    // both agree: if `oidc` is in AUTH_METHODS, an effective OIDC
-    // provider exists (env or admin-DB-reloaded). The gate here is
-    // the operator-visible intent; `auth_app.oidc_config()` is the
-    // runtime access to populate the fields.
     let oidc_providers: Vec<OidcProviderDto> =
         if oidc_method_enabled && let Some(auth_app) = auth_app.as_ref() {
             let config = auth_app.oidc_config();

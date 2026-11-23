@@ -8503,6 +8503,14 @@ export type SaveOidcSettingsErrors = {
      * Admin required
      */
     403: ApiErrorBody;
+    /**
+     * A changed field is pinned by an OXICLOUD_OIDC_* env var
+     */
+    409: ApiErrorBody;
+    /**
+     * Saving failed
+     */
+    500: ApiErrorBody;
 };
 
 export type SaveOidcSettingsError = SaveOidcSettingsErrors[keyof SaveOidcSettingsErrors];
