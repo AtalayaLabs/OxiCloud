@@ -20,8 +20,9 @@
 //! refused only when a parent explicitly declared something stricter.
 
 use crate::application::ports::scope_ports::{
-    Access, Axis, Condition, MinPrincipal, MinRole, Op, Policy, Scope,
+    Access, Axis, Condition, MinPrincipal, MinRole, Op, Policy, Scope, ScopeSet,
 };
+use crate::domain::entities::user::CallerKind;
 
 /// A declaration that cannot be compiled. Every variant is a BOOT error:
 /// the server refuses to start, per `feedback_fail_fast_config` — a boot
@@ -310,9 +311,118 @@ fn reject_unsatisfiable(op: Op, policy: &Policy) -> Result<(), PolicyError> {
     Ok(())
 }
 
+/// Why a caller was refused. Returned by [`evaluate`] instead of an
+/// `AppError`, because `AppError` lives in `interfaces/` and the
+/// dependency points inward — the HTTP mapping belongs to the layer that
+/// speaks HTTP.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Denial {
+    /// No credential at all, on an operation that needs one.
+    AuthenticationRequired,
+    /// A share-ring visitor on a user-only operation.
+    VisitorRefused,
+    /// Authenticated, but below the role floor. Carries the floor so the
+    /// audit line can name the event the old layer emitted.
+    RoleInsufficient { required: MinRole },
+    /// The credential was not minted for this area.
+    ScopeNotGranted { scope: Scope, access: Access },
+}
+
+impl Denial {
+    /// The `(event, reason)` pair to log — chosen to REPRODUCE what the
+    /// layer being folded emits today.
+    ///
+    /// AGENTS.md: `event` "stays stable — log aggregators key off it", and
+    /// a new denial cause gets a new `reason` rather than repurposing one.
+    /// A fold that collapsed five distinct pairs into one `authz.denied`
+    /// would be invisible to the gate matrix (status codes) and to the
+    /// policy dump (fields), while silently blinding every operator alert
+    /// keyed on them. So the pair is derived from WHICH condition failed:
+    ///
+    /// | failed | today's emitter | pair |
+    /// |---|---|---|
+    /// | `MinRole::Internal` | `require_internal_user_layer` | `authz.external_user_blocked` / `internal_only_surface` |
+    /// | `MinRole::Admin` | admin middleware | `authz.admin_denied` / `not_admin` |
+    /// | `MinRole::Owner` | `transfer_ownership` service check | `server_owner.transfer_rejected` / `caller_not_owner` |
+    /// | principal, no caller | admin middleware | `authz.denied` / `anonymous_not_authenticated` |
+    /// | principal, visitor | `anonymous_allowlist_layer` | `authz.denied` / `anonymous_route_not_allowlisted` |
+    /// | scope | nothing yet | `authz.scope_denied` / `scope_not_granted` |
+    ///
+    /// `MinRole::Owner` maps to the ownership-transfer pair because that
+    /// is the ONLY `Owner` site. A second one would need its own pair
+    /// rather than borrowing this.
+    pub const fn audit(self) -> (&'static str, &'static str) {
+        match self {
+            Denial::AuthenticationRequired => ("authz.denied", "anonymous_not_authenticated"),
+            Denial::VisitorRefused => ("authz.denied", "anonymous_route_not_allowlisted"),
+            Denial::RoleInsufficient {
+                required: MinRole::Internal,
+            } => ("authz.external_user_blocked", "internal_only_surface"),
+            Denial::RoleInsufficient {
+                required: MinRole::Admin,
+            } => ("authz.admin_denied", "not_admin"),
+            Denial::RoleInsufficient {
+                required: MinRole::Owner,
+            } => ("server_owner.transfer_rejected", "caller_not_owner"),
+            Denial::ScopeNotGranted { .. } => ("authz.scope_denied", "scope_not_granted"),
+        }
+    }
+}
+
+/// Check one caller against one compiled [`Policy`].
+///
+/// Field reads only — § 3. Evaluate. The role's cached lookup already
+/// happened in `auth_middleware`, so this adds nothing per request, and it
+/// runs ONCE rather than once per nesting level the way a layer stack
+/// does.
+///
+/// `caller` is `None` when no credential was presented. `scopes` is the
+/// credential's granted set, and `None` means the credential carries no
+/// scope information — which grandfathers to FULL, never empty
+/// (§ Absent means FULL, everywhere). Reading an absent claim as empty
+/// would refuse every token minted before the claim existed.
+///
+/// Order matters for the message, not the outcome: principal is checked
+/// before role, so a caller with no credential is told to authenticate
+/// rather than told their role is too low.
+pub fn evaluate(
+    policy: &Policy,
+    caller: Option<CallerKind>,
+    scopes: Option<ScopeSet>,
+) -> Result<(), Denial> {
+    if !policy.principal.satisfied_by(caller) {
+        return Err(match caller {
+            None => Denial::AuthenticationRequired,
+            // A credential exists but is not a user's: the only way to
+            // fail the principal check with one in hand.
+            Some(_) => Denial::VisitorRefused,
+        });
+    }
+
+    if let Some(required) = policy.role {
+        // `None` already failed the principal check above unless the
+        // policy admits `Public`, and a public operation with a role is a
+        // boot error — so a missing caller here cannot satisfy a role.
+        let satisfied = caller.is_some_and(|k| required.satisfied_by(k));
+        if !satisfied {
+            return Err(Denial::RoleInsufficient { required });
+        }
+    }
+
+    if let Some((scope, access)) = policy.scope {
+        let granted = scopes.unwrap_or_else(ScopeSet::full);
+        if !granted.allows(scope, access) {
+            return Err(Denial::ScopeNotGranted { scope, access });
+        }
+    }
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::entities::user::UserRole;
 
     const ADMIN: Op = Op::Rest("GET", "/api/admin/sessions");
 
@@ -603,6 +713,236 @@ mod tests {
         .expect("b");
 
         assert_eq!(a, b);
+    }
+
+    // ───────────────────────── evaluate ─────────────────────────
+
+    const USER: Option<CallerKind> = Some(CallerKind::Internal(UserRole::User));
+    const ADMIN_CALLER: Option<CallerKind> = Some(CallerKind::Internal(UserRole::Admin));
+    const OWNER_CALLER: Option<CallerKind> = Some(CallerKind::Internal(UserRole::Owner));
+    const EXTERNAL: Option<CallerKind> = Some(CallerKind::External);
+    const VISITOR: Option<CallerKind> = Some(CallerKind::Visitor);
+
+    /// The default policy: a session and nothing more. Anonymous is
+    /// refused, every authenticated kind that has a user row passes.
+    #[test]
+    fn the_default_policy_admits_any_user_and_no_one_else() {
+        let p = Policy::default();
+
+        assert_eq!(
+            evaluate(&p, None, None),
+            Err(Denial::AuthenticationRequired)
+        );
+        assert_eq!(evaluate(&p, VISITOR, None), Err(Denial::VisitorRefused));
+
+        for who in [USER, ADMIN_CALLER, OWNER_CALLER, EXTERNAL] {
+            assert_eq!(evaluate(&p, who, None), Ok(()), "{who:?}");
+        }
+    }
+
+    /// `MinRole::Internal` refuses an EXTERNAL user whose role is `user`,
+    /// which is the whole reason the caller carries a kind rather than a
+    /// role — and exactly what `require_internal_user_layer` does today.
+    #[test]
+    fn internal_refuses_an_external_and_a_visitor_but_not_a_user() {
+        let p = Policy {
+            role: Some(MinRole::Internal),
+            ..Policy::default()
+        };
+
+        assert_eq!(
+            evaluate(&p, EXTERNAL, None),
+            Err(Denial::RoleInsufficient {
+                required: MinRole::Internal
+            })
+        );
+        // A visitor fails earlier, on the principal axis.
+        assert_eq!(evaluate(&p, VISITOR, None), Err(Denial::VisitorRefused));
+        assert_eq!(evaluate(&p, USER, None), Ok(()));
+        assert_eq!(evaluate(&p, ADMIN_CALLER, None), Ok(()));
+    }
+
+    /// Owner outranks admin. Six sites once denied the owner by comparing
+    /// a role string to `"admin"` literally, so the direction is pinned.
+    #[test]
+    fn the_role_ladder_runs_upward() {
+        let admin_only = Policy {
+            role: Some(MinRole::Admin),
+            ..Policy::default()
+        };
+        assert!(evaluate(&admin_only, USER, None).is_err());
+        assert_eq!(evaluate(&admin_only, ADMIN_CALLER, None), Ok(()));
+        assert_eq!(evaluate(&admin_only, OWNER_CALLER, None), Ok(()));
+
+        let owner_only = Policy {
+            role: Some(MinRole::Owner),
+            ..Policy::default()
+        };
+        assert_eq!(
+            evaluate(&owner_only, ADMIN_CALLER, None),
+            Err(Denial::RoleInsufficient {
+                required: MinRole::Owner
+            })
+        );
+        assert_eq!(evaluate(&owner_only, OWNER_CALLER, None), Ok(()));
+    }
+
+    /// A public operation admits a caller who presents nothing — and
+    /// admits one who presents something too, since `Public` is the
+    /// weakest bar rather than a requirement to be anonymous.
+    #[test]
+    fn a_public_policy_admits_everyone_including_a_caller() {
+        let p = Policy {
+            principal: MinPrincipal::Public,
+            ..Policy::default()
+        };
+        for who in [None, VISITOR, USER, EXTERNAL] {
+            assert_eq!(evaluate(&p, who, None), Ok(()), "{who:?}");
+        }
+    }
+
+    /// `visitor_allowed()` admits the ring AND a user, which it must:
+    /// `/api/files/{id}` serves both.
+    #[test]
+    fn visitor_allowed_admits_both_the_ring_and_a_user() {
+        let p = Policy {
+            principal: MinPrincipal::Visitor,
+            ..Policy::default()
+        };
+        assert_eq!(evaluate(&p, VISITOR, None), Ok(()));
+        assert_eq!(evaluate(&p, USER, None), Ok(()));
+        assert_eq!(
+            evaluate(&p, None, None),
+            Err(Denial::AuthenticationRequired)
+        );
+    }
+
+    /// An absent scope set grandfathers to FULL, never empty
+    /// (§ Absent means FULL, everywhere). Reading it as empty would
+    /// refuse every credential minted before the claim existed — the
+    /// whole population, on the day enforcement ships.
+    #[test]
+    fn an_absent_scope_set_grandfathers_to_full() {
+        let p = Policy {
+            scope: Some((Scope::Security, Access::ReadWrite)),
+            ..Policy::default()
+        };
+
+        assert_eq!(evaluate(&p, USER, None), Ok(()), "absent must not deny");
+        assert_eq!(
+            evaluate(&p, USER, Some(ScopeSet::empty())),
+            Err(Denial::ScopeNotGranted {
+                scope: Scope::Security,
+                access: Access::ReadWrite
+            }),
+            "an EXPLICITLY empty set is a different thing from an absent one"
+        );
+        assert_eq!(
+            evaluate(
+                &p,
+                USER,
+                Some(ScopeSet::empty().with(Scope::Security, Access::ReadWrite))
+            ),
+            Ok(())
+        );
+    }
+
+    /// The mechanism by which an app password cannot change a password:
+    /// its set lacks `security`. Nothing inspects the credential KIND.
+    #[test]
+    fn a_scope_narrowed_credential_is_refused_without_naming_its_kind() {
+        let p = Policy {
+            scope: Some((Scope::Security, Access::ReadWrite)),
+            ..Policy::default()
+        };
+        let app_password = ScopeSet::empty()
+            .with(Scope::Files, Access::ReadWrite)
+            .with(Scope::Calendar, Access::ReadWrite);
+
+        assert!(evaluate(&p, ADMIN_CALLER, Some(app_password)).is_err());
+
+        // Read-only where write is required is the same refusal.
+        let files_rw = Policy {
+            scope: Some((Scope::Files, Access::ReadWrite)),
+            ..Policy::default()
+        };
+        let ro = ScopeSet::empty().with(Scope::Files, Access::ReadOnly);
+        assert_eq!(
+            evaluate(&files_rw, USER, Some(ro)),
+            Err(Denial::ScopeNotGranted {
+                scope: Scope::Files,
+                access: Access::ReadWrite
+            })
+        );
+    }
+
+    /// Principal is checked BEFORE role, so a caller with no credential is
+    /// told to authenticate rather than told their role is too low. Only
+    /// the message differs, but the wrong one sends an implementor hunting
+    /// a role problem that does not exist.
+    #[test]
+    fn principal_is_reported_before_role() {
+        let p = Policy {
+            role: Some(MinRole::Admin),
+            ..Policy::default()
+        };
+        assert_eq!(
+            evaluate(&p, None, None),
+            Err(Denial::AuthenticationRequired)
+        );
+    }
+
+    /// THE audit-stability pin. Folding five layers into one evaluator
+    /// must not collapse five `(event, reason)` pairs into one
+    /// `authz.denied`: AGENTS.md requires `event` to stay stable because
+    /// aggregators key off it, and this is invisible to both the gate
+    /// matrix (status codes) and the policy dump (fields). Every pair
+    /// below is copied from the layer it replaces.
+    #[test]
+    fn each_denial_keeps_the_audit_pair_of_the_layer_it_replaces() {
+        assert_eq!(
+            Denial::RoleInsufficient {
+                required: MinRole::Internal
+            }
+            .audit(),
+            ("authz.external_user_blocked", "internal_only_surface"),
+            "require_internal_user_layer"
+        );
+        assert_eq!(
+            Denial::RoleInsufficient {
+                required: MinRole::Admin
+            }
+            .audit(),
+            ("authz.admin_denied", "not_admin"),
+            "admin middleware"
+        );
+        assert_eq!(
+            Denial::RoleInsufficient {
+                required: MinRole::Owner
+            }
+            .audit(),
+            ("server_owner.transfer_rejected", "caller_not_owner"),
+            "transfer_ownership service check"
+        );
+        assert_eq!(
+            Denial::AuthenticationRequired.audit(),
+            ("authz.denied", "anonymous_not_authenticated"),
+            "admin middleware, anonymous arm"
+        );
+        assert_eq!(
+            Denial::VisitorRefused.audit(),
+            ("authz.denied", "anonymous_route_not_allowlisted"),
+            "anonymous_allowlist_layer"
+        );
+        assert_eq!(
+            Denial::ScopeNotGranted {
+                scope: Scope::Files,
+                access: Access::ReadOnly
+            }
+            .audit(),
+            ("authz.scope_denied", "scope_not_granted"),
+            "new cause, new reason — never a repurposed one"
+        );
     }
 
     /// Every operation kind must render identifiably in a boot message,
