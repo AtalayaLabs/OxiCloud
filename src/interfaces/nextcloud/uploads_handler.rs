@@ -18,7 +18,7 @@ use crate::common::text::escape_markup as xml_escape;
 use crate::interfaces::errors::AppError;
 use crate::interfaces::nextcloud::webdav_handler::with_nc_write_headers;
 use crate::interfaces::upload_ingest::{
-    discard_ingested, ingest_stream_to_cas, stream_body_to_path, stream_from_files,
+    ingest_stream_to_cas, stream_body_to_path, stream_from_files,
 };
 
 /// Per-chunk quota gate (D4 / project_drive_quota_timing).
@@ -470,7 +470,8 @@ async fn handle_assemble(
     // No client-supplied ETag to enforce here (NC chunked MOVE has no
     // If-Match semantics) — `expected_hash: None`, same as every other
     // plain-write callsite; only PATCH's CAS passes `Some(&hash)`.
-    let dto = match upload_service
+    // The service owns the reference from here on, errors included (#916).
+    let dto = upload_service
         .update_file_streaming_with_perms(
             &internal_path,
             drive_id,
@@ -481,13 +482,7 @@ async fn handle_assemble(
             None,
         )
         .await
-    {
-        Ok(dto) => dto,
-        Err(e) => {
-            discard_ingested(&state.core.blob_handler, &ingested).await;
-            return Err(AppError::from(e));
-        }
-    };
+        .map_err(AppError::from)?;
     // Cleanup session.
     let _ = nc.chunked_uploads.cleanup(&user.username, upload_id).await;
 

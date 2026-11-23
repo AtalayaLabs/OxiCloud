@@ -2884,6 +2884,18 @@ impl BlobHandler {
         Ok(())
     }
 
+    /// Hand back one reference that will not be committed (rejected upload).
+    /// A failure leaves a surplus reference — a leak, never a loss — so it is
+    /// logged rather than returned: the caller is already on an error path.
+    pub async fn release_uncommitted(&self, hash: &str) {
+        if let Err(e) = self.remove_reference(hash).await {
+            tracing::warn!(
+                "Failed to release blob reference of rejected upload {}: {e}",
+                &hash[..hash.len().min(12)]
+            );
+        }
+    }
+
     /// Remove a reference from a blob (manifest-aware with legacy fallback).
     /// `LEGACY-WHOLE-FILE-BLOB` — deletable once `backend_rechunk` reports zero.
     ///
