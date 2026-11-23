@@ -2,6 +2,7 @@ pub mod cookie_auth;
 pub mod deserializer;
 pub mod etag;
 pub mod handlers;
+pub mod policy_declarations;
 pub mod policy_router;
 pub mod routes;
 pub mod sized_json;
