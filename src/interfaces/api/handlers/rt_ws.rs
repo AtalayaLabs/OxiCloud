@@ -438,7 +438,9 @@ async fn handle_session(
             )
             .await
             {
-                crate::interfaces::middleware::user::LiveRole::Active(role) => role.to_string(),
+                crate::interfaces::middleware::user::LiveRole::Active { role, .. } => {
+                    role.to_string()
+                }
                 crate::interfaces::middleware::user::LiveRole::Revoked => {
                     // Account revoked between ticket-issue and now.
                     // Terminate the session immediately — dropping
@@ -662,7 +664,7 @@ async fn handle_session(
                     )
                     .await
                     {
-                        crate::interfaces::middleware::user::LiveRole::Active(role) => {
+                        crate::interfaces::middleware::user::LiveRole::Active { role, .. } => {
                             caller_role = role.to_string();
                         }
                         crate::interfaces::middleware::user::LiveRole::Revoked => {

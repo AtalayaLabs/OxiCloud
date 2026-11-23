@@ -420,7 +420,7 @@ pub async fn auth_middleware(
                                 issued_at: Some(claims.iat),
                                 session_id: claims.sid,
                             };
-                            let role = match resolve_live_role(
+                            let (role, is_external) = match resolve_live_role(
                                 auth_service.auth_application_service.as_ref(),
                                 user_id,
                                 &claims.role,
@@ -428,7 +428,7 @@ pub async fn auth_middleware(
                             )
                             .await
                             {
-                                LiveRole::Active(role) => role,
+                                LiveRole::Active { role, is_external } => (role, is_external),
                                 LiveRole::Revoked => return Err(AuthError::AccountInactive),
                                 // Unknown, not inactive. `AccountInactive`
                                 // is a 401, which would tell a Bearer
@@ -444,6 +444,7 @@ pub async fn auth_middleware(
                             // (the `Arc::new`) instead of 4.
                             let current_user = Arc::new(CurrentUser {
                                 id: user_id,
+                                is_external,
                                 token: presented,
                                 username: Arc::clone(&claims.username),
                                 email: Arc::clone(&claims.email),
@@ -572,7 +573,7 @@ pub async fn auth_middleware(
                             let Some(auth_svc) = state.auth_service.as_ref() else {
                                 return Err(AuthError::AuthServiceUnavailable);
                             };
-                            let role = match crate::interfaces::middleware::user::resolve_live_role(
+                            let (role, is_external) = match crate::interfaces::middleware::user::resolve_live_role(
                                 auth_svc.auth_application_service.as_ref(),
                                 user_id,
                                 &role,
@@ -587,7 +588,10 @@ pub async fn auth_middleware(
                             )
                             .await
                             {
-                                crate::interfaces::middleware::user::LiveRole::Active(r) => r,
+                                crate::interfaces::middleware::user::LiveRole::Active {
+                                    role: r,
+                                    is_external: ext,
+                                } => (r, ext),
                                 crate::interfaces::middleware::user::LiveRole::Revoked => {
                                     tracing::info!(
                                         target: "audit",
@@ -617,6 +621,7 @@ pub async fn auth_middleware(
                             // exempts them.
                             let current_user = Arc::new(CurrentUser {
                                 id: user_id,
+                                is_external,
                                 // An app password is not a JWT: no `sid`, no
                                 // `iat`. Revoked by deleting it.
                                 token: PresentedToken::default(),
@@ -695,9 +700,10 @@ pub async fn auth_middleware(
                         )
                         .await
                         {
-                            LiveRole::Active(role) => {
+                            LiveRole::Active { role, is_external } => {
                                 let current_user = Arc::new(CurrentUser {
                                     id: user_id,
+                                    is_external,
                                     token: presented,
                                     username: Arc::clone(&claims.username),
                                     email: Arc::clone(&claims.email),
@@ -777,6 +783,10 @@ pub async fn auth_middleware(
     // "anonymous implies a share credential" structural rather than checked.
     if let Some(ring) = request.extensions().get::<ShareRing>().cloned() {
         let current_user = Arc::new(CurrentUser {
+            // A visitor has no `auth.users` row, so neither value is true of
+            // them. `true` is fail-closed — it keeps the internal-user gate
+            // refusing them, as today's `NotFound` arm does.
+            is_external: true,
             // A share ring is not a session: no `sid`, no `iat`.
             token: PresentedToken::default(),
             // The ring's visitor id: stable across this visit, matching no
@@ -874,6 +884,7 @@ mod tests {
             email: "".into(),
             role: SmolStr::new(role),
             dpop_jkt: None,
+            is_external: false,
             // These tests assert on role resolution, not on revocation.
             token: PresentedToken::default(),
         }

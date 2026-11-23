@@ -175,6 +175,7 @@ fn section_identity(iters: u64) {
             role,
             dpop_jkt: None,
             token: Default::default(),
+            is_external: false,
         })
     });
 
@@ -187,6 +188,7 @@ fn section_identity(iters: u64) {
         role: SmolStr::new_static("user"),
         dpop_jkt: None,
         token: Default::default(),
+        is_external: false,
     });
     assert_eq!(old.username, *new.username);
     assert_eq!(old.email, *new.email);

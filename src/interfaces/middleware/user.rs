@@ -181,7 +181,12 @@ pub enum LiveRole {
     /// role string (`"admin"` / `"user"`), which is authoritative and
     /// supersedes the — possibly stale — JWT `role` claim. `SmolStr` so the
     /// per-request render of the (≤23-byte) role never heap-allocates.
-    Active(SmolStr),
+    ///
+    /// Carries `is_external` as well, because the flags lookup that
+    /// produced the role already answered it. Returning only the role is
+    /// what made `require_internal_user` call `get_user_flags` a SECOND
+    /// time on every request to a DAV surface.
+    Active { role: SmolStr, is_external: bool },
     /// The account is deactivated or deleted: the request must be rejected
     /// even though its token is still cryptographically valid.
     Revoked,
@@ -321,7 +326,21 @@ fn revoked_by_cutoff(
 fn anonymous_live_role(claim_role: &str) -> Option<LiveRole> {
     UserRole::from_session(claim_role)
         .filter(|r| r.is_anonymous())
-        .map(|r| LiveRole::Active(SmolStr::new_static(r.as_str())))
+        .map(|r| LiveRole::Active {
+            role: SmolStr::new_static(r.as_str()),
+            // A share visitor has NO `auth.users` row, so neither value is
+            // true of them — `is_external` cannot describe "not a user at
+            // all". `true` is the fail-closed choice: it keeps the
+            // internal-user gate refusing them, which is what the
+            // `NotFound` arm of `decide_internal_user` does today for the
+            // same caller.
+            //
+            // The honest fix is the three-state principal condition
+            // (`MinPrincipal::{Public, Visitor, User}`) in
+            // `docs/plan/scope-gates.md`; until then this bool is being
+            // asked a question it cannot answer, and it answers it safely.
+            is_external: true,
+        })
 }
 
 /// Pure decision core of [`resolve_live_role`], split out so the
@@ -370,7 +389,10 @@ fn decide_live_role(
             audit_token_revoked(user_id, "session_revoked");
             LiveRole::Revoked
         }
-        Ok(flags) if flags.active => LiveRole::Active(SmolStr::new_static(flags.role.as_str())),
+        Ok(flags) if flags.active => LiveRole::Active {
+            role: SmolStr::new_static(flags.role.as_str()),
+            is_external: flags.is_external,
+        },
         Ok(_) => {
             audit_token_revoked(user_id, "deactivated");
             LiveRole::Revoked
@@ -434,27 +456,38 @@ fn audit_token_revoked(user_id: Uuid, reason: &'static str) {
 /// Emits an `authz.external_user_blocked` audit event on rejection so
 /// operators can spot which surfaces externals are probing.
 pub async fn require_internal_user_layer(
-    State(state): State<Arc<AppState>>,
+    // Unused now that the decision reads `CurrentUser`, but the signature
+    // is what `from_fn_with_state` expects at all 11 mount points.
+    State(_state): State<Arc<AppState>>,
     request: Request,
     next: Next,
 ) -> Response {
-    let caller_id = request
+    let caller = request
         .extensions()
         .get::<Arc<CurrentUser>>()
-        .map(|cu| cu.id);
+        .map(|cu| (cu.id, cu.is_external));
 
-    let (Some(caller_id), Some(svc)) = (
-        caller_id,
-        state
-            .auth_service
-            .as_ref()
-            .map(|s| &*s.auth_application_service),
-    ) else {
+    let Some((caller_id, is_external)) = caller else {
         // No auth populated, or auth disabled globally — pass through.
         return next.run(request).await;
     };
 
-    if let Err(err) = require_internal_user(svc, caller_id).await {
+    // Read off `CurrentUser` rather than calling `require_internal_user`,
+    // which would issue a SECOND `get_user_flags` for a fact the auth
+    // middleware already resolved — on every request to `/webdav`,
+    // `/caldav` and `/carddav`.
+    //
+    // Sound because the error cases were decided upstream: if a
+    // `CurrentUser` is in the extensions then the flags read SUCCEEDED.
+    // `resolve_live_role` turns a transient failure into
+    // `Indeterminate` (503) and a missing row into `Revoked` (401)
+    // before this layer runs, so the three non-`Ok` arms
+    // `decide_internal_user` reasons about are unreachable from here.
+    //
+    // `require_internal_user` itself stays: `contacts_handler` and
+    // `subject_group_handler` still call it with a bare `caller_id`, and
+    // those callsites fold into the policy engine rather than here.
+    if is_external {
         let path = request.uri().path().to_owned();
         tracing::info!(
             target: "audit",
@@ -464,7 +497,12 @@ pub async fn require_internal_user_layer(
             path = %path,
             "👮🏻‍♂️ External user blocked from internal-only route subtree"
         );
-        return err.into_response();
+        return AppError::new(
+            StatusCode::FORBIDDEN,
+            "External users cannot access this endpoint",
+            "Forbidden",
+        )
+        .into_response();
     }
 
     next.run(request).await
@@ -622,7 +660,13 @@ mod tests {
         );
         // The live record wins over the (stale) claim — a freshly promoted
         // user is admin even though their token still says "user".
-        assert_eq!(live, LiveRole::Active(SmolStr::new_static("admin")));
+        assert_eq!(
+            live,
+            LiveRole::Active {
+                role: SmolStr::new_static("admin"),
+                is_external: false
+            }
+        );
     }
 
     #[test]
@@ -633,7 +677,13 @@ mod tests {
             Uuid::nil(),
             PresentedToken::default(),
         );
-        assert_eq!(live, LiveRole::Active(SmolStr::new_static("user")));
+        assert_eq!(
+            live,
+            LiveRole::Active {
+                role: SmolStr::new_static("user"),
+                is_external: false
+            }
+        );
     }
 
     #[test]
@@ -738,7 +788,21 @@ mod tests {
     fn anonymous_claim_skips_the_live_recheck() {
         assert_eq!(
             anonymous_live_role("anonymous"),
-            Some(LiveRole::Active(SmolStr::new_static("anonymous"))),
+            Some(LiveRole::Active {
+                role: SmolStr::new_static("anonymous"),
+                // PINNED, not incidental. A share visitor has no
+                // `auth.users` row, so neither value is true of them —
+                // and `false` would read as "internal", letting a
+                // visitor through `require_internal_user_layer` now that
+                // the layer trusts this flag instead of re-reading the
+                // flags (where a missing row denied them).
+                //
+                // So `true` is the fail-closed answer, and flipping it
+                // is a privilege widening that must fail here. The real
+                // fix is the three-state principal condition in
+                // `docs/plan/scope-gates.md`.
+                is_external: true,
+            }),
         );
     }
 
@@ -876,7 +940,10 @@ mod tests {
                     ..Default::default()
                 },
             ),
-            LiveRole::Active(SmolStr::new_static("admin")),
+            LiveRole::Active {
+                role: SmolStr::new_static("admin"),
+                is_external: false
+            },
         );
     }
 
@@ -894,7 +961,10 @@ mod tests {
                     ..Default::default()
                 },
             ),
-            LiveRole::Active(SmolStr::new_static("admin")),
+            LiveRole::Active {
+                role: SmolStr::new_static("admin"),
+                is_external: false
+            },
         );
     }
 
@@ -910,7 +980,10 @@ mod tests {
                 Uuid::nil(),
                 PresentedToken::default(),
             ),
-            LiveRole::Active(SmolStr::new_static("admin")),
+            LiveRole::Active {
+                role: SmolStr::new_static("admin"),
+                is_external: false
+            },
         );
     }
 
@@ -954,7 +1027,10 @@ mod tests {
                     ..Default::default()
                 },
             ),
-            LiveRole::Active(SmolStr::new_static("admin")),
+            LiveRole::Active {
+                role: SmolStr::new_static("admin"),
+                is_external: false
+            },
         );
     }
 
@@ -1004,7 +1080,10 @@ mod tests {
                     ..Default::default()
                 },
             ),
-            LiveRole::Active(SmolStr::new_static("admin")),
+            LiveRole::Active {
+                role: SmolStr::new_static("admin"),
+                is_external: false
+            },
         );
     }
 
@@ -1021,7 +1100,10 @@ mod tests {
                 Uuid::nil(),
                 PresentedToken::default(),
             ),
-            LiveRole::Active(SmolStr::new_static("admin")),
+            LiveRole::Active {
+                role: SmolStr::new_static("admin"),
+                is_external: false
+            },
         );
     }
 
@@ -1038,7 +1120,10 @@ mod tests {
                     ..Default::default()
                 },
             ),
-            LiveRole::Active(SmolStr::new_static("admin")),
+            LiveRole::Active {
+                role: SmolStr::new_static("admin"),
+                is_external: false
+            },
         );
     }
 

@@ -2581,6 +2581,8 @@ impl AuthApplicationService {
 
         Ok(crate::application::dtos::user_dto::CurrentUser {
             id: user.id(),
+            // Straight off the entity this door already loaded and admitted.
+            is_external: user.is_external(),
             // This door mints an app password, not a JWT — no claims to
             // record.
             token: crate::domain::entities::presented_token::PresentedToken::default(),

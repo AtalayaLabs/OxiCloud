@@ -270,6 +270,9 @@ pub async fn basic_auth_middleware(
             // with app passwords via Basic Auth, no WebCrypto, no DPoP.
             // Middleware exempts unbound sessions per Gate 9 design.
             let current_user = Arc::new(CurrentUser {
+                // The same single flags read that answered `active` and the
+                // live role — § the one-read rule in this file's header.
+                is_external: flags.is_external,
                 // NextCloud Basic auth: no JWT, so no `sid` or `iat`.
                 token: crate::domain::entities::presented_token::PresentedToken::default(),
                 id: user_id,

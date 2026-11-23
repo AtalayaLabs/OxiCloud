@@ -347,6 +347,7 @@ pub async fn handle_oidc_login_completion(
     };
 
     let current_user = CurrentUser {
+        is_external: user_dto.is_external,
         // Login Flow v2 ends in an app password, not a JWT: no claims.
         token: crate::domain::entities::presented_token::PresentedToken::default(),
         id: user_id,
@@ -579,6 +580,7 @@ pub async fn handle_drive_pick(
         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
     };
     let user = CurrentUser {
+        is_external: user_dto.is_external,
         // Login Flow v2 ends in an app password, not a JWT: no claims.
         token: crate::domain::entities::presented_token::PresentedToken::default(),
         id: user_id,

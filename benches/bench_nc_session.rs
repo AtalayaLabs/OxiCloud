@@ -131,6 +131,7 @@ fn fixture_user(id: uuid::Uuid) -> CurrentUser {
         role: smol_str::SmolStr::new_static("user"),
         dpop_jkt: None,
         token: Default::default(),
+        is_external: false,
     }
 }
 

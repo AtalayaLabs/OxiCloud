@@ -65,10 +65,10 @@ pub async fn require_admin(
     .await
     {
         // Rank, not spelling — the owner outranks admin and must pass.
-        LiveRole::Active(role) if UserRole::str_at_least(&role, UserRole::Admin) => {
+        LiveRole::Active { role, .. } if UserRole::str_at_least(&role, UserRole::Admin) => {
             Ok((user_id, role))
         }
-        LiveRole::Active(role) => {
+        LiveRole::Active { role, .. } => {
             tracing::info!(
                 target: "audit",
                 event = "authz.admin_denied",
@@ -134,7 +134,7 @@ pub async fn require_authenticated(
     )
     .await
     {
-        LiveRole::Active(role) => {
+        LiveRole::Active { role, .. } => {
             // This function re-parses the token itself and never touches the
             // `AuthUser` / `CurrentUserId` extractors, so any rule added there
             // does not reach it. An anonymous public-share session must not

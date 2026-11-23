@@ -659,6 +659,24 @@ pub struct CurrentUser {
     /// must not change the wire shape.
     #[serde(skip)]
     pub token: crate::domain::entities::presented_token::PresentedToken,
+
+    /// Whether this caller is an EXTERNAL user, resolved live from
+    /// `auth.users` in the same pass that produced `role`.
+    ///
+    /// Here because the flags lookup already answered it and
+    /// `LiveRole::Active` was discarding it — so `require_internal_user`
+    /// called `get_user_flags` a SECOND time on every request to
+    /// `/webdav`, `/caldav` and `/carddav`. Both reads hit the same 30 s
+    /// moka cache, so the cost was small; the duplication was the point.
+    ///
+    /// `true` for a public-share visitor, who has no `auth.users` row at
+    /// all. Neither value is true of them — see `anonymous_live_role` in
+    /// `middleware/user.rs` for why `true` is the fail-closed answer and
+    /// what replaces this bool.
+    ///
+    /// `#[serde(skip)]`, as above: internal request state, not wire shape.
+    #[serde(skip)]
+    pub is_external: bool,
 }
 
 impl CurrentUser {
