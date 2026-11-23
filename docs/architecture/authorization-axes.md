@@ -252,6 +252,108 @@ Three things worth reading off the diagram:
 - **A DB failure in a Gate-axis check answers 503, never a denial.** A transient
   fault must not read as "you are not an admin" — see `auth-model.md`.
 
+## How the axes compose — worked, in the planned form
+
+> **Not implemented.** The syntax below is `docs/plan/scope-gates.md`'s
+> request-time engine. The *composition* it shows is real today, spread
+> across five middleware layers and `authz.require`; what changes is that
+> each operation states its requirements in one place.
+
+Three nests, because each shows a different composition.
+
+**`/api/admin` — one condition, inherited.**
+
+```rust
+let admin = admin_handler::admin_routes(state)
+    .policy([Condition::role(MinRole::Admin)]);   // the whole subtree
+
+    //  inherited:  GET /settings/oidc, PUT /settings/storage,
+    //              GET /sessions  →  [role(Admin)]
+
+    // One child tightens. It says nothing about role, so Admin is kept.
+    .route("/sessions/{id}", delete(revoke_session)
+        .policy([Condition::elevated()]));
+    //  → [role(Admin), elevated]
+```
+
+**`/api/auth` — the three principals in one nest.** Today this is *two*
+routers, mounted differently, because publicness is expressed by which
+one a handler was added to. A declared exception collapses them.
+
+```rust
+let auth = auth_public_routes().merge(auth_protected_routes());   // ONE nest
+
+    // PUBLIC — no credential at all.
+    .route("/login",            post(login).policy([Condition::public()]))
+    .route("/refresh",        post(refresh).policy([Condition::public()]))
+    .route("/oidc/callback",    get(oidc_callback).policy([Condition::public()]))
+
+    // DEFAULT — authenticated user, nothing declared.
+    .route("/me",      get(get_current_user))
+    .route("/logout", post(logout))
+
+    // CREDENTIAL OPERATIONS — the `security` area, and a human present.
+    .route("/change-password", put(change_password)
+        .policy([Condition::scope(Scope::Security, Access::ReadWrite),
+                 Condition::elevated()]))
+    .route("/sessions/{id}", delete(revoke_own_session)
+        .policy([Condition::scope(Scope::Security, Access::ReadWrite)]));
+```
+
+`/change-password` needs both and they are independent: the scope says the
+credential was *issued for* credential operations, elevation says a human
+proved themselves *recently*. An app password fails the first; a week-old
+browser session fails the second.
+
+**`/api/files` — a scope floor, tightened per method, and the visitor.**
+
+```rust
+// `basic_file_router` in `routes.rs`, nested at /files.
+let files = basic_file_router
+    .policy([Condition::scope(Scope::Files, Access::ReadOnly)]);  // floor
+
+    // Reads inherit files:ro…
+    .route("/{id}/download",         get(download))
+
+    // …except the three a share link may reach. `visitor_allowed()`
+    // also admits a User — the owner opens the same route.
+    .route("/{id}",                  get(get_file)
+        .policy([Condition::visitor_allowed()]))
+    .route("/{id}/metadata",         get(get_metadata)
+        .policy([Condition::visitor_allowed()]))
+    .route("/{id}/thumbnail/{size}", get(get_thumbnail)
+        .policy([Condition::visitor_allowed()]))
+    //  → [scope(Files, ro), principal(Visitor)]
+
+    // Writes tighten the SAME axis through the chain: ro → rw.
+    .route("/{id}",                  put(update_file)
+        .policy([Condition::scope(Scope::Files, Access::ReadWrite)]))
+    .route("/",                     post(upload_file)
+        .policy([Condition::scope(Scope::Files, Access::ReadWrite)]));
+    //  → [scope(Files, rw)]
+```
+
+Four things these make visible:
+
+- **The same path can carry different policies per method.** `GET
+  /files/{id}` admits a visitor; `PUT` on the identical path does not,
+  and needs `rw` rather than `ro`. That is only expressible because the
+  table is keyed by **operation** (method + path), not by route — which
+  is also how `ANONYMOUS_ALLOWLIST` behaves today, with a `GET`-only
+  check in the layer.
+- **A floor plus per-method tightening needs the chain rule.** The nest
+  says `scope(Files, ro)` and a child says `scope(Files, rw)` — the same
+  axis twice, legal because it is a CHAIN and the fold takes the
+  stricter. The same pair inside ONE declaration is a boot error, since
+  there it means someone wrote two things where they meant one.
+- **`visitor_allowed()` admits a user as well.** The owner and the share
+  visitor reach the same handler, which a two-valued
+  allowed/denied condition could not express.
+- **Grant still runs underneath.** `visitor_allowed()` says only that a
+  share session may *reach* the operation. Whether this ring may read
+  *this* file is `authz.require(…, Read, File(id))` in the service — the
+  gate/grant split, in one route.
+
 ## Where each axis is enforced, and why
 
 - **Gate → router layer.** No resource to name, and a subtree's denial is

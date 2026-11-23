@@ -203,26 +203,25 @@ pub enum MinPrincipal {
 ### At the declaration site
 
 ```rust
-// A SUBTREE: /admin is admin-only. Declared once; every route under it
-// inherits, including ones added later.
-let admin = admin_handler::admin_routes(app_state)
-    .policy([Condition::role(MinRole::Admin)]);
+// A SUBTREE: declared once; every child inherits, including later ones.
+admin_handler::admin_routes(app_state)
+    .policy([Condition::role(MinRole::Admin)])
 
-// ONE ROUTE TIGHTENS: elevation on top of the inherited Admin.
-// Says nothing about role, so the fold keeps Admin.
+// ONE CHILD TIGHTENS: says nothing about role, so Admin is kept.
 .route("/sessions/{id}", delete(revoke_session)
-    .policy([Condition::elevated()]))
+    .policy([Condition::elevated()]))          // → [role(Admin), elevated]
 
-// TWO CONDITIONS on one route. Order is free.
+// TWO CONDITIONS, order free.
 .route("/change-password", put(change_password)
     .policy([Condition::elevated(),
              Condition::scope(Scope::Security, Access::ReadWrite)]))
 ```
 
-The last one needs both and they are independent: `security:rw` says the
-credential was issued for credential operations, `elevated()` says a
-human proved themselves recently. An app password fails the first, a
-week-old browser session the second.
+Fully worked across `/api/admin`, `/api/auth` and `/api/files` — the
+three principals, a scope floor tightened per method, and the visitor
+surface — in `docs/architecture/authorization-axes.md` § How the axes
+compose. Kept there rather than duplicated here: that page is where a
+reader debugging a refusal looks.
 
 **One `.policy()` per operation, and each axis at most once inside it.**
 Both duplicates are boot errors (§ 2b):
