@@ -22,6 +22,48 @@
 
 use crate::domain::entities::user::{CallerKind, UserRole};
 
+/// What the compiled table is keyed by. NOT a route: on three of the four
+/// surfaces a route is not the unit of authorization, because each has a
+/// single `any` handler and the operation is chosen by dispatch inside it
+/// (§ Keyed by operation, not by route).
+///
+/// This is where the bugs were, not a generalisation for its own sake: the
+/// AWARENESS frame kind (`36c8c6a37`) and the CardDAV door to
+/// `create_address_book` were both ungated precisely because neither has a
+/// route to hang a layer on.
+///
+/// `&'static str` throughout: every operation is known at compile time, so
+/// the table needs no allocation and can be built in a `const` context.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Op {
+    /// REST — 279 of these, one per operation. `(method, path)`, where
+    /// `path` is the axum route template, so `/api/files/{id}` and not a
+    /// resolved path.
+    Rest(&'static str, &'static str),
+    /// The DAV method on the single `any` handler: `PROPFIND`, `MKCOL`,
+    /// `MOVE`, … Shared by WebDAV, CalDAV and CardDAV, which is the point
+    /// — REST and DAV reach the same service methods, so a gate on one
+    /// door is a hole in the other.
+    Dav(&'static str),
+    /// The `rt.*` method name inside `/api/rt/ws`.
+    Ws(&'static str),
+    /// The collab binary frame kind (`0x01`, `0x02`, SYNC, AWARENESS).
+    CollabFrame(u8),
+}
+
+impl std::fmt::Display for Op {
+    /// Used in BOOT error messages, so it has to name the operation the
+    /// way an implementor would search for it.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Op::Rest(m, p) => write!(f, "{m} {p}"),
+            Op::Dav(m) => write!(f, "DAV {m}"),
+            Op::Ws(m) => write!(f, "WS {m}"),
+            Op::CollabFrame(k) => write!(f, "collab frame {k:#04x}"),
+        }
+    }
+}
+
 /// ONE requirement on ONE axis. An operation declares a SLICE of these,
 /// which the compile step folds root→leaf into a total [`Policy`].
 ///
