@@ -2029,7 +2029,8 @@ Landing them together means PR 2's risk rides in on PR 1's green suite.
 |--:|---|---|
 | 1 | the caller carries what the conditions read | **done** — `f481cfa8f` · `17f44e3b4` · `401c250a5` |
 | 2 | `Condition` / `Policy` + `MinRole` / `MinPrincipal` (`application/ports/scope_ports.rs`) | **done** — `7ce329192`, inert |
-| 3 | the compile step, the six boot refusals, and the operation table | not started |
+| 3a | the compile step + the five chain-local boot refusals | **done** — `1167e58ba`, inert |
+| 3b | the registry, `.policy()`, the spec cross-check, the table DUMP | not started |
 | 4 | fold three layers + the `transfer_ownership` check | not started |
 
 Step 1 landed as `CurrentCaller.kind: CallerKind`, not the `is_external`
@@ -2046,6 +2047,28 @@ step 3 lands the renderer and its snapshot test, and step 4 asserts the
 snapshot byte-identical after folding. Reversing the two reduces PR 1 to
 "the suite is still green", which is the hoped-for-not-proven outcome this
 table exists to rule out.
+
+§ 2b lists **eight** refusals, and they do not all need the same
+machinery — which is why step 3 splits:
+
+| refusal | needs | step |
+|---|---|---|
+| `public`/`visitor` + any role | the folded chain | **3a** |
+| `public`/`visitor` + a scope | the folded chain | **3a** |
+| a role declaration that widens | the folded chain | **3a** |
+| a principal declaration that widens | the folded chain | **3a** |
+| the same axis twice in ONE slice | the slice | **3a** |
+| an operation with no policy | the table × `openapi.json` / `asyncapi.json` | 3b |
+| a policy naming no live operation | the same cross-check | 3b |
+| two `.policy()` on one operation | the registry | 3b |
+| `public`/`visitor` + elevation | a `Condition::Elevated` variant | blocked |
+
+Step 3a also found a gap in § 2. Compile: scope is specified to fold as
+"union of what is required", but `Policy::scope` holds a SINGLE pair, so
+two different areas have nowhere to live. The compiler refuses them
+(`ConflictingScopes`) rather than dropping one, so a genuine two-area
+operation forces `scope` to become a `ScopeSet` instead of quietly losing
+a requirement. The same area twice tightens access, as intended.
 
 Step 2 added `Axis` to the types above: the compile step has to tell a
 repeated axis within ONE slice (a boot error — the declaration is
