@@ -2063,6 +2063,7 @@ Landing them together means PR 2's risk rides in on PR 1's green suite.
 | 3a | the compile step + the five chain-local boot refusals | **done** — `1167e58ba`, inert |
 | 3b-i | the registry, the table, and the DUMP | **done** — `5b7ddb403`, inert |
 | 3b-ii | `.policy()` + the orphan cross-check | **done** — `9f2525edd`, inert |
+| 4a | the gate matrix — a behavioural baseline, before any layer moves | **done** — `4fc3fd79f`, green |
 | 4 | fold three layers + the `transfer_ownership` check | not started |
 
 Step 1 landed as `CurrentCaller.kind: CallerKind`, not the `is_external`
@@ -2070,6 +2071,31 @@ bool this section first called for: the bool could express three states
 that cannot exist, so `MinPrincipal` compares enum variants instead of a
 bool plus a parsed role string. `SmolStr` roles and the stale role on
 `CachedBasicAuthResult` went with it.
+
+**The dump alone cannot prove the fold is faithful — hence step 4a.**
+The acceptance below asks for the compiled table to be identical before
+and after the fold, but that table is written BY HAND from reading the
+layers. The diff therefore proves the fold matches the table, never that
+the table matches the layers: a mis-transcribed gate makes both dumps
+agree on a widened policy. `tests/api/gate_matrix.hurl` is the
+behavioural half — it asks the running server what each principal kind
+may reach, and is green BEFORE any layer moves. Its coverage map names
+the files that already pin the other rows, so it only covers what was
+missing: `/webdav` (nothing in `tests/api` ever PROPFINDed it),
+anonymous against each folded surface, allowlisted vs non-allowlisted
+under one subtree, and the NOT-folded DPoP layer.
+
+**A third fail-open, currently unreachable, that step 4 could wake.**
+`require_internal_user_layer`'s else-branch passes the request through
+when no `CurrentCaller` is in the extensions ("No auth populated, or auth
+disabled globally"). It is distinct from the two `src/AGENTS.md`
+documents (those are `get_user_flags` errors). It is unreachable today
+only because `auth_middleware` is layered OUTSIDE it and ends in
+`Err(AuthError::TokenNotProvided)` — so nothing uncredentialed ever
+reaches the inner layer. The fold reshuffles exactly that stack, so the
+ordering guarantee has to survive it, or the gate becomes
+pass-through-on-missing-caller. A compiled policy has no such arm:
+`MinPrincipal::satisfied_by(None)` is true only for `Public`.
 
 **Step 3 must ship the table DUMP, not just the table.** This section's
 acceptance — the compiled table identical before and after the fold — is
