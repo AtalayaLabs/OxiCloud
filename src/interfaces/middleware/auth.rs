@@ -840,49 +840,6 @@ fn dav_basic_auth_challenge(message: &'static str) -> Response {
         .unwrap()
 }
 
-/// Middleware to verify that the authenticated user has an admin role.
-///
-/// Must be applied AFTER auth_middleware, as it depends on `CurrentCaller`
-/// being present in the request extensions. The role carried by
-/// `CurrentCaller` is the *live* role resolved by `auth_middleware` (see
-/// [`resolve_live_role`]), not the JWT claim, so a demotion is honoured
-/// here within the flags-cache TTL.
-///
-/// Denial shapes distinguish authn from authz:
-///   - `CurrentCaller` present, role below admin → 403 Forbidden.
-///   - `CurrentCaller` absent → 401 Unauthorized. Should not happen in
-///     practice (auth_middleware guards against it), but the
-///     defensive fallback returns the honest shape: "we don't know
-///     who you are" is 401, not "we know you and refuse" (403).
-pub async fn require_admin(request: Request, next: Next) -> Response {
-    // Get the CurrentCaller inserted by auth_middleware
-    if let Some(current_user) = request.extensions().get::<Arc<CurrentCaller>>() {
-        // `at_least`, not `== "admin"`: the owner outranks admin and must
-        // reach every admin route. Comparing the spelling denied them.
-        if current_user.role_enum().at_least(UserRole::Admin) {
-            tracing::debug!("Admin access granted for user: {}", current_user.username);
-            return next.run(request).await;
-        }
-        tracing::info!(
-            target: "audit",
-            event = "authz.admin_denied",
-            reason = "not_admin",
-            caller_id = %current_user.id,
-            role = %current_user.kind.role().as_str(),
-            "👮🏻‍♂️ admin-only route denied for non-admin caller"
-        );
-        return AuthError::AccessDenied("Admin role required".to_string()).into_response();
-    }
-
-    tracing::info!(
-        target: "audit",
-        event = "authz.admin_denied",
-        reason = "unauthenticated",
-        "👮🏻‍♂️ admin-only route reached with no authenticated user"
-    );
-    AuthError::TokenNotProvided.into_response()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

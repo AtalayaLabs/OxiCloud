@@ -845,29 +845,19 @@ pub fn create_api_routes(app_state: &Arc<AppState>) -> (Router<Arc<AppState>>, P
     // in main.rs for protocol compliance, NOT under /api.
 
     // Admin settings routes — the whole subtree is admin-only by
-    // construction. The `require_admin` layer runs AFTER the outer
-    // `auth_middleware` (main.rs::protected_api), so it can rely on
-    // `CurrentCaller` already being in the request extensions. Any new
-    // route added to `admin_handler::admin_routes()` inherits the
-    // gate automatically — implementors no longer have to remember
-    // to call `require_admin(&state, &headers).await?` inline, and a
-    // forgotten call can't silently expose a non-admin surface.
-    let admin_router = admin_handler::admin_routes(app_state)
-        .layer(axum::middleware::from_fn(
-            crate::interfaces::middleware::auth::require_admin,
-        ))
-        // The policy gate is NOT applied here: `/admin` nests inside
-        // the router that `main.rs` wraps with it, and `route_layer`
-        // reaches nested routes — so applying it again would evaluate the
-        // same policy twice per admin request for the same answer.
-        //
-        // It still carries the OWNER declaration on
-        // `/api/admin/transfer-ownership`, which `require_admin` below
-        // cannot express; today that refusal happens in the service.
-        .with_state(app_state.clone());
-    // Route, layer and POLICY in one place: the subtree is admin-only,
-    // and `/api/admin/transfer-ownership` tightens to Owner (declared in
-    // `policy_declarations`, since it is a per-METHOD gate — see below).
+    // construction, declared once on the nest. Any route added to
+    // `admin_handler::admin_routes()` inherits it, so an implementor
+    // cannot forget a gate and silently expose a non-admin surface.
+    //
+    // The `require_admin` layer that used to sit here is GONE (PR 1 step
+    // 4-xi): the declaration below is the gate, and the policy gate
+    // evaluates it — applied once in `main.rs` to the whole protected
+    // subtree, which `route_layer` carries into this nest.
+    //
+    // `/api/admin/transfer-ownership` tightens to Owner, which
+    // `require_admin` could not express at all; that refusal lives in the
+    // service until `admin_routes()` can declare per verb.
+    let admin_router = admin_handler::admin_routes(app_state).with_state(app_state.clone());
     router = router.nest(
         "/admin",
         admin_router.policy([Condition::role(MinRole::Admin)]),
