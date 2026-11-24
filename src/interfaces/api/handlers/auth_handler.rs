@@ -17,7 +17,6 @@ use crate::application::dtos::user_dto::{
 use crate::application::ports::scope_ports::Condition;
 use crate::application::services::auth_application_service::{OidcCallbackResult, RegisterResult};
 use crate::application::services::registration_policy::domain_allowed;
-use crate::application::services::scope_table::PolicyRegistry;
 use crate::common::di::AppState;
 use crate::interfaces::api::cookie_auth;
 use crate::interfaces::api::policy_router::{GatedRouter, get as policy_get, post as policy_post};
@@ -44,7 +43,7 @@ use serde::Deserialize;
 /// per verb. Without that, the default policy is an authenticated user, so
 /// the spec would claim a bearer these need, and `just openapi` reports
 /// each one.
-pub fn auth_public_routes() -> (Router<Arc<AppState>>, PolicyRegistry) {
+pub fn auth_public_routes() -> GatedRouter<Arc<AppState>> {
     GatedRouter::new()
         // /status endpoint retired. The one unique signal it carried
         // (`initialized`) moved to `/api/config.initialized`; the
@@ -69,7 +68,6 @@ pub fn auth_public_routes() -> (Router<Arc<AppState>>, PolicyRegistry) {
             "/magic-link/send",
             policy_post(send_magic_link).policy(PUBLIC),
         )
-        .finish()
 }
 
 /// Protected auth routes, require authentication (auth + CSRF middleware
@@ -97,29 +95,21 @@ pub fn auth_protected_routes() -> Router<Arc<AppState>> {
 
 /// Rate-limited auth routes, split out so main.rs can apply per-endpoint
 /// rate limiting middleware independently.
-pub fn login_route() -> (Router<Arc<AppState>>, PolicyRegistry) {
-    GatedRouter::new()
-        .route("/login", policy_post(login).policy(PUBLIC))
-        .finish()
+pub fn login_route() -> GatedRouter<Arc<AppState>> {
+    GatedRouter::new().route("/login", policy_post(login).policy(PUBLIC))
 }
 
-pub fn register_route() -> (Router<Arc<AppState>>, PolicyRegistry) {
-    GatedRouter::new()
-        .route("/register", policy_post(register).policy(PUBLIC))
-        .finish()
+pub fn register_route() -> GatedRouter<Arc<AppState>> {
+    GatedRouter::new().route("/register", policy_post(register).policy(PUBLIC))
 }
 
-pub fn refresh_route() -> (Router<Arc<AppState>>, PolicyRegistry) {
-    GatedRouter::new()
-        .route("/refresh", policy_post(refresh_token).policy(PUBLIC))
-        .finish()
+pub fn refresh_route() -> GatedRouter<Arc<AppState>> {
+    GatedRouter::new().route("/refresh", policy_post(refresh_token).policy(PUBLIC))
 }
 
 /// Public setup route, only active before the first admin is created.
-pub fn setup_route() -> (Router<Arc<AppState>>, PolicyRegistry) {
-    GatedRouter::new()
-        .route("/setup", policy_post(setup_admin).policy(PUBLIC))
-        .finish()
+pub fn setup_route() -> GatedRouter<Arc<AppState>> {
+    GatedRouter::new().route("/setup", policy_post(setup_admin).policy(PUBLIC))
 }
 
 /// `OXICLOUD_REGISTRATION_ALLOWED_EMAIL_DOMAINS` gate, shared by the two

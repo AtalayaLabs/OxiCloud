@@ -22,7 +22,6 @@ use uuid::Uuid;
 use crate::application::dtos::device_auth_dto::*;
 use crate::application::ports::scope_ports::Condition;
 use crate::application::services::device_auth_service::{DeviceAuthService, DeviceInfoDto};
-use crate::application::services::scope_table::PolicyRegistry;
 use crate::common::di::AppState;
 use crate::interfaces::api::policy_router::{GatedRouter, post as policy_post};
 
@@ -36,13 +35,12 @@ use crate::interfaces::middleware::trusted_proxy::client_ip_from_parts;
 ///
 /// Public endpoints (no auth middleware): authorize, token
 /// Protected endpoints (behind auth middleware): verify (GET+POST), devices
-pub fn device_auth_public_routes() -> (Router<Arc<AppState>>, PolicyRegistry) {
+pub fn device_auth_public_routes() -> GatedRouter<Arc<AppState>> {
     GatedRouter::new()
         // Client-facing endpoints: no credential exists yet — acquiring
         // one is what they are for.
         .route("/authorize", policy_post(device_authorize).policy(PUBLIC))
         .route("/token", policy_post(device_token).policy(PUBLIC))
-        .finish()
 }
 
 pub fn device_auth_protected_routes() -> Router<Arc<AppState>> {

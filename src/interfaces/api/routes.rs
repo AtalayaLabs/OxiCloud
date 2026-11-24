@@ -259,22 +259,25 @@ pub fn api_router_and_policies(
             auth_handler, device_auth_handler, opaque_auth_handler,
         };
         for (prefix, decls) in [
-            ("/api/auth", auth_handler::auth_public_routes().1),
-            ("/api/auth", auth_handler::login_route().1),
-            ("/api/auth", auth_handler::register_route().1),
-            ("/api/auth", auth_handler::refresh_route().1),
-            ("/api", auth_handler::setup_route().1),
+            (
+                "/api/auth",
+                auth_handler::auth_public_routes().into_policies(),
+            ),
+            ("/api/auth", auth_handler::login_route().into_policies()),
+            ("/api/auth", auth_handler::register_route().into_policies()),
+            ("/api/auth", auth_handler::refresh_route().into_policies()),
+            ("/api", auth_handler::setup_route().into_policies()),
             (
                 "/api/auth/opaque/login",
-                opaque_auth_handler::opaque_login_routes().1,
+                opaque_auth_handler::opaque_login_routes().into_policies(),
             ),
             (
                 "/api/auth/opaque",
-                opaque_auth_handler::opaque_params_routes().1,
+                opaque_auth_handler::opaque_params_routes().into_policies(),
             ),
             (
                 "/api/auth/device",
-                device_auth_handler::device_auth_public_routes().1,
+                device_auth_handler::device_auth_public_routes().into_policies(),
             ),
         ] {
             registry.absorb(decls.rebased_under(prefix));

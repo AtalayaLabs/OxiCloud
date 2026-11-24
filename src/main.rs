@@ -997,14 +997,14 @@ async fn run(config: common::config::AppConfig) -> Result<(), Box<dyn std::error
 
         // Auth routes split by rate-limit policy
         let auth_login = login_route()
-            .0
+            .into_router()
             .layer(axum::middleware::from_fn_with_state(
                 login_limiter.clone(),
                 rate_limit_login,
             ))
             .with_state(app_state.clone());
         let auth_register = register_route()
-            .0
+            .into_router()
             .layer(axum::middleware::from_fn_with_state(
                 register_limiter.clone(),
                 rate_limit_register,
@@ -1020,7 +1020,7 @@ async fn run(config: common::config::AppConfig) -> Result<(), Box<dyn std::error
         // decision and so cannot revoke the real user's token family.
         // `docs/plan/refresh-token-grace.md` Gate 4.
         let auth_refresh = refresh_route()
-            .0
+            .into_router()
             .layer(axum::middleware::from_fn_with_state(
                 app_state.clone(),
                 oxicloud::interfaces::middleware::dpop::require_dpop_on_refresh_layer,
@@ -1034,7 +1034,9 @@ async fn run(config: common::config::AppConfig) -> Result<(), Box<dyn std::error
         // Declarations are owned by `api_router_and_policies`, so the
         // registry is identical for the server and for spec generation.
         // Here we only need the router.
-        let auth_public = auth_public_routes().0.with_state(app_state.clone());
+        let auth_public = auth_public_routes()
+            .into_router()
+            .with_state(app_state.clone());
         // Protected auth routes (/me, /change-password, /logout) — require auth + CSRF
         let auth_protected = auth_protected_routes()
             .layer(axum::middleware::from_fn_with_state(
@@ -1095,7 +1097,7 @@ async fn run(config: common::config::AppConfig) -> Result<(), Box<dyn std::error
                 .with_state(app_state.clone());
         let opaque_login_public =
             oxicloud::interfaces::api::handlers::opaque_auth_handler::opaque_login_routes()
-                .0
+                .into_router()
                 .layer(axum::middleware::from_fn_with_state(
                     login_limiter.clone(),
                     rate_limit_login,
@@ -1106,11 +1108,11 @@ async fn run(config: common::config::AppConfig) -> Result<(), Box<dyn std::error
         // mount so no login limiter attaches to a non-login read.
         let opaque_params_public =
             oxicloud::interfaces::api::handlers::opaque_auth_handler::opaque_params_routes()
-                .0
+                .into_router()
                 .with_state(app_state.clone());
         // One-time setup route — public, rate-limited like register
         let setup_router = setup_route()
-            .0
+            .into_router()
             .layer(axum::middleware::from_fn_with_state(
                 register_limiter.clone(),
                 rate_limit_register,
@@ -1120,7 +1122,7 @@ async fn run(config: common::config::AppConfig) -> Result<(), Box<dyn std::error
         // Device Authorization Grant (RFC 8628)
         // Public endpoints: /api/auth/device/authorize + /api/auth/device/token
         let device_public = device_auth_handler::device_auth_public_routes()
-            .0
+            .into_router()
             .with_state(app_state.clone());
         // Protected endpoints: /api/auth/device/verify, /api/auth/device/devices
         let device_protected = device_auth_handler::device_auth_protected_routes()

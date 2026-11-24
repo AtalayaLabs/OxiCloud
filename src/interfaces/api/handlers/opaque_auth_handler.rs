@@ -105,7 +105,6 @@ use uuid::Uuid;
 
 use crate::application::dtos::user_dto::AuthResponseDto;
 use crate::application::ports::scope_ports::Condition;
-use crate::application::services::scope_table::PolicyRegistry;
 use crate::common::di::AppState;
 use crate::interfaces::api::policy_router::{GatedRouter, get as policy_get, post as policy_post};
 
@@ -146,12 +145,11 @@ pub fn opaque_register_routes() -> Router<Arc<AppState>> {
 /// cheaper user-existence probe than legacy login. Anti-enum on the
 /// response shape closes the primary information leak; the rate
 /// limit closes the secondary "how fast can I ask" leak.
-pub fn opaque_login_routes() -> (Router<Arc<AppState>>, PolicyRegistry) {
+pub fn opaque_login_routes() -> GatedRouter<Arc<AppState>> {
     GatedRouter::new()
         .route("/lookup", policy_post(login_lookup).policy(PUBLIC))
         .route("/ke1", policy_post(login_ke1).policy(PUBLIC))
         .route("/ke3", policy_post(login_ke3).policy(PUBLIC))
-        .finish()
 }
 
 /// Public config-publish endpoint. Mount under `/api/auth/opaque`
@@ -159,10 +157,8 @@ pub fn opaque_login_routes() -> (Router<Arc<AppState>>, PolicyRegistry) {
 /// once at page load (cache-friendly). Kept distinct from the
 /// login mount to avoid layering the login rate limiter on a read
 /// that isn't a login attempt.
-pub fn opaque_params_routes() -> (Router<Arc<AppState>>, PolicyRegistry) {
-    GatedRouter::new()
-        .route("/params", policy_get(opaque_params).policy(PUBLIC))
-        .finish()
+pub fn opaque_params_routes() -> GatedRouter<Arc<AppState>> {
+    GatedRouter::new().route("/params", policy_get(opaque_params).policy(PUBLIC))
 }
 
 /// Client → server on register KE1. `registrationRequest` is the

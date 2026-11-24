@@ -346,6 +346,21 @@ where
         }
     }
 
+    /// Just the router, for a caller that mounts it and leaves the
+    /// declarations to whoever owns the registry.
+    ///
+    /// Named rather than `.0` on a tuple: a call site reading
+    /// `refresh_route().into_router()` says what it takes, where
+    /// `refresh_route().0` says nothing.
+    pub fn into_router(self) -> Router<S> {
+        self.router
+    }
+
+    /// Just the declarations, for the one function that owns the registry.
+    pub fn into_policies(self) -> PolicyRegistry {
+        self.registry
+    }
+
     /// The router to serve, and the declarations to compile.
     ///
     /// Returns both rather than compiling here: compilation needs the
