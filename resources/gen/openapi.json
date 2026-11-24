@@ -5211,6 +5211,7 @@
           "device-auth"
         ],
         "summary": "Client sends: `{ \"client_name\": \"rclone\", \"scope\": \"webdav\" }`\nServer returns: device_code, user_code, verification_uri, etc.",
+        "description": "Reachable with NO credential at all.",
         "operationId": "device_authorize",
         "requestBody": {
           "content": {
@@ -5234,7 +5235,8 @@
             }
           }
         },
-        "security": []
+        "security": [],
+        "x-oxicloud-principal": "public"
       }
     },
     "/api/auth/device/devices": {
@@ -5330,6 +5332,7 @@
           "device-auth"
         ],
         "summary": "Client sends: `{ \"device_code\": \"...\", \"grant_type\": \"urn:ietf:params:oauth:grant-type:device_code\" }`\nReturns tokens on success, or RFC 8628 error codes while pending.",
+        "description": "Reachable with NO credential at all.",
         "operationId": "device_token",
         "requestBody": {
           "content": {
@@ -5363,7 +5366,8 @@
             }
           }
         },
-        "security": []
+        "security": [],
+        "x-oxicloud-principal": "public"
       }
     },
     "/api/auth/device/verify": {
@@ -5538,7 +5542,7 @@
           "auth"
         ],
         "summary": "Authenticate with username and password.",
-        "description": "On success, sets `oxicloud_access`, `oxicloud_refresh`, and `oxicloud_csrf`\nHttpOnly cookies in addition to returning the tokens in the JSON body.",
+        "description": "On success, sets `oxicloud_access`, `oxicloud_refresh`, and `oxicloud_csrf`\nHttpOnly cookies in addition to returning the tokens in the JSON body.\n\nReachable with NO credential at all.",
         "operationId": "login",
         "requestBody": {
           "content": {
@@ -5592,7 +5596,8 @@
             }
           }
         },
-        "security": []
+        "security": [],
+        "x-oxicloud-principal": "public"
       }
     },
     "/api/auth/logout": {
@@ -6152,7 +6157,7 @@
           "auth"
         ],
         "summary": "KE1: user lookup → envelope fetch → `ServerLogin::start` → stash\nstate under a fresh exchange_id → return handle + response bytes.",
-        "description": "## Anti-enumeration\n\nA KE1 that CAN'T be honestly answered (unknown user, or user\nexists but has no OPAQUE envelope yet) MUST look identical to a\nKE1 that CAN. opaque-ke's `ServerLogin::start` supports a \"dummy\"\nbranch (`password_file = None`) that generates a well-formed\nKE2 response indistinguishable from the real branch. The\ndummy-branch KE3 will fail at the client-side `ClientLogin::finish`\n(wrong MAC), never reaching the server — so KE3 for the\nnon-existent user is symmetric with KE3 for a wrong passphrase.\n\nUser is NOT looked up via `_with_perms` — this is the auth\nbootstrap; there's no caller identity yet. We use the same\ndispatch as legacy `/api/auth/login`.",
+        "description": "## Anti-enumeration\n\nA KE1 that CAN'T be honestly answered (unknown user, or user\nexists but has no OPAQUE envelope yet) MUST look identical to a\nKE1 that CAN. opaque-ke's `ServerLogin::start` supports a \"dummy\"\nbranch (`password_file = None`) that generates a well-formed\nKE2 response indistinguishable from the real branch. The\ndummy-branch KE3 will fail at the client-side `ClientLogin::finish`\n(wrong MAC), never reaching the server — so KE3 for the\nnon-existent user is symmetric with KE3 for a wrong passphrase.\n\nUser is NOT looked up via `_with_perms` — this is the auth\nbootstrap; there's no caller identity yet. We use the same\ndispatch as legacy `/api/auth/login`.\n\nReachable with NO credential at all.",
         "operationId": "login_ke1",
         "requestBody": {
           "content": {
@@ -6196,7 +6201,8 @@
             }
           }
         },
-        "security": []
+        "security": [],
+        "x-oxicloud-principal": "public"
       }
     },
     "/api/auth/opaque/login/ke3": {
@@ -6205,7 +6211,7 @@
           "auth"
         ],
         "summary": "KE3: consume exchange state → `ServerLogin::finish` → mint session.",
-        "description": "On success:\n\n  * Stamp `opaque_migrated_at` (Phase 3 signal that this user\n    has completed at least one OPAQUE login — future legacy\n    login attempts will be refused once Phase 4 flips to\n    `opaque_only`).\n  * Mint access + refresh tokens under a fresh session family,\n    via `AuthApplicationService::mint_session_for_authenticated_user`.\n  * Return the shared `AuthResponseDto` shape identical to\n    `POST /api/auth/login` — the SPA consumes both paths through\n    one downstream handler.\n\nOn failure (bad passphrase, replay, expired exchange, unknown\nexchange_id): 401 `InvalidCredentials` — the SAME shape for every\nfailure branch so attackers can't distinguish \"expired\" from\n\"wrong password\" from \"id already consumed\".",
+        "description": "On success:\n\n  * Stamp `opaque_migrated_at` (Phase 3 signal that this user\n    has completed at least one OPAQUE login — future legacy\n    login attempts will be refused once Phase 4 flips to\n    `opaque_only`).\n  * Mint access + refresh tokens under a fresh session family,\n    via `AuthApplicationService::mint_session_for_authenticated_user`.\n  * Return the shared `AuthResponseDto` shape identical to\n    `POST /api/auth/login` — the SPA consumes both paths through\n    one downstream handler.\n\nOn failure (bad passphrase, replay, expired exchange, unknown\nexchange_id): 401 `InvalidCredentials` — the SAME shape for every\nfailure branch so attackers can't distinguish \"expired\" from\n\"wrong password\" from \"id already consumed\".\n\nReachable with NO credential at all.",
         "operationId": "login_ke3",
         "requestBody": {
           "content": {
@@ -6259,7 +6265,8 @@
             }
           }
         },
-        "security": []
+        "security": [],
+        "x-oxicloud-principal": "public"
       }
     },
     "/api/auth/opaque/login/lookup": {
@@ -6268,7 +6275,7 @@
           "auth"
         ],
         "summary": "Resolve `userIdentifier` → envelope-existence check. Used by the\nSPA login form to branch between OPAQUE and legacy on submit.",
-        "description": "Rate-limited via the shared `login_limiter` (mount layer in\n`main.rs`), so lookup can't be used as a cheap enumeration probe.",
+        "description": "Rate-limited via the shared `login_limiter` (mount layer in\n`main.rs`), so lookup can't be used as a cheap enumeration probe.\n\nReachable with NO credential at all.",
         "operationId": "login_lookup",
         "requestBody": {
           "content": {
@@ -6312,7 +6319,8 @@
             }
           }
         },
-        "security": []
+        "security": [],
+        "x-oxicloud-principal": "public"
       }
     },
     "/api/auth/opaque/params": {
@@ -6321,7 +6329,7 @@
           "auth"
         ],
         "summary": "Publish the OPAQUE client config. Safe to call unauthenticated\n(nothing about individual users is returned) and cache-friendly\n(the response only changes when the operator rotates env vars).",
-        "description": "Note: `Cache-Control` is deliberately unset — the SPA fetches\nthis once at page load, and if the operator rotates the KSF\nparams mid-flight, we want the change to be picked up on the\nnext SPA reload rather than lingering behind an intermediary\ncache.",
+        "description": "Note: `Cache-Control` is deliberately unset — the SPA fetches\nthis once at page load, and if the operator rotates the KSF\nparams mid-flight, we want the change to be picked up on the\nnext SPA reload rather than lingering behind an intermediary\ncache.\n\nReachable with NO credential at all.",
         "operationId": "opaque_params",
         "responses": {
           "200": {
@@ -6335,7 +6343,8 @@
             }
           }
         },
-        "security": []
+        "security": [],
+        "x-oxicloud-principal": "public"
       }
     },
     "/api/auth/opaque/register/finish": {
@@ -6470,7 +6479,7 @@
           "auth"
         ],
         "summary": "Refresh an access token.",
-        "description": "Accepts the refresh token from **either**:\n1. JSON body `{ \"refresh_token\": \"...\" }` (API clients / backward compat)\n2. HttpOnly `oxicloud_refresh` cookie (browsers)\n\nIssues new access + refresh tokens and rotates all three auth cookies.",
+        "description": "Accepts the refresh token from **either**:\n1. JSON body `{ \"refresh_token\": \"...\" }` (API clients / backward compat)\n2. HttpOnly `oxicloud_refresh` cookie (browsers)\n\nIssues new access + refresh tokens and rotates all three auth cookies.\n\nReachable with NO credential at all.",
         "operationId": "refresh_token",
         "requestBody": {
           "description": "Optional — omit when using the HttpOnly cookie",
@@ -6513,7 +6522,8 @@
             }
           }
         },
-        "security": []
+        "security": [],
+        "x-oxicloud-principal": "public"
       }
     },
     "/api/auth/register": {
@@ -6522,7 +6532,7 @@
           "auth"
         ],
         "summary": "Register a new user account.",
-        "description": "**Response shape depends on SMTP availability**:\n\n- **SMTP configured** (`magic_link_invite_service` is wired): the\n  endpoint returns a **uniform 200** for both success and collision\n  (anti-enumeration). The \"Registration request received\" message\n  covers both branches honestly because successful email-only\n  signups receive a welcome magic-link. Real outcome recorded in\n  the `audit` channel as `auth.register` with `reason` one of\n  `created`, `email_taken`, `username_taken`.\n- **SMTP not configured**: there is no welcome-mail cover story, so\n  the classic `201 + PublicUserDto` on success and `409` on collision\n  apply. Anti-enumeration would just be misleading UX (telling the\n  user to check an email that will never arrive). Email-only\n  signup is **503** in this mode because the user would otherwise\n  be stranded with an account they can't log into.\n\n**Instance-wide policy stays visible** in both modes: when\nregistration is disabled by the admin or password registration is\ndisabled in OIDC-only mode, the endpoint returns **403** with a\nclear message. These are instance-wide settings, not per-user\noracles — legitimate users deserve an actionable error.",
+        "description": "**Response shape depends on SMTP availability**:\n\n- **SMTP configured** (`magic_link_invite_service` is wired): the\n  endpoint returns a **uniform 200** for both success and collision\n  (anti-enumeration). The \"Registration request received\" message\n  covers both branches honestly because successful email-only\n  signups receive a welcome magic-link. Real outcome recorded in\n  the `audit` channel as `auth.register` with `reason` one of\n  `created`, `email_taken`, `username_taken`.\n- **SMTP not configured**: there is no welcome-mail cover story, so\n  the classic `201 + PublicUserDto` on success and `409` on collision\n  apply. Anti-enumeration would just be misleading UX (telling the\n  user to check an email that will never arrive). Email-only\n  signup is **503** in this mode because the user would otherwise\n  be stranded with an account they can't log into.\n\n**Instance-wide policy stays visible** in both modes: when\nregistration is disabled by the admin or password registration is\ndisabled in OIDC-only mode, the endpoint returns **403** with a\nclear message. These are instance-wide settings, not per-user\noracles — legitimate users deserve an actionable error.\n\nReachable with NO credential at all.",
         "operationId": "register",
         "requestBody": {
           "content": {
@@ -6596,7 +6606,8 @@
             }
           }
         },
-        "security": []
+        "security": [],
+        "x-oxicloud-principal": "public"
       }
     },
     "/api/auth/sessions": {
@@ -14584,7 +14595,7 @@
           "auth"
         ],
         "summary": "One-time endpoint to create the first admin user.",
-        "description": "Available only when the system is not yet initialized (no admin exists)\nand password login is allowed.\nOnce the admin is created the endpoint permanently returns 403.\nUses an atomic \"claim\" operation so concurrent requests cannot both succeed.",
+        "description": "Available only when the system is not yet initialized (no admin exists)\nand password login is allowed.\nOnce the admin is created the endpoint permanently returns 403.\nUses an atomic \"claim\" operation so concurrent requests cannot both succeed.\n\nReachable with NO credential at all.",
         "operationId": "setup_admin",
         "requestBody": {
           "content": {
@@ -14648,7 +14659,8 @@
             }
           }
         },
-        "security": []
+        "security": [],
+        "x-oxicloud-principal": "public"
       }
     },
     "/api/shares": {

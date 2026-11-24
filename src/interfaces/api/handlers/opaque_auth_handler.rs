@@ -66,7 +66,7 @@ use axum::Router;
 use axum::extract::{Json, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
-use axum::routing::{get, post};
+use axum::routing::post;
 use base64::Engine as _;
 use base64::engine::general_purpose::{
     STANDARD as B64_STANDARD, URL_SAFE_NO_PAD as B64_URL_NO_PAD,
@@ -104,7 +104,13 @@ use utoipa::ToSchema;
 use uuid::Uuid;
 
 use crate::application::dtos::user_dto::AuthResponseDto;
+use crate::application::ports::scope_ports::Condition;
+use crate::application::services::scope_table::PolicyRegistry;
 use crate::common::di::AppState;
+use crate::interfaces::api::policy_router::{GatedRouter, get as policy_get, post as policy_post};
+
+/// No credential at all — these ARE the login handshake.
+const PUBLIC: [Condition; 1] = [Condition::public()];
 use crate::infrastructure::services::opaque_login_exchange::{ExchangeId, OpaqueLoginExchange};
 use crate::infrastructure::services::opaque_service::{OpaqueService, OxiCloudSuite};
 use crate::interfaces::api::cookie_auth;
@@ -140,11 +146,12 @@ pub fn opaque_register_routes() -> Router<Arc<AppState>> {
 /// cheaper user-existence probe than legacy login. Anti-enum on the
 /// response shape closes the primary information leak; the rate
 /// limit closes the secondary "how fast can I ask" leak.
-pub fn opaque_login_routes() -> Router<Arc<AppState>> {
-    Router::new()
-        .route("/lookup", post(login_lookup))
-        .route("/ke1", post(login_ke1))
-        .route("/ke3", post(login_ke3))
+pub fn opaque_login_routes() -> (Router<Arc<AppState>>, PolicyRegistry) {
+    GatedRouter::new()
+        .route("/lookup", policy_post(login_lookup).policy(PUBLIC))
+        .route("/ke1", policy_post(login_ke1).policy(PUBLIC))
+        .route("/ke3", policy_post(login_ke3).policy(PUBLIC))
+        .finish()
 }
 
 /// Public config-publish endpoint. Mount under `/api/auth/opaque`
@@ -152,8 +159,10 @@ pub fn opaque_login_routes() -> Router<Arc<AppState>> {
 /// once at page load (cache-friendly). Kept distinct from the
 /// login mount to avoid layering the login rate limiter on a read
 /// that isn't a login attempt.
-pub fn opaque_params_routes() -> Router<Arc<AppState>> {
-    Router::new().route("/params", get(opaque_params))
+pub fn opaque_params_routes() -> (Router<Arc<AppState>>, PolicyRegistry) {
+    GatedRouter::new()
+        .route("/params", policy_get(opaque_params).policy(PUBLIC))
+        .finish()
 }
 
 /// Client → server on register KE1. `registrationRequest` is the

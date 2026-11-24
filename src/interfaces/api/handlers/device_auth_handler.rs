@@ -20,8 +20,14 @@ use std::sync::Arc;
 use uuid::Uuid;
 
 use crate::application::dtos::device_auth_dto::*;
+use crate::application::ports::scope_ports::Condition;
 use crate::application::services::device_auth_service::{DeviceAuthService, DeviceInfoDto};
+use crate::application::services::scope_table::PolicyRegistry;
 use crate::common::di::AppState;
+use crate::interfaces::api::policy_router::{GatedRouter, post as policy_post};
+
+/// No credential at all.
+const PUBLIC: [Condition; 1] = [Condition::public()];
 use crate::interfaces::errors::AppError;
 use crate::interfaces::middleware::auth::AuthUser;
 use crate::interfaces::middleware::trusted_proxy::client_ip_from_parts;
@@ -30,11 +36,13 @@ use crate::interfaces::middleware::trusted_proxy::client_ip_from_parts;
 ///
 /// Public endpoints (no auth middleware): authorize, token
 /// Protected endpoints (behind auth middleware): verify (GET+POST), devices
-pub fn device_auth_public_routes() -> Router<Arc<AppState>> {
-    Router::new()
-        // Client-facing endpoints (no auth needed — the client doesn't have tokens yet)
-        .route("/authorize", post(device_authorize))
-        .route("/token", post(device_token))
+pub fn device_auth_public_routes() -> (Router<Arc<AppState>>, PolicyRegistry) {
+    GatedRouter::new()
+        // Client-facing endpoints: no credential exists yet — acquiring
+        // one is what they are for.
+        .route("/authorize", policy_post(device_authorize).policy(PUBLIC))
+        .route("/token", policy_post(device_token).policy(PUBLIC))
+        .finish()
 }
 
 pub fn device_auth_protected_routes() -> Router<Arc<AppState>> {

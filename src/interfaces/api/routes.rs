@@ -254,11 +254,32 @@ pub fn api_router_and_policies(
     // route whose declaration never lands is reported by `just openapi`.
     // Both caught the earlier versions of this, where the generator saw a
     // registry the server did not have.
-    registry.absorb(
-        crate::interfaces::api::handlers::auth_handler::auth_public_routes()
-            .1
-            .rebased_under("/api/auth"),
-    );
+    {
+        use crate::interfaces::api::handlers::{
+            auth_handler, device_auth_handler, opaque_auth_handler,
+        };
+        for (prefix, decls) in [
+            ("/api/auth", auth_handler::auth_public_routes().1),
+            ("/api/auth", auth_handler::login_route().1),
+            ("/api/auth", auth_handler::register_route().1),
+            ("/api/auth", auth_handler::refresh_route().1),
+            ("/api", auth_handler::setup_route().1),
+            (
+                "/api/auth/opaque/login",
+                opaque_auth_handler::opaque_login_routes().1,
+            ),
+            (
+                "/api/auth/opaque",
+                opaque_auth_handler::opaque_params_routes().1,
+            ),
+            (
+                "/api/auth/device",
+                device_auth_handler::device_auth_public_routes().1,
+            ),
+        ] {
+            registry.absorb(decls.rebased_under(prefix));
+        }
+    }
 
     // Plus the operations that have no route to declare against — the DAV
     // surfaces.

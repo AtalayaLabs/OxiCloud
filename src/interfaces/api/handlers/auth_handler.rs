@@ -97,21 +97,29 @@ pub fn auth_protected_routes() -> Router<Arc<AppState>> {
 
 /// Rate-limited auth routes, split out so main.rs can apply per-endpoint
 /// rate limiting middleware independently.
-pub fn login_route() -> Router<Arc<AppState>> {
-    Router::new().route("/login", post(login))
+pub fn login_route() -> (Router<Arc<AppState>>, PolicyRegistry) {
+    GatedRouter::new()
+        .route("/login", policy_post(login).policy(PUBLIC))
+        .finish()
 }
 
-pub fn register_route() -> Router<Arc<AppState>> {
-    Router::new().route("/register", post(register))
+pub fn register_route() -> (Router<Arc<AppState>>, PolicyRegistry) {
+    GatedRouter::new()
+        .route("/register", policy_post(register).policy(PUBLIC))
+        .finish()
 }
 
-pub fn refresh_route() -> Router<Arc<AppState>> {
-    Router::new().route("/refresh", post(refresh_token))
+pub fn refresh_route() -> (Router<Arc<AppState>>, PolicyRegistry) {
+    GatedRouter::new()
+        .route("/refresh", policy_post(refresh_token).policy(PUBLIC))
+        .finish()
 }
 
 /// Public setup route, only active before the first admin is created.
-pub fn setup_route() -> Router<Arc<AppState>> {
-    Router::new().route("/setup", post(setup_admin))
+pub fn setup_route() -> (Router<Arc<AppState>>, PolicyRegistry) {
+    GatedRouter::new()
+        .route("/setup", policy_post(setup_admin).policy(PUBLIC))
+        .finish()
 }
 
 /// `OXICLOUD_REGISTRATION_ALLOWED_EMAIL_DOMAINS` gate, shared by the two
