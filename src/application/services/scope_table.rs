@@ -118,8 +118,10 @@ impl PolicyRegistry {
     /// Without it, `.policy()` only works at top level, which is where
     /// almost no route lives.
     ///
-    /// `Site::Exact` declarations are NOT rebased: a DAV, WS or collab
-    /// operation has no path, so there is nothing to prepend.
+    /// A `Site::Exact(Op::Rest(..))` IS rebased — that is how a
+    /// per-verb declaration written at a route (`get(h).policy(..)`)
+    /// reaches its full path. `Op::Dav`, `Op::Ws` and `Op::CollabFrame`
+    /// are left alone: they have no path to prepend to.
     ///
     /// Paths are interned rather than leaked per call: this runs once per
     /// nest at startup, and `Op`/`Site` hold `&'static str` so the table
@@ -137,6 +139,14 @@ impl PolicyRegistry {
                         format!("{prefix}{p}")
                     };
                     (Site::RestPrefix(intern(&joined)), conds)
+                }
+                Site::Exact(Op::Rest(method, p)) => {
+                    let joined = if p == "/" {
+                        prefix.to_owned()
+                    } else {
+                        format!("{prefix}{p}")
+                    };
+                    (Site::Exact(Op::Rest(method, intern(&joined))), conds)
                 }
                 Site::Exact(_) => (site, conds),
             })

@@ -42,6 +42,78 @@ pub struct Gated<T> {
     conditions: Vec<Condition>,
 }
 
+/// One HTTP METHOD on one path, with its policy.
+///
+/// Exists because axum's `get(handler)` returns a `MethodRouter` that has
+/// FORGOTTEN it is a GET — and `.policy()` on that could only declare for
+/// the whole path. A path-level declaration is how
+/// `visitor_allowed()` on `/api/files/{id}` silently granted a share
+/// visitor `DELETE`: `ANONYMOUS_ALLOWLIST` is GET-only, and three of its
+/// seven paths carry a write.
+///
+/// So the verb constructors here remember their verb:
+///
+/// ```ignore
+/// .route("/{id}", get(download).policy([Condition::visitor_allowed()]))
+/// ```
+///
+/// A bare `MethodRouter` still works and declares nothing, which is the
+/// common case — the default policy already demands a session.
+pub struct Verb<S> {
+    /// `None` for a bare `MethodRouter`: no verb was named, so a
+    /// declaration (if any) covers the whole path.
+    method: Option<&'static str>,
+    inner: MethodRouter<S>,
+    conditions: Vec<Condition>,
+}
+
+impl<S> Verb<S> {
+    /// Attach the policy for THIS verb.
+    #[must_use]
+    pub fn policy<const N: usize>(mut self, conditions: [Condition; N]) -> Self {
+        self.conditions = conditions.to_vec();
+        self
+    }
+}
+
+/// A bare `MethodRouter` is a `Verb` with no verb named and no policy.
+impl<S> From<MethodRouter<S>> for Verb<S> {
+    fn from(inner: MethodRouter<S>) -> Self {
+        Verb {
+            method: None,
+            inner,
+            conditions: Vec::new(),
+        }
+    }
+}
+
+macro_rules! verb {
+    ($name:ident, $axum:ident, $method:literal) => {
+        /// Like `axum::routing::
+        #[doc = $method]
+        /// `, but remembers its verb so `.policy([...])` declares for
+        /// that method alone rather than for the whole path.
+        pub fn $name<H, T, S>(handler: H) -> Verb<S>
+        where
+            H: axum::handler::Handler<T, S>,
+            T: 'static,
+            S: Clone + Send + Sync + 'static,
+        {
+            Verb {
+                method: Some($method),
+                inner: axum::routing::$axum(handler),
+                conditions: Vec::new(),
+            }
+        }
+    };
+}
+
+verb!(get, get, "GET");
+verb!(post, post, "POST");
+verb!(put, put, "PUT");
+verb!(delete, delete, "DELETE");
+verb!(patch, patch, "PATCH");
+
 /// `.policy([...])` on a `Router` (the whole subtree) or a `MethodRouter`
 /// (one route).
 ///
@@ -68,7 +140,9 @@ pub trait Policied: Sized {
 }
 
 impl<S> Policied for Router<S> where S: Clone + Send + Sync + 'static {}
-impl<S> Policied for MethodRouter<S> where S: Clone + Send + Sync + 'static {}
+// NOT implemented for `MethodRouter`: `.policy()` on one could only
+// declare for the whole path, which is the bug that granted a visitor
+// `DELETE /api/files/{id}`. Use the verb constructors above.
 
 /// A `Router` and the declarations made against it, built together.
 ///
@@ -136,16 +210,50 @@ where
     /// holds either. An operation needing a per-method policy declares it
     /// with [`Self::declare_op`].
     #[must_use]
-    pub fn route(
-        mut self,
-        path: &'static str,
-        method_router: impl Into<Gated<MethodRouter<S>>>,
-    ) -> Self {
-        let Gated { inner, conditions } = method_router.into();
+    pub fn route(mut self, path: &'static str, verb: impl Into<Verb<S>>) -> Self {
+        let Verb {
+            method,
+            inner,
+            conditions,
+        } = verb.into();
         if !conditions.is_empty() {
-            self.registry.declare(Site::RestPrefix(path), conditions);
+            // A named verb declares for that METHOD; an unnamed one (a
+            // bare `MethodRouter`, or `.policy()` on one) covers the
+            // whole path, which is only right when every method on it
+            // shares the policy.
+            let site = match method {
+                Some(m) => Site::Exact(Op::Rest(m, path)),
+                None => Site::RestPrefix(path),
+            };
+            self.registry.declare(site, conditions);
         }
         self.router = self.router.route(path, inner);
+        self
+    }
+
+    /// `Router::merge`, absorbing the other side's declarations.
+    ///
+    /// Needed because `/{id}`'s GET and DELETE live in SEPARATE routers
+    /// that are merged — so a per-verb declaration written in one must
+    /// survive the merge.
+    #[must_use]
+    pub fn merge(mut self, other: GatedRouter<S>) -> Self {
+        let (router, registry) = other.finish();
+        self.registry.absorb(registry);
+        self.router = self.router.merge(router);
+        self
+    }
+
+    /// `Router::nest` for a router that carries declarations of its own,
+    /// REBASING them under `path`.
+    ///
+    /// This is what lets `.policy()` be written at a route inside a
+    /// router that does not know where it will be mounted.
+    #[must_use]
+    pub fn nest_gated(mut self, path: &'static str, inner: GatedRouter<S>) -> Self {
+        let (router, registry) = inner.finish();
+        self.registry.absorb(registry.rebased_under(path));
+        self.router = self.router.nest(path, router);
         self
     }
 
@@ -204,10 +312,8 @@ impl<T> From<T> for Gated<T> {
 
 #[cfg(test)]
 mod tests {
-    use axum::routing::{get, post};
-
     use super::*;
-    use crate::application::ports::scope_ports::{Access, MinRole, Policy, Scope};
+    use crate::application::ports::scope_ports::{Access, MinPrincipal, MinRole, Policy, Scope};
 
     async fn noop() -> &'static str {
         "ok"
@@ -218,8 +324,8 @@ mod tests {
     #[test]
     fn a_subtree_declaration_is_inherited_by_everything_beneath() {
         let admin: Router<()> = Router::new()
-            .route("/sessions", get(noop))
-            .route("/settings/oidc", get(noop));
+            .route("/sessions", axum::routing::get(noop))
+            .route("/settings/oidc", axum::routing::get(noop));
 
         let (_router, registry) = GatedRouter::<()>::new()
             .nest(
@@ -244,8 +350,11 @@ mod tests {
     #[test]
     fn a_handler_declaration_marks_one_route_public() {
         let (_router, registry) = GatedRouter::<()>::new()
-            .route("/api/auth/login", post(noop).policy([Condition::public()]))
-            .route("/api/auth/me", get(noop))
+            .route(
+                "/api/auth/login",
+                self::post(noop).policy([Condition::public()]),
+            )
+            .route("/api/auth/me", axum::routing::get(noop))
             .finish();
 
         let login = Op::Rest("POST", "/api/auth/login");
@@ -269,11 +378,11 @@ mod tests {
     /// anonymous callers.
     #[test]
     fn undeclared_routers_and_handlers_need_no_policy_call() {
-        let plain: Router<()> = Router::new().route("/thing", get(noop));
+        let plain: Router<()> = Router::new().route("/thing", axum::routing::get(noop));
 
         let (_r, registry) = GatedRouter::<()>::new()
             .nest("/api/open", plain)
-            .route("/api/bare", get(noop))
+            .route("/api/bare", axum::routing::get(noop))
             .finish();
 
         for op in [
@@ -293,7 +402,7 @@ mod tests {
         let (_r, registry) = GatedRouter::<()>::new()
             .route(
                 "/api/auth/password",
-                post(noop).policy([
+                self::post(noop).policy([
                     Condition::role(MinRole::Internal),
                     Condition::scope(Scope::Security, Access::ReadWrite),
                 ]),
@@ -343,14 +452,17 @@ mod tests {
         // The nest holds a different path, because axum rejects an
         // overlapping route — so the contradicting leaf is declared
         // alongside it rather than inside it.
-        let admin: Router<()> = Router::new().route("/sessions", get(noop));
+        let admin: Router<()> = Router::new().route("/sessions", axum::routing::get(noop));
 
         let (_r, registry) = GatedRouter::<()>::new()
             .nest(
                 "/api/admin",
                 admin.policy([Condition::role(MinRole::Admin)]),
             )
-            .route("/api/admin/oops", post(noop).policy([Condition::public()]))
+            .route(
+                "/api/admin/oops",
+                self::post(noop).policy([Condition::public()]),
+            )
             .finish();
 
         let errs = registry
@@ -361,6 +473,80 @@ mod tests {
             e,
             crate::application::services::scope_policy::PolicyError::PublicWithRole { .. }
         )));
+    }
+
+    /// **The shape `/api/files/{id}` actually has**, and the reason
+    /// per-verb declarations exist.
+    ///
+    /// Its GET and its DELETE live in SEPARATE routers that are merged,
+    /// then nested at `/files`, then rebased under `/api`. So a
+    /// declaration written as `get(h).policy(..)` has to survive a merge
+    /// AND two levels of rebasing and still name `GET` alone — because
+    /// the allowlist is GET-only and the DELETE must keep the safe
+    /// default. A path-level declaration here is what granted a visitor
+    /// `DELETE /api/files/{id}`.
+    #[test]
+    fn the_visitor_declaration_does_not_leak_up_down_or_sideways() {
+        let reads: GatedRouter<()> = GatedRouter::new()
+            .route(
+                "/{id}",
+                self::get(noop).policy([Condition::visitor_allowed()]),
+            )
+            // The COLLECTION, deliberately undeclared: listing is not a
+            // share-visitor operation.
+            .route("/", axum::routing::get(noop))
+            // A subpath, to prove an exact declaration does not spread
+            // downward the way a prefix would.
+            .route("/{id}/versions", axum::routing::get(noop));
+        let writes: GatedRouter<()> =
+            GatedRouter::new().route("/{id}", axum::routing::delete(noop));
+
+        let files = reads.merge(writes);
+        let api = GatedRouter::<()>::new().nest_gated("/files", files);
+        let (_router, registry) = api.finish();
+        let registry = registry.rebased_under("/api");
+
+        let ops = [
+            Op::Rest("GET", "/api/files/{id}"),
+            Op::Rest("DELETE", "/api/files/{id}"),
+            Op::Rest("GET", "/api/files"),
+            Op::Rest("GET", "/api/files/{id}/versions"),
+        ];
+        let table = registry.compile_all(&ops).expect("compiles");
+
+        // 1. the declared GET admits a visitor, after merge + nest + rebase
+        assert_eq!(
+            table.get(&ops[0]).unwrap().principal,
+            MinPrincipal::Visitor,
+            "the GET declaration must survive merge + nest + rebase"
+        );
+
+        // 2. the DELETE on the SAME path does NOT. This is the assertion
+        //    a path-level declaration fails, and it is how a visitor was
+        //    nearly handed `DELETE /api/files/{id}`.
+        assert_eq!(
+            table.get(&ops[1]),
+            Some(&Policy::default()),
+            "DELETE on the same path must keep the safe default"
+        );
+
+        // 3. the COLLECTION does not inherit it. A visitor holds a key to
+        //    one share, not a listing of everything.
+        assert_eq!(
+            table.get(&ops[2]),
+            Some(&Policy::default()),
+            "/api/files must NOT be visitor-allowed — the declaration is \
+             on the item, and must not leak up to its collection"
+        );
+
+        // 4. nor does a SUBPATH of the declared one. An exact declaration
+        //    names one operation; a prefix would have swallowed this.
+        assert_eq!(
+            table.get(&ops[3]),
+            Some(&Policy::default()),
+            "a SUBPATH must NOT inherit the item's declaration — exact \
+             means exact, where a prefix would have swallowed it"
+        );
     }
 
     /// § 2b's "a policy naming no live operation". The only check that
