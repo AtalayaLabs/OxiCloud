@@ -874,6 +874,61 @@ fn area_name(scope: crate::application::ports::scope_ports::Scope) -> &'static s
     }
 }
 
+/// Operations whose `security(...)` annotation disagrees with the compiled
+/// policy, as `(method, path, macro_says, policy_says)`.
+///
+/// **Do not write `security(("bearerAuth" = []))` in `#[utoipa::path]`.**
+/// The engine derives it from the operation's policy — `public()` means no
+/// credential, anything else means bearer — so a hand-written one can only
+/// agree or be wrong.
+///
+/// A finding is therefore a stale annotation or a missing declaration.
+/// Reported rather than fatal while the two are being reconciled.
+pub fn audit_declared_security(
+    openapi: &utoipa::openapi::OpenApi,
+    registry: &crate::application::services::scope_table::PolicyRegistry,
+) -> Vec<(String, String, &'static str, &'static str)> {
+    use crate::application::ports::scope_ports::{MinPrincipal, Op};
+
+    let mut findings = Vec::new();
+    for (path, item) in openapi.paths.paths.iter() {
+        let path_static: &'static str = Box::leak(path.clone().into_boxed_str());
+        for (method, op) in [
+            ("GET", item.get.as_ref()),
+            ("PUT", item.put.as_ref()),
+            ("POST", item.post.as_ref()),
+            ("DELETE", item.delete.as_ref()),
+            ("PATCH", item.patch.as_ref()),
+            ("HEAD", item.head.as_ref()),
+            ("OPTIONS", item.options.as_ref()),
+            ("TRACE", item.trace.as_ref()),
+        ]
+        .into_iter()
+        .filter_map(|(m, o)| o.map(|o| (m, o)))
+        {
+            let Ok(policy) = registry.compile_one(Op::Rest(method, path_static)) else {
+                continue;
+            };
+            // An EMPTY array is "no credential required"; anything else
+            // names a scheme.
+            let macro_says = match op.security.as_deref() {
+                Some([]) => "no auth",
+                _ => "bearer",
+            };
+            let policy_says = if policy.principal == MinPrincipal::Public {
+                "no auth"
+            } else {
+                "bearer"
+            };
+            if macro_says != policy_says {
+                findings.push((method.to_owned(), path.clone(), macro_says, policy_says));
+            }
+        }
+    }
+    findings.sort();
+    findings
+}
+
 /// Mark every operation from the COMPILED POLICY TABLE.
 ///
 /// Called by the two places that produce a spec: `generate-openapi`, which

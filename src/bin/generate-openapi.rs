@@ -76,6 +76,23 @@ async fn main() {
     let (_router, registry) =
         oxicloud::interfaces::api::routes::api_router_and_policies(&state.into());
 
+    // Spec generation validates the declarations: `security(...)` is
+    // derived from the policy, so an annotation that disagrees is stale or
+    // a declaration is missing. Reported, not fatal, while the two are
+    // being reconciled.
+    let findings = oxicloud::interfaces::api::audit_declared_security(&openapi, &registry);
+    if findings.is_empty() {
+        println!("auth declarations: macro and policy agree on every operation");
+    } else {
+        println!(
+            "auth declarations: {} operation(s) where the macro and the policy disagree",
+            findings.len()
+        );
+        for (method, path, macro_says, policy_says) in &findings {
+            println!("  {method:7} {path:52} macro={macro_says:8} policy={policy_says}");
+        }
+    }
+
     mark_policies(&mut openapi, &registry);
 
     let json =

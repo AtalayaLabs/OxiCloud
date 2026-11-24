@@ -347,6 +347,12 @@ Two traps, both of which produced real holes on `feat/scopes`:
   the create route, with the layer on it — so the gate is per-method while
   looking per-path.
 
+**Do not write `security(...)` in `#[utoipa::path]`.** The engine derives
+the spec's auth markers from the operation's policy — `x-oxicloud-minrole`,
+`x-oxicloud-principal`, `x-oxicloud-scope`, and the `security` array itself.
+A hand-written one can only agree or be wrong, and `just openapi` reports
+every disagreement.
+
 The engine is in `docs/architecture/authorization-axes.md` (concepts) and
 `docs/plan/scope-gates.md` (design and rollout).
 
