@@ -18,6 +18,7 @@
 
 use crate::application::ports::scope_ports::{Access, Condition, MinRole, Op, Scope};
 use crate::application::services::scope_table::{PolicyRegistry, Site};
+use crate::interfaces::middleware::anonymous_allowlist::ANONYMOUS_ALLOWLIST;
 
 /// The DAV areas and the surfaces that reach them.
 ///
@@ -92,24 +93,10 @@ fn segment_prefix(path: &str, prefix: &str) -> bool {
     }
 }
 
-/// The seven routes in `ANONYMOUS_ALLOWLIST`
-/// (`middleware/anonymous_allowlist.rs`), copied verbatim.
-///
-/// **The allowlist CONTENTS are the policy**, not the subtree it is
-/// attached to. Declaring `visitor_allowed()` on `/api/files` or
-/// `/api/folders` instead would widen every other route beneath them —
-/// which is why `gate_matrix.hurl` pins an allowlisted route against a
-/// non-allowlisted sibling.
-pub const ANONYMOUS_ALLOWLISTED_ROUTES: [&str; 7] = [
-    "/api/folders/{id}",
-    "/api/folders/{id}/resources",
-    "/api/folders/{id}/ancestors",
-    "/api/folders/{id}/download",
-    "/api/files/{id}",
-    "/api/files/{id}/thumbnail/{size}",
-    "/api/files/{id}/metadata",
-];
-
+/// The visitor-reachable routes come from `ANONYMOUS_ALLOWLIST` itself,
+/// not a copy of it. An earlier version of this file duplicated the seven
+/// paths and cross-checked the two lists with a test — which defended the
+/// duplication instead of removing it.
 const INTERNAL_ONLY: [Condition; 1] = [Condition::role(MinRole::Internal)];
 const OWNER_ONLY: [Condition; 1] = [Condition::role(MinRole::Owner)];
 const VISITOR_OK: [Condition; 1] = [Condition::visitor_allowed()];
@@ -189,8 +176,21 @@ pub fn declarations() -> PolicyRegistry {
     //
     // The layer itself STAYS: it needs `MatchedPath` and must remain a
     // `route_layer`. What folds is the DECISION — see § Fold in.
-    for route in ANONYMOUS_ALLOWLISTED_ROUTES {
-        reg.declare(Site::RestPrefix(route), VISITOR_OK.to_vec());
+    // GET ONLY, and `Site::Exact` for exactly that reason:
+    // `anonymous_may_reach` refuses every non-GET method before it even
+    // looks at the list. Three of these paths carry one —
+    // `DELETE /api/folders/{id}`, `DELETE /api/files/{id}` and
+    // `PUT /api/files/{id}/thumbnail/{size}` — so a path-level
+    // declaration would hand a share VISITOR the ability to delete a file
+    // or folder.
+    //
+    // That is not hypothetical: this file declared them path-level until
+    // `ANONYMOUS_ALLOWLIST`'s GET check was read properly. Nothing was
+    // exploitable, because the layer still ran and refused the non-GET —
+    // which is the whole reason the policy shadows the layer before
+    // replacing it.
+    for route in ANONYMOUS_ALLOWLIST {
+        reg.declare(Site::Exact(Op::Rest("GET", route)), VISITOR_OK.to_vec());
     }
 
     reg
@@ -290,11 +290,7 @@ mod tests {
         // check fires on the ones this test does not name and the
         // compile fails for an unrelated reason.
         let mut ops = dav_ops();
-        ops.extend(
-            ANONYMOUS_ALLOWLISTED_ROUTES
-                .iter()
-                .map(|r| Op::Rest("GET", r)),
-        );
+        ops.extend(ANONYMOUS_ALLOWLIST.iter().map(|r| Op::Rest("GET", r)));
         ops.extend([
             Op::Rest("POST", "/api/admin/transfer-ownership"),
             Op::Rest("GET", "/api/folders"),
@@ -379,22 +375,51 @@ mod tests {
         }
     }
 
-    /// The allowlist is copied verbatim from the middleware, so a route
-    /// added there and not here would silently lose visitor access. Seven
-    /// is the count today; changing it must be deliberate.
+    /// A VISITOR must not be admitted to a non-GET method on an
+    /// allowlisted path. `anonymous_may_reach` refuses every non-GET
+    /// before consulting the list, and three of the seven paths carry
+    /// one — so a path-level declaration would hand a share visitor
+    /// `DELETE /api/files/{id}`.
+    ///
+    /// This file HAD that bug. It was invisible because the layer still
+    /// ran, which is what shadowing is for; the pin is what makes it
+    /// stay fixed once the layer is gone.
     #[test]
-    fn the_allowlist_transcription_matches_the_middleware() {
-        use crate::interfaces::middleware::anonymous_allowlist::ANONYMOUS_ALLOWLIST;
+    fn a_visitor_is_not_admitted_to_a_non_get_on_an_allowlisted_path() {
+        // Every DECLARED operation has to appear, or the orphan check
+        // fires on the ones this test does not name.
+        let ops: Vec<Op> = ANONYMOUS_ALLOWLIST
+            .iter()
+            .map(|r| Op::Rest("GET", r))
+            .chain([
+                Op::Rest("DELETE", "/api/files/{id}"),
+                Op::Rest("DELETE", "/api/folders/{id}"),
+                Op::Rest("PUT", "/api/files/{id}/thumbnail/{size}"),
+                Op::Rest("POST", "/api/playlists"),
+                Op::Rest("POST", "/api/address-books"),
+                Op::Rest("GET", "/api/files/recent-changes"),
+                Op::Rest("POST", "/api/admin/transfer-ownership"),
+            ])
+            .chain(dav_ops())
+            .collect();
+        let table = declarations().compile_all(&ops).expect("compiles");
 
-        assert_eq!(
-            ANONYMOUS_ALLOWLISTED_ROUTES.len(),
-            ANONYMOUS_ALLOWLIST.len(),
-            "the allowlist changed and this transcription did not"
-        );
-        for route in ANONYMOUS_ALLOWLIST {
-            assert!(
-                ANONYMOUS_ALLOWLISTED_ROUTES.contains(route),
-                "{route} is allowlisted in the middleware but not declared here"
+        for r in ANONYMOUS_ALLOWLIST {
+            assert_eq!(
+                table.get(&Op::Rest("GET", r)).unwrap().principal,
+                MinPrincipal::Visitor,
+                "GET {r} must admit a visitor"
+            );
+        }
+        for write in [
+            Op::Rest("DELETE", "/api/files/{id}"),
+            Op::Rest("DELETE", "/api/folders/{id}"),
+            Op::Rest("PUT", "/api/files/{id}/thumbnail/{size}"),
+        ] {
+            assert_eq!(
+                table.get(&write).unwrap().principal,
+                MinPrincipal::User,
+                "{write} must NOT admit a visitor — the allowlist is GET-only"
             );
         }
     }
