@@ -2,7 +2,12 @@ use crate::application::ports::scope_ports::{Condition, MinRole};
 use crate::application::services::batch_operations::BatchOperationService;
 use crate::application::services::scope_table::PolicyRegistry;
 use crate::common::di::AppState;
-use crate::interfaces::api::policy_router::{GatedRouter, Policied};
+use crate::interfaces::api::policy_router::{GatedRouter, Policied, get as policy_get};
+
+/// The seven share-visitor-reachable GETs all carry this one condition.
+/// Declared per VERB: three of their paths also serve a write, which no
+/// visitor may reach.
+const VISITOR: [Condition; 1] = [Condition::visitor_allowed()];
 use axum::{
     Router,
     body::Body,
@@ -229,35 +234,45 @@ pub fn create_api_routes(app_state: &Arc<AppState>) -> (Router<Arc<AppState>>, P
 
     // Basic folder listing (no caller-flag enrichment needed — flags
     // come from the per-row SQL EXISTS in the listing repo).
-    let folders_basic_router = Router::new()
+    let folders_basic_router = GatedRouter::new()
         .route("/", get(list_root_folders))
-        .route("/{id}/resources", get(list_folder_resources))
+        // Reachable by a public-share VISITOR, per verb: the GET only.
+        .route(
+            "/{id}/resources",
+            policy_get(list_folder_resources).policy(VISITOR),
+        )
         .with_state(folder_service.clone());
 
     // Single-item CRUD emits a FolderDto to the SPA and MUST carry
     // authoritative `is_favorite` / `is_shared` flags. The impls call
     // the `caller_flags` enrichment helper via
     // `state.favorites_service`, so the full `AppState` is required.
-    let folders_crud_router = Router::new()
+    let folders_crud_router = GatedRouter::new()
         .route("/", post(create_folder))
-        .route("/{id}", get(get_folder))
+        .route("/{id}", policy_get(get_folder).policy(VISITOR))
         // Ancestor chain for the shared breadcrumb component — one
         // round-trip vs the pre-2026-07-26 per-segment `getFolder` walk
         // on the /files client. Returns caller-visible parents (walk
         // stops at share/drive-membership boundary) + access_source.
-        .route("/{id}/ancestors", get(get_folder_ancestors))
+        .route(
+            "/{id}/ancestors",
+            policy_get(get_folder_ancestors).policy(VISITOR),
+        )
         .route("/{id}/upload-preflight", post(upload_preflight))
         .route("/{id}/rename", put(rename_folder))
         .route("/{id}/move", put(move_folder))
         .with_state(app_state.clone());
 
     // Special route for ZIP download that requires AppState instead of just FolderService
-    let folder_zip_router = Router::new()
-        .route("/{id}/download", get(download_folder_zip))
+    let folder_zip_router = GatedRouter::new()
+        .route(
+            "/{id}/download",
+            policy_get(download_folder_zip).policy(VISITOR),
+        )
         .with_state(app_state.clone());
 
     // Create folder operations that use trash (requires full AppState)
-    let folders_ops_router = Router::new().route("/{id}", delete(delete_folder_with_trash));
+    let folders_ops_router = GatedRouter::new().route("/{id}", delete(delete_folder_with_trash));
 
     // Merge the routers
     let folders_router = folders_basic_router
@@ -266,7 +281,7 @@ pub fn create_api_routes(app_state: &Arc<AppState>) -> (Router<Arc<AppState>>, P
         .merge(folder_zip_router);
 
     // Create file routes for basic operations and trash-enabled delete
-    let basic_file_router = Router::new()
+    let basic_file_router = GatedRouter::new()
         .route("/", get(list_files_query))
         .route("/upload", post(upload_file_with_thumbnails))
         .route("/by-hash", post(create_file_by_hash))
@@ -275,13 +290,23 @@ pub fn create_api_routes(app_state: &Arc<AppState>) -> (Router<Arc<AppState>>, P
         .route("/delta/commit", post(delta_commit))
         .route("/delta/download", post(delta_download_chunks))
         .route("/{id}/manifest", get(delta_file_manifest))
-        .route("/{id}", get(download_file))
         .route("/{id}/content", put(replace_file_content))
+        // Visitor-reachable, GET only — the DELETE on this same path
+        // must NOT be, which is why the declaration names the verb.
+        .route("/{id}", policy_get(download_file).policy(VISITOR))
+        // Split rather than chained (`get(..).put(..)`), so the GET can
+        // be visitor-reachable while the PUT is not. Two `route()` calls
+        // on one path with DIFFERENT verbs merge; axum panics only on a
+        // duplicate SAME method.
         .route(
             "/{id}/thumbnail/{size}",
-            get(get_thumbnail).put(upload_thumbnail),
+            policy_get(get_thumbnail).policy(VISITOR),
         )
-        .route("/{id}/metadata", get(get_file_metadata))
+        .route("/{id}/thumbnail/{size}", put(upload_thumbnail))
+        .route(
+            "/{id}/metadata",
+            policy_get(get_file_metadata).policy(VISITOR),
+        )
         .layer(DefaultBodyLimit::max({
             // Use architecture-appropriate body limit: 10 GB on 64-bit, 1 GB on 32-bit
             #[cfg(target_pointer_width = "64")]
@@ -293,7 +318,7 @@ pub fn create_api_routes(app_state: &Arc<AppState>) -> (Router<Arc<AppState>>, P
         .with_state(app_state.clone());
 
     // File operations with trash support
-    let file_operations_router = Router::new()
+    let file_operations_router = GatedRouter::new()
         .route("/{id}", delete(delete_file))
         .route("/{id}/move", put(move_file_simple))
         .route("/{id}/rename", put(rename_file));
@@ -317,10 +342,13 @@ pub fn create_api_routes(app_state: &Arc<AppState>) -> (Router<Arc<AppState>>, P
     if app_state.core.config.features.enable_recent_changes {
         use crate::interfaces::api::handlers::recent_changes_handler;
         files_router = files_router.merge(
-            Router::new()
+            GatedRouter::new()
                 .route(
                     "/recent-changes",
-                    get(recent_changes_handler::list_recent_changes),
+                    // Internal users only: a feed of colleagues' activity
+                    // aggregates more than a guest's invitation implied.
+                    policy_get(recent_changes_handler::list_recent_changes)
+                        .policy([Condition::role(MinRole::Internal)]),
                 )
                 .with_state(app_state.clone()),
         );
@@ -508,8 +536,8 @@ pub fn create_api_routes(app_state: &Arc<AppState>) -> (Router<Arc<AppState>>, P
         .with_state(app_state.clone());
 
     let mut router = GatedRouter::<Arc<AppState>>::new()
-        .nest("/folders", folders_router)
-        .nest("/files", files_router)
+        .nest_gated("/folders", folders_router)
+        .nest_gated("/files", files_router)
         .nest("/uploads", chunked_upload_router)
         .nest("/dedup", dedup_router)
         .nest("/batch", batch_router)

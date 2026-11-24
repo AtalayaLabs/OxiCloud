@@ -227,7 +227,7 @@ pub async fn policy_gate_layer(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::application::ports::scope_ports::{Access, MinPrincipal, MinRole, Policy, Scope};
+    use crate::application::ports::scope_ports::{Access, MinRole, Policy, Scope};
 
     /// A DAV request resolves to its METHOD, not its path: all three
     /// surfaces have one `any` handler, so a path-keyed lookup could not
@@ -333,10 +333,8 @@ mod tests {
             .expect("compiles");
         assert_eq!(transfer.role, Some(MinRole::Owner));
 
-        let allowlisted = registry()
-            .compile_one(Op::Rest("GET", "/api/files/{id}"))
-            .expect("compiles");
-        assert_eq!(allowlisted.principal, MinPrincipal::Visitor);
+        // The visitor declarations live at their routes now, so the
+        // fallback table a unit test sees does not hold them.
 
         let undeclared = registry()
             .compile_one(Op::Rest("GET", "/api/folders"))

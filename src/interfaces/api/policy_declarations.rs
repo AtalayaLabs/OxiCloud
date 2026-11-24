@@ -18,7 +18,6 @@
 
 use crate::application::ports::scope_ports::{Access, Condition, MinRole, Op, Scope};
 use crate::application::services::scope_table::{PolicyRegistry, Site};
-use crate::interfaces::middleware::anonymous_allowlist::ANONYMOUS_ALLOWLIST;
 
 /// The DAV areas and the surfaces that reach them.
 ///
@@ -99,7 +98,6 @@ fn segment_prefix(path: &str, prefix: &str) -> bool {
 /// duplication instead of removing it.
 const INTERNAL_ONLY: [Condition; 1] = [Condition::role(MinRole::Internal)];
 const OWNER_ONLY: [Condition; 1] = [Condition::role(MinRole::Owner)];
-const VISITOR_OK: [Condition; 1] = [Condition::visitor_allowed()];
 
 /// Everything the four folded gates say, in one place.
 ///
@@ -145,7 +143,6 @@ pub fn declarations() -> PolicyRegistry {
     for op in [
         Op::Rest("POST", "/api/playlists"),
         Op::Rest("POST", "/api/address-books"),
-        Op::Rest("GET", "/api/files/recent-changes"),
     ] {
         reg.declare(Site::Exact(op), INTERNAL_ONLY.to_vec());
     }
@@ -172,26 +169,12 @@ pub fn declarations() -> PolicyRegistry {
         OWNER_ONLY.to_vec(),
     );
 
-    // ── anonymous_allowlist_layer (1 site, 7 routes) ──
+    // The seven share-visitor GETs are NOT declared here any more:
+    // each is `policy_get(handler).policy([visitor_allowed()])` at its
+    // route in `routes.rs`, per VERB — three of those paths also serve a
+    // write, and a path-level declaration handed a visitor the DELETE.
     //
-    // The layer itself STAYS: it needs `MatchedPath` and must remain a
-    // `route_layer`. What folds is the DECISION — see § Fold in.
-    // GET ONLY, and `Site::Exact` for exactly that reason:
-    // `anonymous_may_reach` refuses every non-GET method before it even
-    // looks at the list. Three of these paths carry one —
-    // `DELETE /api/folders/{id}`, `DELETE /api/files/{id}` and
-    // `PUT /api/files/{id}/thumbnail/{size}` — so a path-level
-    // declaration would hand a share VISITOR the ability to delete a file
-    // or folder.
-    //
-    // That is not hypothetical: this file declared them path-level until
-    // `ANONYMOUS_ALLOWLIST`'s GET check was read properly. Nothing was
-    // exploitable, because the layer still ran and refused the non-GET —
-    // which is the whole reason the policy shadows the layer before
-    // replacing it.
-    for route in ANONYMOUS_ALLOWLIST {
-        reg.declare(Site::Exact(Op::Rest("GET", route)), VISITOR_OK.to_vec());
-    }
+    // `GET /api/files/recent-changes` moved for the same reason.
 
     reg
 }
@@ -213,7 +196,7 @@ pub fn dav_ops() -> Vec<Op> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::application::ports::scope_ports::{MinPrincipal, Policy};
+    use crate::application::ports::scope_ports::Policy;
 
     /// Compile against the REAL operation list: every REST path in
     /// `resources/gen/openapi.json` crossed with its methods, plus the DAV
@@ -290,7 +273,6 @@ mod tests {
         // check fires on the ones this test does not name and the
         // compile fails for an unrelated reason.
         let mut ops = dav_ops();
-        ops.extend(ANONYMOUS_ALLOWLIST.iter().map(|r| Op::Rest("GET", r)));
         ops.extend([
             Op::Rest("POST", "/api/admin/transfer-ownership"),
             Op::Rest("GET", "/api/folders"),
@@ -329,32 +311,19 @@ mod tests {
             Some(MinRole::Owner)
         );
 
-        // anonymous_allowlist_layer — per ROUTE
-        assert_eq!(
-            table
-                .get(&Op::Rest("GET", "/api/files/{id}"))
-                .unwrap()
-                .principal,
-            MinPrincipal::Visitor
-        );
-
-        // ...and its non-allowlisted sibling is untouched. This is the
-        // assertion that fails if someone declares the subtree instead of
-        // the seven routes.
-        assert_eq!(
-            table.get(&Op::Rest("GET", "/api/folders")),
-            Some(&Policy::default()),
-            "a non-allowlisted route must keep the safe default"
-        );
+        // The visitor declarations are no longer here — they are at their
+        // routes. `policy_router`'s non-leak test covers the shape and
+        // `gate_matrix.hurl` the wiring.
 
         // require_internal_user_layer's non-DAV sites gate ONE METHOD.
         // The GET siblings must stay open, or external users lose the
         // ability to list the address books shared WITH them — which
         // `routes.rs` calls out as deliberate.
+        // `recent-changes` is declared at its route now, so it is not in
+        // the table a unit test sees.
         for gated in [
             Op::Rest("POST", "/api/playlists"),
             Op::Rest("POST", "/api/address-books"),
-            Op::Rest("GET", "/api/files/recent-changes"),
         ] {
             assert_eq!(
                 table.get(&gated).unwrap().role,
@@ -375,52 +344,11 @@ mod tests {
         }
     }
 
-    /// A VISITOR must not be admitted to a non-GET method on an
-    /// allowlisted path. `anonymous_may_reach` refuses every non-GET
-    /// before consulting the list, and three of the seven paths carry
-    /// one — so a path-level declaration would hand a share visitor
-    /// `DELETE /api/files/{id}`.
-    ///
-    /// This file HAD that bug. It was invisible because the layer still
-    /// ran, which is what shadowing is for; the pin is what makes it
-    /// stay fixed once the layer is gone.
-    #[test]
-    fn a_visitor_is_not_admitted_to_a_non_get_on_an_allowlisted_path() {
-        // Every DECLARED operation has to appear, or the orphan check
-        // fires on the ones this test does not name.
-        let ops: Vec<Op> = ANONYMOUS_ALLOWLIST
-            .iter()
-            .map(|r| Op::Rest("GET", r))
-            .chain([
-                Op::Rest("DELETE", "/api/files/{id}"),
-                Op::Rest("DELETE", "/api/folders/{id}"),
-                Op::Rest("PUT", "/api/files/{id}/thumbnail/{size}"),
-                Op::Rest("POST", "/api/playlists"),
-                Op::Rest("POST", "/api/address-books"),
-                Op::Rest("GET", "/api/files/recent-changes"),
-                Op::Rest("POST", "/api/admin/transfer-ownership"),
-            ])
-            .chain(dav_ops())
-            .collect();
-        let table = declarations().compile_all(&ops).expect("compiles");
-
-        for r in ANONYMOUS_ALLOWLIST {
-            assert_eq!(
-                table.get(&Op::Rest("GET", r)).unwrap().principal,
-                MinPrincipal::Visitor,
-                "GET {r} must admit a visitor"
-            );
-        }
-        for write in [
-            Op::Rest("DELETE", "/api/files/{id}"),
-            Op::Rest("DELETE", "/api/folders/{id}"),
-            Op::Rest("PUT", "/api/files/{id}/thumbnail/{size}"),
-        ] {
-            assert_eq!(
-                table.get(&write).unwrap().principal,
-                MinPrincipal::User,
-                "{write} must NOT admit a visitor — the allowlist is GET-only"
-            );
-        }
-    }
+    // The visitor declarations moved to their routes, so their
+    // assertions moved too: the mechanism is pinned by
+    // `policy_router::tests::the_visitor_declaration_does_not_leak_up_down_or_sideways`
+    // (declared GET admits a visitor; the same path's other verb, the
+    // collection above and a subpath below do not), and the production
+    // wiring by `gate_matrix.hurl`. A unit test here could not see them —
+    // building the real router needs a full `AppState`.
 }

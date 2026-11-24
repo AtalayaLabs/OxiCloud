@@ -289,6 +289,21 @@ where
         self
     }
 
+    /// `Router::with_state`, carrying the declarations across the state
+    /// change. The sub-routers in `routes.rs` each supply their own
+    /// service state, so without this a declaration written at a route
+    /// could not survive to the nest that names its path.
+    #[must_use]
+    pub fn with_state<S2>(self, state: S) -> GatedRouter<S2>
+    where
+        S2: Clone + Send + Sync + 'static,
+    {
+        GatedRouter {
+            router: self.router.with_state(state),
+            registry: self.registry,
+        }
+    }
+
     /// The router to serve, and the declarations to compile.
     ///
     /// Returns both rather than compiling here: compilation needs the
@@ -547,6 +562,51 @@ mod tests {
             "a SUBPATH must NOT inherit the item's declaration — exact \
              means exact, where a prefix would have swallowed it"
         );
+    }
+
+    /// Two `route()` calls on ONE path with DIFFERENT verbs merge, which
+    /// is what lets a chained `get(h).put(h2)` be split so each verb
+    /// carries its own policy. axum panics only on a duplicate SAME
+    /// method, so this is the difference between "overlapping" and
+    /// "complementary" — asserted because `routes.rs` relies on it and a
+    /// panic would land at router construction, which no unit test
+    /// reaches.
+    #[tokio::test]
+    async fn two_routes_on_one_path_with_different_verbs_merge() {
+        use axum::body::Body;
+        use axum::extract::Request;
+        use axum::http::StatusCode;
+        use tower::ServiceExt;
+
+        let (router, registry) = GatedRouter::<()>::new()
+            .route(
+                "/{id}",
+                self::get(noop).policy([Condition::visitor_allowed()]),
+            )
+            .route("/{id}", axum::routing::put(noop))
+            .finish();
+
+        // Both verbs answer.
+        for method in ["GET", "PUT"] {
+            let res = router
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method(method)
+                        .uri("/x")
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(res.status(), StatusCode::OK, "{method} must route");
+        }
+
+        // And only the GET is declared.
+        let ops = [Op::Rest("GET", "/{id}"), Op::Rest("PUT", "/{id}")];
+        let table = registry.compile_all(&ops).expect("compiles");
+        assert_eq!(table.get(&ops[0]).unwrap().principal, MinPrincipal::Visitor);
+        assert_eq!(table.get(&ops[1]), Some(&Policy::default()));
     }
 
     /// § 2b's "a policy naming no live operation". The only check that
