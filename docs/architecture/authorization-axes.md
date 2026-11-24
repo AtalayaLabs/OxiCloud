@@ -219,10 +219,12 @@ A top-level create is a **gate** question wearing a grant's clothes.
 │        401 invalid_dpop_proof — the REQUEST is untrustworthy, not
 │        the caller. Same category as CSRF and signature checks.
 │
-├─[3] route layers — the hand-wired gates                   ── GATE ──
-│     ├── require_internal_user_layer  → get_user_flags again (same ⚡)
-│     ├── require_no_password_change_pending_layer   (a scope narrowing)
-│     └── anonymous_allowlist_layer                  (needs MatchedPath)
+├─[3] policy gate — ONE lookup, one evaluate                ── GATE ──
+│     │   the operation's compiled Policy vs the caller already in
+│     │   the extensions. Field reads: no DB round trip, and ONCE
+│     │   rather than once per nesting level.
+│     └── require_no_password_change_pending_layer   (a scope narrowing,
+│         NOT an axis — stays a layer)
 │
 ├─[4] handler — extracts AuthUser / CurrentUserId from extensions
 │                NO authz here, by rule
@@ -251,6 +253,57 @@ Three things worth reading off the diagram:
   expiry.
 - **A DB failure in a Gate-axis check answers 503, never a denial.** A transient
   fault must not read as "you are not an admin" — see `auth-model.md`.
+
+## One place to declare a route and its policy
+
+**`src/interfaces/api/routes.rs`.** Route, layer and policy are written
+together, per verb:
+
+```rust
+// the subtree
+router.nest("/admin", admin_router.policy([Condition::role(MinRole::Admin)]))
+
+// one verb on one path — the other verbs on it are untouched
+.route("/{id}", get(download).policy([Condition::visitor_allowed()]))
+.route("/{id}", delete(remove))          // no policy: the safe default
+```
+
+A reader of that file sees all three without cross-referencing, and the
+path appears exactly once — `.policy()` attaches conditions, and the
+`nest`/`route` call supplies the path.
+
+**Per VERB, not per path.** `get(h)` and `delete(h)` here are OxiCloud's
+constructors (`interfaces/api/policy_router.rs`), not axum's, because
+axum's return a `MethodRouter` that has forgotten which verb it is — so
+`.policy()` on one could only declare for the whole path.
+
+That is structural, not tidiness. One path routinely serves a
+visitor-readable GET and a write that no visitor may reach:
+`/api/files/{id}` is a download and a delete. A path-level
+`visitor_allowed()` there hands a share visitor the DELETE. `.policy()`
+on a `MethodRouter` is a compile error for that reason.
+
+A declaration leaks in none of the three directions, which
+`policy_router`'s non-leak test pins end to end:
+
+| operation | policy | why |
+|---|---|---|
+| `GET /api/files/{id}` | `Visitor` | declared |
+| `DELETE /api/files/{id}` | `User` | same path, other verb |
+| `GET /api/files` | `User` | the collection — upward |
+| `GET /api/files/{id}/versions` | `User` | a subpath — downward |
+
+A visitor holds a key to one share, not a listing of everything and not
+the right to delete it.
+
+**What may NOT be declared there**, and so lives in
+`interfaces/api/policy_declarations.rs`: operations with no route to
+attach to. A DAV surface has one `any` handler, so its operation is an
+`(area, access)` pair; the WS bus has one route, so its operation is the
+`rt.*` method; collab has one, so its operation is the frame kind. Nothing
+else belongs in that file — and never a copy of a list that exists
+elsewhere, since a cross-check test over two copies defends the
+duplication instead of removing it.
 
 ## How the axes compose — worked, in the planned form
 
@@ -353,9 +406,7 @@ Four things these make visible:
 - **The same path can carry different policies per method.** `GET
   /files/{id}` admits a visitor; `PUT` on the identical path does not,
   and needs `rw` rather than `ro`. That is only expressible because the
-  table is keyed by **operation** (method + path), not by route — which
-  is also how `ANONYMOUS_ALLOWLIST` behaves today, with a `GET`-only
-  check in the layer.
+  table is keyed by **operation** (method + path), not by route.
 - **A floor plus per-method tightening needs the chain rule.** The nest
   says `scope(Files, ro)` and a child says `scope(Files, rw)` — the same
   axis twice, legal because it is a CHAIN and the fold takes the

@@ -2182,23 +2182,40 @@ gating anything. Nothing else in the design notices. It immediately
 earned its place by catching two tests in `scope_table` that declared
 prefixes covering no operation.
 
-**Policies attach per ACTION, not per path.** `.policy()` on a `Router`
-covers a subtree and on a `MethodRouter` covers every method that router
-holds — which is wrong wherever two verbs on one path need different
-policies, and `ANONYMOUS_ALLOWLIST` (GET-only, on paths that also carry
-DELETE) proves that is not hypothetical. The shape to wire is per verb:
+**ONE place to declare a route and its policy: `routes.rs`, per VERB.**
+Route, layer and policy are written together — a reader sees all three
+without cross-referencing, and the path appears exactly once.
 
 ```rust
-.route("/{id}", get(read).policy([visitor_allowed()]))
-.route("/{id}", delete(remove).policy([role(Internal)]))
+router.nest("/admin", admin_router.policy([Condition::role(MinRole::Admin)]))
+.route("/{id}", get(download).policy([Condition::visitor_allowed()]))
+.route("/{id}", delete(remove))          // no policy: the safe default
 ```
 
-Today `Site::Exact(Op::Rest(method, path))` expresses it, declared
-centrally. What is missing is the affordance at the route: axum's
-`get(h)` returns a `MethodRouter` that has forgotten it is GET, so the
-verb has to be re-stated. The fix is our own verb constructors that
-remember — a small wrapper in `policy_router`, not a change to the
-engine, since `Op::Rest` already carries the method.
+`get`/`post`/`put`/`delete`/`patch` are OxiCloud's (`policy_router.rs`),
+not axum's, because axum's return a `MethodRouter` that has forgotten its
+verb — so `.policy()` on one could only declare for the whole PATH.
+`.policy()` on a `MethodRouter` is therefore a COMPILE error. Not a
+nicety: `ANONYMOUS_ALLOWLIST` is GET-only and three of its seven paths
+also carry a write, so a path-level `visitor_allowed()` on
+`/api/files/{id}` grants a share visitor `DELETE` — which it did, until
+`c79955364`.
+
+A declaration leaks in none of three directions, pinned end to end
+through merge + nest + rebase, because `/api/files/{id}`'s GET and DELETE
+live in SEPARATE routers that are merged before being nested:
+
+| operation | policy | direction tested |
+|---|---|---|
+| `GET /api/files/{id}` | `Visitor` | declared |
+| `DELETE /api/files/{id}` | `User` | same path, other verb |
+| `GET /api/files` | `User` | upward, to the collection |
+| `GET /api/files/{id}/versions` | `User` | downward, to a subpath |
+
+**Nothing with a route may be declared centrally.**
+`policy_declarations.rs` holds only operations that HAVE no route: DAV
+(one `any` handler per surface → `(area, access)`), the WS `rt.*` methods,
+and collab frame kinds. Never a copy of a list that exists elsewhere.
 
 **`.policy()` cannot record its own path**, for the same reason: neither
 a `Router` nor a `MethodRouter` knows where it will be mounted. It
