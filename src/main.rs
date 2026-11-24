@@ -1168,6 +1168,14 @@ async fn run(config: common::config::AppConfig) -> Result<(), Box<dyn std::error
                 app_state.clone(),
                 require_internal_user_layer,
             ))
+            // SHADOW: the compiled policy runs alongside
+            // `require_internal_user_layer` above, not instead of it
+            // (PR 1 step 4-iii). `route_layer` rather than `layer` so an
+            // unmatched path stays a 404 instead of becoming a 401.
+            .route_layer(axum::middleware::from_fn_with_state(
+                app_state.clone(),
+                oxicloud::interfaces::middleware::policy::policy_gate_layer,
+            ))
             .layer(axum::middleware::from_fn_with_state(
                 app_state.clone(),
                 auth_middleware,
@@ -1185,6 +1193,14 @@ async fn run(config: common::config::AppConfig) -> Result<(), Box<dyn std::error
                 app_state.clone(),
                 require_internal_user_layer,
             ))
+            // SHADOW: the compiled policy runs alongside
+            // `require_internal_user_layer` above, not instead of it
+            // (PR 1 step 4-iii). `route_layer` rather than `layer` so an
+            // unmatched path stays a 404 instead of becoming a 401.
+            .route_layer(axum::middleware::from_fn_with_state(
+                app_state.clone(),
+                oxicloud::interfaces::middleware::policy::policy_gate_layer,
+            ))
             .layer(axum::middleware::from_fn_with_state(
                 app_state.clone(),
                 auth_middleware,
@@ -1201,6 +1217,14 @@ async fn run(config: common::config::AppConfig) -> Result<(), Box<dyn std::error
             .layer(axum::middleware::from_fn_with_state(
                 app_state.clone(),
                 require_internal_user_layer,
+            ))
+            // SHADOW: the compiled policy runs alongside
+            // `require_internal_user_layer` above, not instead of it
+            // (PR 1 step 4-iii). `route_layer` rather than `layer` so an
+            // unmatched path stays a 404 instead of becoming a 401.
+            .route_layer(axum::middleware::from_fn_with_state(
+                app_state.clone(),
+                oxicloud::interfaces::middleware::policy::policy_gate_layer,
             ))
             .layer(axum::middleware::from_fn_with_state(
                 app_state.clone(),
