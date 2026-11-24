@@ -141,6 +141,16 @@ impl PolicyRegistry {
         matched.into_iter().map(|(_, c)| c).collect()
     }
 
+    /// Compile ONE operation's chain.
+    ///
+    /// Used on the request path, where only one operation matters. The
+    /// whole-table validation — boot refusals and orphans — is
+    /// `compile_all`, run against the spec's operation list.
+    pub fn compile_one(&self, op: Op) -> Result<Policy, PolicyError> {
+        let chain = self.chain_for(op);
+        compile(op, &chain)
+    }
+
     /// Compile every operation in `ops`.
     ///
     /// Reports ALL errors rather than the first: a boot failure that
