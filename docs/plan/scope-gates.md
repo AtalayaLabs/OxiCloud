@@ -2109,7 +2109,7 @@ Landing them together means PR 2's risk rides in on PR 1's green suite.
 | 4-viii | REMOVE `require_internal_user_layer` from the DAV nests | **done** — `06a046593`, needs a matrix run |
 | 4-ix | REMOVE `require_internal_user_layer` entirely (+ its fail-open) | **done** — `7a6f939ae`, needs a matrix run |
 | 4-x | MOVE the ten `/api` declarations to their routes | not started — the only wide diff left |
-| 4-xi | REMOVE `require_admin` | not started — blocked on its `unauthenticated` audit arm |
+| 4-xi | REMOVE `require_admin` | not started — UNBLOCKED by `348e757d9` |
 | 4-xii | REMOVE `anonymous_allowlist_layer` | not started — needs 4-x first |
 | 4-xiii | collapse `music_create` / `contacts_create` | not started — they exist only for a layer that is gone |
 
@@ -2393,12 +2393,30 @@ change:
   header convention exists in-house and this follows it rather than
   inventing one.
 - **Audit.** Stay inside the `authz.*` domain aggregators already filter
-  (`authz.denied`, `authz.admin_denied`, `authz.external_user_blocked`
-  exist) rather than opening a `scope.*` one:
-  `authz.scope_denied` with `reason = "scope_not_granted" |
-  "access_insufficient"`, `authz.app_password_blocked`, and
-  `authz.elevation_required`. Per AGENTS.md every denial emits one
-  before returning.
+  rather than opening a `scope.*` one. The engine emits its OWN
+  vocabulary rather than reproducing each folded layer's pair
+  (`348e757d9`), one shape throughout — `<what>_required`:
+
+  | event | reason | cause |
+  |---|---|---|
+  | `authz.denied` | `authentication_required` | no credential |
+  | `authz.denied` | `user_session_required` | a visitor |
+  | `authz.denied` | `internal_user_required` | `MinRole::Internal` |
+  | `authz.denied` | `higher_role_required` | Admin / Owner, with `required` as a FIELD |
+  | `authz.scope_denied` | `scope_not_granted` | PR 2 |
+
+  Reproducing the old pairs was tried and rejected: AGENTS.md's rule is
+  that a new denial CAUSE gets a new reason, the mapping had already gone
+  wrong for `MinRole::Owner` (borrowing `server_owner.transfer_rejected`,
+  an event about one operation), and it encoded dead history. The ROLE is
+  a structured field, so one reason covers Admin and Owner.
+
+  Retired, for release notes: `authz.admin_denied`/`not_admin`,
+  `authz.external_user_blocked`/`internal_only_surface`,
+  `server_owner.transfer_rejected`/`caller_not_owner`,
+  `authz.denied`/`anonymous_not_authenticated`,
+  `authz.denied`/`anonymous_route_not_allowlisted`. Per AGENTS.md every
+  denial still emits one before returning.
 
 ### `sid` is on the caller
 
