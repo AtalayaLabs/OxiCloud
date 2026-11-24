@@ -819,6 +819,21 @@ pub fn create_api_routes(app_state: &Arc<AppState>) -> Router<Arc<AppState>> {
         .layer(axum::middleware::from_fn(
             crate::interfaces::middleware::auth::require_admin,
         ))
+        // SHADOW: the compiled policy runs alongside `require_admin`, not
+        // instead of it (PR 1 step 4-v). Both enforce, so a transcription
+        // that is too tight fails the matrix loudly while one that is too
+        // loose is still covered by the layer above.
+        //
+        // It also picks up the OWNER declaration on
+        // `/api/admin/transfer-ownership`, which `require_admin` cannot
+        // express — today that refusal happens in the service. The status
+        // (403) and the audit pair
+        // (`server_owner.transfer_rejected` / `caller_not_owner`) are
+        // unchanged; only the message differs, and nothing asserts it.
+        .route_layer(axum::middleware::from_fn_with_state(
+            app_state.clone(),
+            crate::interfaces::middleware::policy::policy_gate_layer,
+        ))
         .with_state(app_state.clone());
     router = router.nest("/admin", admin_router);
 

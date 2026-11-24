@@ -445,6 +445,70 @@ mod tests {
         );
     }
 
+    /// **`MatchedPath` includes NEST prefixes, and every declaration
+    /// depends on it.** `/api/admin` is declared as a prefix while the
+    /// admin router is nested at `/admin` inside one nested at `/api`, so
+    /// if `MatchedPath` reported only `/users` the lookup would miss and
+    /// every admin route would silently fall back to the default policy.
+    ///
+    /// In shadow that is masked — `require_admin` still refuses — which
+    /// is exactly why it needs a test rather than a matrix run: the gate
+    /// would be doing nothing and everything would still be green.
+    ///
+    /// A plain user against a nested `/api/admin/users` must be REFUSED.
+    /// If the prefix were lost, the policy would be the default
+    /// (`principal = User`) and this would pass with 200.
+    #[tokio::test]
+    async fn the_matched_path_carries_nest_prefixes() {
+        use axum::body::Body;
+        use axum::{Router, routing::get};
+        use tower::ServiceExt;
+
+        async fn ok() -> &'static str {
+            "reached the handler"
+        }
+
+        async fn insert_plain_user(mut request: Request, next: Next) -> Response {
+            request.extensions_mut().insert(Arc::new(CurrentCaller {
+                id: uuid::Uuid::new_v4(),
+                username: Arc::from("plain"),
+                email: Arc::from("plain@example.com"),
+                kind: crate::domain::entities::user::CallerKind::Internal(
+                    crate::domain::entities::user::UserRole::User,
+                ),
+                dpop_jkt: None,
+                token: Default::default(),
+            }));
+            next.run(request).await
+        }
+
+        let admin: Router<()> = Router::new()
+            .route("/users", get(ok))
+            .route_layer(axum::middleware::from_fn(gate_without_state));
+        let api: Router<()> = Router::new().nest("/admin", admin);
+        let app: Router<()> = Router::new()
+            .nest("/api", api)
+            .layer(axum::middleware::from_fn(insert_plain_user));
+
+        let res = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/admin/users")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            res.status(),
+            StatusCode::FORBIDDEN,
+            "a plain user must be refused at /api/admin/users — a 200 here \
+             means the nest prefixes were lost and the declaration never \
+             matched"
+        );
+    }
+
     /// The gate's logic without the `State` it never reads, so a test can
     /// compose it without building an `AppState`.
     async fn gate_without_state(request: Request, next: Next) -> Response {
