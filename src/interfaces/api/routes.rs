@@ -2,7 +2,9 @@ use crate::application::ports::scope_ports::{Condition, MinRole};
 use crate::application::services::batch_operations::BatchOperationService;
 use crate::application::services::scope_table::PolicyRegistry;
 use crate::common::di::AppState;
-use crate::interfaces::api::policy_router::{GatedRouter, Policied, get as policy_get};
+use crate::interfaces::api::policy_router::{
+    GatedRouter, Policied, get as policy_get, post as policy_post,
+};
 
 /// The seven share-visitor-reachable GETs all carry this one condition.
 /// Declared per VERB: three of their paths also serve a write, which no
@@ -660,19 +662,17 @@ pub fn create_api_routes(app_state: &Arc<AppState>) -> (Router<Arc<AppState>>, P
         // holds no handle that can resolve a user, so the router is
         // where this costs nothing. A service-layer gate is the better
         // home the day `MusicService` grows a user port.
-        // `POST /` is a separate router only because it carried
-        // `require_internal_user_layer` while the GET on the same path
-        // stayed open. The gate is now
-        // `Op::Rest("POST", "/api/playlists")` in `policy_declarations`,
-        // so nothing holds the two apart except the layer that is gone —
-        // but the split stays until the declaration is proved in place,
-        // because collapsing it in the same commit would make a
-        // regression unattributable.
-        let music_create = Router::new()
-            .route("/", post(music_handler::create_playlist))
-            .with_state(music_svc.clone());
-
-        let music_router = Router::new()
+        let music_router = GatedRouter::new()
+            // Creating a playlist is internal-only: the service seeds the
+            // caller an Owner grant and has no user port to gate on. The
+            // LIST on this same path stays open, which is why the
+            // declaration names the verb — and why `POST /` no longer
+            // needs a router of its own just to carry a layer.
+            .route(
+                "/",
+                policy_post(music_handler::create_playlist)
+                    .policy([Condition::role(MinRole::Internal)]),
+            )
             .route("/", get(music_handler::list_playlists))
             .route("/{playlist_id}", get(music_handler::get_playlist))
             .route("/{playlist_id}", put(music_handler::update_playlist))
@@ -703,10 +703,9 @@ pub fn create_api_routes(app_state: &Arc<AppState>) -> (Router<Arc<AppState>>, P
                 "/audio-metadata/{file_id}",
                 get(music_handler::get_audio_metadata),
             )
-            .with_state(music_svc.clone())
-            .merge(music_create);
+            .with_state(music_svc.clone());
 
-        router = router.nest("/playlists", music_router);
+        router = router.nest_gated("/playlists", music_router);
         tracing::info!("Music routes initialized");
     }
 
@@ -749,14 +748,17 @@ pub fn create_api_routes(app_state: &Arc<AppState>) -> (Router<Arc<AppState>>, P
         // "OxiCloud Users" book from them). Gating the nest would make
         // that branch dead code and cut guests off from books shared
         // with them.
-        // Same shape as `music_create`: a separate router only to carry
-        // the layer for POST while GET stayed open. Gate is now
-        // `Op::Rest("POST", "/api/address-books")`.
-        let contacts_create = Router::new()
-            .route("/", post(contacts_handler::create_address_book))
-            .with_state(contacts_state.clone());
-
-        let contacts_router = Router::new()
+        let contacts_router = GatedRouter::new()
+            // Creating an address book is internal-only. LISTING stays
+            // open: `list_address_books` deliberately handles an external
+            // caller, hiding the system "OxiCloud Users" book from them,
+            // and gating the path would make that branch dead code and
+            // cut guests off from books shared with them.
+            .route(
+                "/",
+                policy_post(contacts_handler::create_address_book)
+                    .policy([Condition::role(MinRole::Internal)]),
+            )
             .route("/", get(contacts_handler::list_address_books))
             .route(
                 "/{book_id}",
@@ -792,10 +794,9 @@ pub fn create_api_routes(app_state: &Arc<AppState>) -> (Router<Arc<AppState>>, P
                 "/{book_id}/groups/{group_id}/contacts/{contact_id}",
                 delete(contacts_handler::remove_contact_from_group),
             )
-            .with_state(contacts_state)
-            .merge(contacts_create);
+            .with_state(contacts_state);
 
-        router = router.nest("/address-books", contacts_router);
+        router = router.nest_gated("/address-books", contacts_router);
         tracing::info!("Contacts REST API routes initialized");
     }
 

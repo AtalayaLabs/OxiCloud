@@ -125,27 +125,10 @@ pub fn declarations() -> PolicyRegistry {
         }
     }
 
-    // ── require_internal_user_layer, the three NON-DAV sites ──
-    //
-    // `Site::Exact`, not `RestPrefix`, because two of these gate ONE
-    // METHOD on a path whose other methods stay open — the layer is on a
-    // sub-router holding only the create route (`routes.rs`:
-    // `music_create`, and the address-book equivalent). A path-level
-    // declaration would widen the gate to GET and cut external users off
-    // from listing the books shared WITH them, which the comment at that
-    // site calls out as deliberate: "gating the nest would make that
-    // branch dead code and cut guests off from books shared with them".
-    //
-    // This is the per-method case I earlier recorded as absent: the two
-    // per-method layers in the tree are rate limiters, but these two
-    // sub-routers achieve per-method AUTHZ by routing, which a grep for
-    // `.layer(` on a `MethodRouter` does not find.
-    for op in [
-        Op::Rest("POST", "/api/playlists"),
-        Op::Rest("POST", "/api/address-books"),
-    ] {
-        reg.declare(Site::Exact(op), INTERNAL_ONLY.to_vec());
-    }
+    // The internal-only POSTs (`/api/playlists`, `/api/address-books`)
+    // and `GET /api/files/recent-changes` are declared at their routes,
+    // per verb — the LIST on each of those paths stays open, so the verb
+    // is the point.
 
     // The `/api/admin` subtree is NOT declared here: it is declared at
     // its nest in `routes.rs` — `admin_router.policy([role(Admin)])` —
@@ -196,7 +179,6 @@ pub fn dav_ops() -> Vec<Op> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::application::ports::scope_ports::Policy;
 
     /// Compile against the REAL operation list: every REST path in
     /// `resources/gen/openapi.json` crossed with its methods, plus the DAV
@@ -278,11 +260,6 @@ mod tests {
             Op::Rest("GET", "/api/folders"),
             // The three non-DAV internal-user sites, plus the GET
             // siblings that must stay OPEN.
-            Op::Rest("POST", "/api/playlists"),
-            Op::Rest("GET", "/api/playlists"),
-            Op::Rest("POST", "/api/address-books"),
-            Op::Rest("GET", "/api/address-books"),
-            Op::Rest("GET", "/api/files/recent-changes"),
         ]);
         let table = declarations().compile_all(&ops).expect("compiles");
 
@@ -319,29 +296,12 @@ mod tests {
         // The GET siblings must stay open, or external users lose the
         // ability to list the address books shared WITH them — which
         // `routes.rs` calls out as deliberate.
-        // `recent-changes` is declared at its route now, so it is not in
-        // the table a unit test sees.
-        for gated in [
-            Op::Rest("POST", "/api/playlists"),
-            Op::Rest("POST", "/api/address-books"),
-        ] {
-            assert_eq!(
-                table.get(&gated).unwrap().role,
-                Some(MinRole::Internal),
-                "{gated} must require an internal user"
-            );
-        }
-        for open in [
-            Op::Rest("GET", "/api/playlists"),
-            Op::Rest("GET", "/api/address-books"),
-        ] {
-            assert_eq!(
-                table.get(&open),
-                Some(&Policy::default()),
-                "{open} must stay open to externals — a path-level \
-                 declaration would have widened the gate onto it"
-            );
-        }
+        // The per-verb internal-only declarations live at their routes
+        // now. Their shape — one verb gated, the sibling verb on the same
+        // path left open — is pinned by
+        // `policy_router::tests::the_visitor_declaration_does_not_leak_up_down_or_sideways`,
+        // and the wiring by `external_users.hurl`, which asserts an
+        // external caller is refused the create AND allowed the list.
     }
 
     // The visitor declarations moved to their routes, so their
