@@ -2228,26 +2228,60 @@ and not from a narrowly-scoped one. Add `/remote.php/new-feature` or
 all, which is exactly the shape of the device-flow bug: a credential
 restricted to `files` reaches a surface nobody classified.
 
-**Declare scopes by AREA PREFIX, not per operation.** § Areas, not
+**So the scope requirement is TOTAL and defaults to unsatisfiable.** Not
+an `Option` that defaults to "no requirement":
+
+```rust
+pub enum ScopeReq {
+    Undefined,            // the DEFAULT — unsatisfiable; a boot error
+    None,                 // explicitly no scope required; greppable
+    Area(Scope, Access),
+}
+```
+
+`Policy::scope: ScopeReq`, `Default = Undefined`. Three named states, no
+`Option`, and "no scope required" becomes a declaration an implementor
+writes — exactly as `public()` is written on the principal axis rather
+than fallen into. `/api/config` is the worked case: `ScopeReq::None` +
+`MinPrincipal::Public`.
+
+**NOT `Option<(Scope, Access)>` plus a `Scope::None` variant**, which is
+the `CallerKind` mistake repeated: `Option::None` and `Scope::None` would
+both be reachable and mean different things. Naming all three states is
+what makes the wrong combination unrepresentable.
+
+**`Undefined` is a BOOT error, not just a runtime denial.** A runtime
+denial means the first request to an undeclared route fails, in whatever
+environment reaches it first; a boot refusal means the deploy fails
+(`feedback_fail_fast_config`: a boot panic beats a silent skip). The
+sharper reason is that `Undefined` is unsatisfiable even by a FULL-scope
+session cookie — so on enforcement day an undeclared operation breaks an
+ordinary browser, not only an app password. Keep the runtime deny as
+defence in depth; it should be unreachable.
+
+The operation list for that check is § 2b's existing cross-check against
+`openapi.json` and `asyncapi.json`.
+
+**Declare by AREA PREFIX so the workload stays small.** § Areas, not
 protocols already has the rule — "a new route under an existing area
 inherits its scope. A route fitting no row means a scope is missing,
-which is a decision rather than a lookup" — and that makes inheritance
-the default behaviour rather than something each implementor must
-remember.
+which is a decision rather than a lookup". About ten prefixes cover the
+279 operations, so making the default unsatisfiable costs ten
+declarations rather than 279. This is why the same move was REJECTED for
+the gate axis (§ PR 1 — status, row 5): there the default is already
+safe, so the work bought nothing.
 
-**Then fail on an unmapped route.** The check is cheap and needs no
-enforcement, so it can land with PR 2's first commit: walk every
-operation in `openapi.json` and `asyncapi.json`, resolve its area from
-the prefix table, and fail with the list of operations that resolve to
-none. A route that genuinely belongs to no area is then a decision
-someone records — a new area, or an explicit "deliberately scopeless"
-entry next to the ones § Deliberately scopeless already names — rather
-than an omission nobody sees.
+**Pin the `ScopeReq::None` list.** It should be rare and auditable like
+`public()`; § Deliberately scopeless already names the candidates. A test
+over that list makes adding one visible in review instead of a quiet
+one-word diff.
 
-Prefer the test over a `Scope::Unknown` variant that no credential can
-hold. Both deny-by-default, but `Unknown` only bites at runtime, on the
-first request to the new route, in whatever environment reaches it first;
-the coverage test bites in CI on the commit that adds the route.
+**Two opposite "absents", same word — do not merge them.** The CREDENTIAL
+side grandfathers an absent claim to FULL (§ Absent means FULL,
+everywhere), because refusing every token minted before the claim existed
+would lock out the whole population. The OPERATION side defaults to
+`Undefined` and denies. Opposite directions; a reader who conflates them
+will "fix" one into the other.
 
 ### Absent means FULL, everywhere
 
