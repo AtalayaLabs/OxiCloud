@@ -26,11 +26,12 @@ this table is the coarse view. Keep both current.
 | `.policy([...])` at the route, per VERB | **built** — `policy_router.rs`; `.policy()` on a `MethodRouter` is a compile error, since it could only declare for the whole path |
 | The policy gate, ENFORCING | **live** on the three DAV nests, `/api/admin` and the whole protected `/api` subtree |
 | `require_internal_user_layer` | **DELETED** — and a third fail-open with it (`7a6f939ae`) |
-| `require_admin`, `anonymous_allowlist_layer` | **still applied** — the policy shadows both; § PR 1 — status 4-x |
+| All four folded gates | **DELETED** — `require_internal_user_layer`, `require_admin`, `anonymous_allowlist_layer`, and `transfer_ownership`'s owner check is declared (its service check stands until `admin_routes()` declares per verb) |
 | `/api` declarations living at their routes | **partly** — the admin nest is done; TEN operations that have routes still sit in `policy_declarations.rs` (§ PR 1 — status 4-x). Closing PR 1 needs those ten moved, NOT all 279 declared |
 | Credential scopes — `ScopeReq`, `ScopeSet`, the area map | **not started** — PR 2. `Scope`/`ScopeSet` exist and are INERT: no credential carries a set, and an absent one grandfathers to FULL |
 | Authentication by default (`NotAnonymous` inverted) | **falls out, not built** — `Policy::default()` IS an authenticated user, so an undeclared operation is already closed to anonymous callers |
 | A password-change condition | **never** — it is a scope narrowing, not a condition; the layer is deleted by `authn-pipeline.md` part B after PR 2. § Fold in |
+| OpenAPI generation | **derived from the policy engine** — three per-axis markers plus the `security` array, and generation REPORTS any annotation that disagrees |
 | `authorization-axes.md` | **written and current** — describes the END state, so it names no layer being deleted |
 | `AGENTS.md` / `src/AGENTS.md` rules | **written** — grant-vs-scope, declare-at-the-route, the two per-method traps |
 
@@ -1953,10 +1954,36 @@ automatically, and cannot silently disagree with what is enforced —
 which is stronger than the cross-check this plan proposed earlier, since
 drift becomes impossible rather than merely detectable.
 
-**Constraint this imposes:** `generate-openapi` runs with no database, so
-the declarations must be constructible without a running app. The registry
-therefore lives on a route registry built from `const` values, never
-assembled inside `AppState`.
+**SHIPPED** (`0159fb215`, `7fbf0a6b6`). The spec's auth markers are
+projections of the compiled table, in three keys — one per axis, because
+`x-oxicloud-scope` had been carrying a role floor and a principal kind
+neither of which is a scope:
+
+    x-oxicloud-minrole      internal | admin | owner
+    x-oxicloud-principal    visitor | public
+    x-oxicloud-scope        files:ro …          (inert until PR 2)
+    security: []            when the principal is Public
+
+It gained three gates the constants could not express: `owner` on
+transfer-ownership (previously mislabelled `role:admin`), and `internal`
+on three operations that were unmarked. The 58 admin and 7 visitor
+operations are the SAME set, verified by comparing marked
+`(method, path, axis)` tuples across the change.
+
+**The constraint this was thought to impose — "no database, so
+declarations must be `const`" — does not hold.** `generate-openapi` builds
+the service graph in memory and reads the registry from it. No database is
+needed, because `connect_lazy` yields a `PgPool` without connecting and
+the two queries `build_app_state` runs while constructing both tolerate
+failure by design. So declarations stay at their routes; nothing has to
+move to a `const` to be visible offline.
+
+**And generation VALIDATES the declarations.** `security(...)` is derived,
+so an annotation that disagrees is stale or a declaration is missing, and
+`just openapi` names every one. First run: 211 agree, 21 disagree — the
+whole public surface, which omits `security(...)` while nothing declares
+it `public()`. Those 21 are the work queue; `AGENTS.md` carries the rule
+that `security(...)` is never hand-written.
 
 Gate conditions project as pseudo-scopes (`role:admin`, `elevated`)
 because they are requirements, even though no client may request one. A
@@ -2110,8 +2137,10 @@ Landing them together means PR 2's risk rides in on PR 1's green suite.
 | 4-ix | REMOVE `require_internal_user_layer` entirely (+ its fail-open) | **done** — `7a6f939ae`, needs a matrix run |
 | 4-x | MOVE the `/api` declarations to their routes | **done** — `b9f055275` · `eaa3c1974`; only `transfer-ownership` left, which needs `admin_routes()` to return a `GatedRouter` |
 | 4-xi | REMOVE `require_admin` | **done** — `b80c1a12b`, needs a matrix run |
-| 4-xii-a | re-point `SecurityAddon` at the policy table | not started — **prerequisite** for 4-xii-b |
-| 4-xii-b | REMOVE `anonymous_allowlist_layer` + the constant | not started |
+| 4-xii-a | spec markers derived from the table (§ engine → spec) | **done** — `0159fb215` · `7fbf0a6b6` |
+| 4-xii-b | REMOVE `anonymous_allowlist_layer` + the constant | **done** — `0a76b9dcd`; all four gates now retired |
+| 4-xiv | declare `public()` on the 21 public operations | not started — `just openapi` lists them |
+| 4-xv | delete the 232 `security(...)` annotations | not started — after 4-xiv goes green |
 | 4-xiii | collapse `music_create` / `contacts_create` | **done** — `eaa3c1974`, fell out of per-verb policies |
 
 Step 1 landed as `CurrentCaller.kind: CallerKind`, not the `is_external`
