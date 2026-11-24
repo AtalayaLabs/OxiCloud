@@ -2088,8 +2088,9 @@ Landing them together means PR 2's risk rides in on PR 1's green suite.
 | 4-ii | transcribe the four folded gates | **done** — `a037c5ab7`, inert |
 | 4-iii | the policy gate layer | **done** — `1f521fbed` |
 | 4-iv | SHADOW on the three DAV nests | **done** — `7eccaa28e`, needs a matrix run |
-| 4-v | `public()` declarations, then shadow `/api/admin` + the allowlist | not started |
-| 4-vi | remove the four folded gates, one commit each | not started |
+| 4-v | SHADOW on `/api/admin` (incl. the Owner declaration) | **done** — `bd9359030`, needs a matrix run |
+| 4-vi | `public()` declarations, then shadow the allowlist | not started |
+| 4-vii | remove the four folded gates, one commit each | not started |
 
 Step 1 landed as `CurrentCaller.kind: CallerKind`, not the `is_external`
 bool this section first called for: the bool could express three states
