@@ -2213,6 +2213,42 @@ It is independent of the policy engine and belongs in its own diff: each
 site is a judgement call that is either a fix or a regression, and folding
 them into a rename or into step 4 hides them from review.
 
+### PR 2 — a new route must not be silently scopeless
+
+The two axes have opposite defaults, and only one of them is safe:
+
+| axis | an undeclared operation gets | is that safe? |
+|---|---|---|
+| gate | `principal = User` | **yes** — a session is required, so a new route is gated by the type |
+| scope | `scope = None`, i.e. no requirement | **NO** — reachable by ANY credential, including an app password that should never touch it |
+
+So `Policy::default()` protects a forgotten route from anonymous callers
+and not from a narrowly-scoped one. Add `/remote.php/new-feature` or
+`/new-feature-dav/` and it inherits a session requirement and no area at
+all, which is exactly the shape of the device-flow bug: a credential
+restricted to `files` reaches a surface nobody classified.
+
+**Declare scopes by AREA PREFIX, not per operation.** § Areas, not
+protocols already has the rule — "a new route under an existing area
+inherits its scope. A route fitting no row means a scope is missing,
+which is a decision rather than a lookup" — and that makes inheritance
+the default behaviour rather than something each implementor must
+remember.
+
+**Then fail on an unmapped route.** The check is cheap and needs no
+enforcement, so it can land with PR 2's first commit: walk every
+operation in `openapi.json` and `asyncapi.json`, resolve its area from
+the prefix table, and fail with the list of operations that resolve to
+none. A route that genuinely belongs to no area is then a decision
+someone records — a new area, or an explicit "deliberately scopeless"
+entry next to the ones § Deliberately scopeless already names — rather
+than an omission nobody sees.
+
+Prefer the test over a `Scope::Unknown` variant that no credential can
+hold. Both deny-by-default, but `Unknown` only bites at runtime, on the
+first request to the new route, in whatever environment reaches it first;
+the coverage test bites in CI on the commit that adds the route.
+
 ### Absent means FULL, everywhere
 
 Enforcement day finds three populations with no scope information, and
