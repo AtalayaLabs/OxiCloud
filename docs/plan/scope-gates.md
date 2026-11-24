@@ -1097,8 +1097,8 @@ you must remember to write does. So the value is two narrower things:
 | Today | Becomes |
 |---|---|
 | `require_internal_user_layer` — SIX sites, not 11: three DAV nests in `main.rs` (**removed**, `06a046593`) plus three per-METHOD sites in `routes.rs` | `[Condition::role(MinRole::Internal)]` — on the six DAV operations, and method-qualified for the three REST sites, which `.policy()` cannot express because a `MethodRouter` hides its methods |
-| admin middleware on `/api/admin/*` (3 sites) | `[Condition::role(MinRole::Admin)]` |
-| hand-rolled owner check in `transfer_ownership` | `[Condition::role(MinRole::Owner)]` |
+| ~~admin middleware on `/api/admin/*`~~ | **removed** (`b80c1a12b`) — `admin_router.policy([role(Admin)])` on the nest |
+| hand-rolled owner check in `transfer_ownership` | `[Condition::role(MinRole::Owner)]` — declared, but the service check is still in place until `admin_routes()` can declare per verb |
 | `anonymous_allowlist_layer` (1 site) | `[Condition::visitor_allowed()]` on the allowlisted routes; keeps the allowlist itself, and is the mechanism § Authentication by default would promote to the root |
 | `require_no_password_change_pending_layer` (8 sites) | **untouched** — a scope narrowing, deleted later by `authn-pipeline.md` part B. Below. |
 | `require_dpop_layer` (8 sites) | **untouched** — an integrity check, not an axis. § Not axes: integrity checks |
@@ -2109,7 +2109,7 @@ Landing them together means PR 2's risk rides in on PR 1's green suite.
 | 4-viii | REMOVE `require_internal_user_layer` from the DAV nests | **done** — `06a046593`, needs a matrix run |
 | 4-ix | REMOVE `require_internal_user_layer` entirely (+ its fail-open) | **done** — `7a6f939ae`, needs a matrix run |
 | 4-x | MOVE the `/api` declarations to their routes | **done** — `b9f055275` · `eaa3c1974`; only `transfer-ownership` left, which needs `admin_routes()` to return a `GatedRouter` |
-| 4-xi | REMOVE `require_admin` | not started — unblocked by `348e757d9` |
+| 4-xi | REMOVE `require_admin` | **done** — `b80c1a12b`, needs a matrix run |
 | 4-xii-a | re-point `SecurityAddon` at the policy table | not started — **prerequisite** for 4-xii-b |
 | 4-xii-b | REMOVE `anonymous_allowlist_layer` + the constant | not started |
 | 4-xiii | collapse `music_create` / `contacts_create` | **done** — `eaa3c1974`, fell out of per-verb policies |
