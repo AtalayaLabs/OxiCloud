@@ -111,7 +111,6 @@ pub const ANONYMOUS_ALLOWLISTED_ROUTES: [&str; 7] = [
 ];
 
 const INTERNAL_ONLY: [Condition; 1] = [Condition::role(MinRole::Internal)];
-const ADMIN_ONLY: [Condition; 1] = [Condition::role(MinRole::Admin)];
 const OWNER_ONLY: [Condition; 1] = [Condition::role(MinRole::Owner)];
 const VISITOR_OK: [Condition; 1] = [Condition::visitor_allowed()];
 
@@ -164,10 +163,12 @@ pub fn declarations() -> PolicyRegistry {
         reg.declare(Site::Exact(op), INTERNAL_ONLY.to_vec());
     }
 
-    // ── admin middleware (/api/admin/*) ──
+    // The `/api/admin` subtree is NOT declared here: it is declared at
+    // its nest in `routes.rs` — `admin_router.policy([role(Admin)])` —
+    // because route, layer and policy belong in one place.
     //
-    // One prefix for the whole subtree, which is what the middleware is.
-    reg.declare(Site::RestPrefix("/api/admin"), ADMIN_ONLY.to_vec());
+    // What stays here is what has no route to declare against: the DAV
+    // operations, and the per-METHOD gates below.
 
     // ── the hand-rolled owner check in transfer_ownership ──
     //
@@ -295,7 +296,6 @@ mod tests {
                 .map(|r| Op::Rest("GET", r)),
         );
         ops.extend([
-            Op::Rest("GET", "/api/admin/users"),
             Op::Rest("POST", "/api/admin/transfer-ownership"),
             Op::Rest("GET", "/api/folders"),
             // The three non-DAV internal-user sites, plus the GET
@@ -317,14 +317,11 @@ mod tests {
             Some(MinRole::Internal)
         );
 
-        // admin middleware
-        assert_eq!(
-            table
-                .get(&Op::Rest("GET", "/api/admin/users"))
-                .unwrap()
-                .role,
-            Some(MinRole::Admin)
-        );
+        // The `/api/admin` subtree is NOT asserted here any more: it is
+        // declared at its nest in `routes.rs`, so only a test that built
+        // the real router could see it — and that needs a full
+        // `AppState`. `admin_role_hierarchy.hurl` covers it instead,
+        // which is the right layer for production wiring.
 
         // the owner check, TIGHTENING the admin prefix rather than
         // replacing it

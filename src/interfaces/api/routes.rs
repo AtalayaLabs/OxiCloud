@@ -1,5 +1,8 @@
+use crate::application::ports::scope_ports::{Condition, MinRole};
 use crate::application::services::batch_operations::BatchOperationService;
+use crate::application::services::scope_table::PolicyRegistry;
 use crate::common::di::AppState;
+use crate::interfaces::api::policy_router::{GatedRouter, Policied};
 use crate::interfaces::middleware::user::require_internal_user_layer;
 use axum::{
     Router,
@@ -188,7 +191,14 @@ pub fn create_public_api_routes(app_state: &Arc<AppState>) -> Router<Arc<AppStat
 /// These routes require authentication when auth is enabled.
 /// Receives the fully-assembled `AppState` and extracts all needed services
 /// from it, avoiding a long parameter list.
-pub fn create_api_routes(app_state: &Arc<AppState>) -> Router<Arc<AppState>> {
+/// Returns the router AND the policy declarations made against it.
+///
+/// Route, layer and policy are declared in ONE place — that is the point
+/// of `.policy([...])` sitting on the nest or the handler rather than in a
+/// central table. The declarations come back as a registry because a
+/// `Router` cannot be asked what it holds, and the paths here are relative
+/// to this router, so `main.rs` rebases them under `/api`.
+pub fn create_api_routes(app_state: &Arc<AppState>) -> (Router<Arc<AppState>>, PolicyRegistry) {
     // Extract services from the pre-built AppState
     let folder_service = app_state.applications.folder_service_concrete.clone();
     let file_retrieval_service = app_state.applications.file_retrieval_service.clone();
@@ -502,7 +512,7 @@ pub fn create_api_routes(app_state: &Arc<AppState>) -> Router<Arc<AppState>> {
         // See §9b of `docs/plan/photos-resources-migration.md`.
         .with_state(app_state.clone());
 
-    let mut router = Router::new()
+    let mut router = GatedRouter::<Arc<AppState>>::new()
         .nest("/folders", folders_router)
         .nest("/files", files_router)
         .nest("/uploads", chunked_upload_router)
@@ -828,7 +838,13 @@ pub fn create_api_routes(app_state: &Arc<AppState>) -> Router<Arc<AppState>> {
         // `/api/admin/transfer-ownership`, which `require_admin` below
         // cannot express; today that refusal happens in the service.
         .with_state(app_state.clone());
-    router = router.nest("/admin", admin_router);
+    // Route, layer and POLICY in one place: the subtree is admin-only,
+    // and `/api/admin/transfer-ownership` tightens to Owner (declared in
+    // `policy_declarations`, since it is a per-METHOD gate — see below).
+    router = router.nest(
+        "/admin",
+        admin_router.policy([Condition::role(MinRole::Admin)]),
+    );
 
     // ReBAC subject-group management. All mutating routes are admin-gated;
     // /api/groups/search is authenticated-only so the share dialog can list
@@ -909,10 +925,13 @@ pub fn create_api_routes(app_state: &Arc<AppState>) -> Router<Arc<AppState>> {
     // (benches/ROUND13.md §H1). Compression is likewise the global layer's
     // job — re-applying it here (no predicate) would compress media
     // downloads, burning CPU for ~0 gain and stripping `Content-Length`.
-    router.layer(axum::middleware::from_fn_with_state(
-        app_state.clone(),
-        crate::interfaces::middleware::server_status::server_status_middleware,
-    ))
+    let (router, policy) = router
+        .layer(axum::middleware::from_fn_with_state(
+            app_state.clone(),
+            crate::interfaces::middleware::server_status::server_status_middleware,
+        ))
+        .finish();
+    (router, policy)
 }
 
 /// Catch-all 404 for unknown `/api/*` paths. Pure log-anchoring

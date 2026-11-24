@@ -162,6 +162,25 @@ where
         self
     }
 
+    /// `Router::layer`, passed straight through: a layer is not a policy,
+    /// and the two coexist on purpose — integrity checks (CSRF, DPoP) and
+    /// scope narrowings stay layers because no operation has an opinion
+    /// about them (§ Not axes).
+    #[must_use]
+    pub fn layer<L>(mut self, layer: L) -> Self
+    where
+        L: tower::Layer<axum::routing::Route> + Clone + Send + Sync + 'static,
+        L::Service: tower::Service<axum::extract::Request> + Clone + Send + Sync + 'static,
+        <L::Service as tower::Service<axum::extract::Request>>::Response:
+            axum::response::IntoResponse + 'static,
+        <L::Service as tower::Service<axum::extract::Request>>::Error:
+            Into<std::convert::Infallible> + 'static,
+        <L::Service as tower::Service<axum::extract::Request>>::Future: Send + 'static,
+    {
+        self.router = self.router.layer(layer);
+        self
+    }
+
     /// The router to serve, and the declarations to compile.
     ///
     /// Returns both rather than compiling here: compilation needs the

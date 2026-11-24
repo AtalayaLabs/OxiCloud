@@ -109,6 +109,47 @@ impl PolicyRegistry {
         self
     }
 
+    /// Re-root every REST declaration under `prefix`.
+    ///
+    /// This is what lets `.policy()` be written at a route inside a
+    /// router that does not know where it will be mounted: the inner
+    /// router records `/` or `/{id}`, and the `nest` that mounts it
+    /// rebases those to `/api/playlists` and `/api/playlists/{id}`.
+    /// Without it, `.policy()` only works at top level, which is where
+    /// almost no route lives.
+    ///
+    /// `Site::Exact` declarations are NOT rebased: a DAV, WS or collab
+    /// operation has no path, so there is nothing to prepend.
+    ///
+    /// Paths are interned rather than leaked per call: this runs once per
+    /// nest at startup, and `Op`/`Site` hold `&'static str` so the table
+    /// allocates nothing afterwards.
+    pub fn rebased_under(self, prefix: &'static str) -> Self {
+        let prefix = prefix.trim_end_matches('/');
+        let decls = self
+            .decls
+            .into_iter()
+            .map(|(site, conds)| match site {
+                Site::RestPrefix(p) => {
+                    let joined = if p == "/" {
+                        prefix.to_owned()
+                    } else {
+                        format!("{prefix}{p}")
+                    };
+                    (Site::RestPrefix(intern(&joined)), conds)
+                }
+                Site::Exact(_) => (site, conds),
+            })
+            .collect();
+        Self { decls }
+    }
+
+    /// Absorb another registry's declarations, unchanged.
+    pub fn absorb(&mut self, other: Self) -> &mut Self {
+        self.decls.extend(other.decls);
+        self
+    }
+
     /// The chain for `op`, ordered ROOT first — which is what
     /// [`compile`] requires, and what makes "a child may tighten, not
     /// widen" meaningful.
@@ -233,6 +274,23 @@ impl PolicyRegistry {
             })
             .collect()
     }
+}
+
+/// One allocation per distinct path, for the `&'static str` that `Site`
+/// and `Op` hold. Called once per nest at startup, never per request.
+fn intern(s: &str) -> &'static str {
+    use std::collections::HashSet;
+    use std::sync::{LazyLock, Mutex};
+    static INTERNED: LazyLock<Mutex<HashSet<&'static str>>> =
+        LazyLock::new(|| Mutex::new(HashSet::new()));
+
+    let mut set = INTERNED.lock().expect("interner poisoned");
+    if let Some(found) = set.get(s) {
+        return found;
+    }
+    let leaked: &'static str = Box::leak(s.to_owned().into_boxed_str());
+    set.insert(leaked);
+    leaked
 }
 
 /// Segment-aware prefix test.

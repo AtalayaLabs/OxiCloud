@@ -46,7 +46,28 @@ use crate::interfaces::errors::AppError;
 /// at construction — the declarations' VALIDITY is asserted by
 /// `policy_declarations`'s test against the real operation list, which is
 /// where a boot refusal would surface.
-static REGISTRY: LazyLock<PolicyRegistry> = LazyLock::new(declarations);
+static INSTALLED: std::sync::OnceLock<PolicyRegistry> = std::sync::OnceLock::new();
+
+/// Install the declarations collected while building the router.
+///
+/// Called once from `main.rs` with `create_api_routes`'s registry rebased
+/// under `/api` and the surface-level declarations absorbed. Before this
+/// runs — and in unit tests, which build their own routers — the gate
+/// falls back to `declarations()`, the table for operations that have no
+/// route to declare against.
+pub fn install_registry(registry: PolicyRegistry) {
+    if INSTALLED.set(registry).is_err() {
+        tracing::warn!(
+            target: "oxicloud::authz",
+            "policy registry installed twice — the first one stands"
+        );
+    }
+}
+
+fn registry() -> &'static PolicyRegistry {
+    static FALLBACK: LazyLock<PolicyRegistry> = LazyLock::new(declarations);
+    INSTALLED.get().unwrap_or(&FALLBACK)
+}
 
 /// Which operation a request IS.
 ///
@@ -158,7 +179,7 @@ pub async fn policy_gate_layer(
         return next.run(request).await;
     };
 
-    let policy = match REGISTRY.compile_one(op) {
+    let policy = match registry().compile_one(op) {
         Ok(p) => p,
         Err(e) => {
             // A declaration that cannot compile is a BOOT error, caught
@@ -293,27 +314,27 @@ mod tests {
     /// enforces what `policy_declarations` transcribed.
     #[test]
     fn the_resolver_returns_the_transcribed_policies() {
-        let dav = REGISTRY
+        let dav = registry()
             .compile_one(Op::Dav(Scope::Files, Access::ReadOnly))
             .expect("compiles");
         assert_eq!(dav.role, Some(MinRole::Internal));
 
-        let admin = REGISTRY
-            .compile_one(Op::Rest("GET", "/api/admin/users"))
-            .expect("compiles");
-        assert_eq!(admin.role, Some(MinRole::Admin));
+        // `/api/admin` is declared at its nest in `routes.rs` now, so it
+        // is absent from the fallback table a unit test sees. The
+        // transfer-ownership declaration below is still here, because a
+        // per-METHOD gate cannot be written as `.policy()`.
 
-        let transfer = REGISTRY
+        let transfer = registry()
             .compile_one(Op::Rest("POST", "/api/admin/transfer-ownership"))
             .expect("compiles");
         assert_eq!(transfer.role, Some(MinRole::Owner));
 
-        let allowlisted = REGISTRY
+        let allowlisted = registry()
             .compile_one(Op::Rest("GET", "/api/files/{id}"))
             .expect("compiles");
         assert_eq!(allowlisted.principal, MinPrincipal::Visitor);
 
-        let undeclared = REGISTRY
+        let undeclared = registry()
             .compile_one(Op::Rest("GET", "/api/folders"))
             .expect("compiles");
         assert_eq!(undeclared, Policy::default());
@@ -482,8 +503,12 @@ mod tests {
             next.run(request).await
         }
 
+        // `/api/admin/transfer-ownership` is declared `MinRole::Owner`,
+        // so a plain user must be refused. Using a path the fallback
+        // table declares keeps this a test of PREFIX HANDLING rather
+        // than of production wiring.
         let admin: Router<()> = Router::new()
-            .route("/users", get(ok))
+            .route("/transfer-ownership", get(ok))
             .route_layer(axum::middleware::from_fn(gate_without_state));
         let api: Router<()> = Router::new().nest("/admin", admin);
         let app: Router<()> = Router::new()
@@ -493,7 +518,7 @@ mod tests {
         let res = app
             .oneshot(
                 Request::builder()
-                    .uri("/api/admin/users")
+                    .uri("/api/admin/transfer-ownership")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -503,9 +528,9 @@ mod tests {
         assert_eq!(
             res.status(),
             StatusCode::FORBIDDEN,
-            "a plain user must be refused at /api/admin/users — a 200 here \
-             means the nest prefixes were lost and the declaration never \
-             matched"
+            "a plain user must be refused at \
+             /api/admin/transfer-ownership — a 200 here means the nest \
+             prefixes were lost and the declaration never matched"
         );
     }
 
@@ -515,7 +540,7 @@ mod tests {
         let Some(op) = op_for(&request) else {
             return next.run(request).await;
         };
-        let policy = REGISTRY.compile_one(op).expect("declarations compile");
+        let policy = registry().compile_one(op).expect("declarations compile");
         let kind = request
             .extensions()
             .get::<Arc<CurrentCaller>>()
