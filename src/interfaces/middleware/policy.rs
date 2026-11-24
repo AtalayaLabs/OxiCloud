@@ -526,3 +526,77 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+mod nest_layer_semantics {
+    //! Does nesting two routers at the SAME prefix cross-apply their
+    //! layers? `main.rs` mounts three routers at `/api` — setup, public
+    //! and protected — and a comment there says distinct sub-prefixes are
+    //! used "so axum doesn't cross-apply middleware between the two
+    //! branches".
+    //!
+    //! If that is true of `nest`, adding the policy gate to the protected
+    //! router would gate `/api/auth/login` too and refuse every login. The
+    //! answer decides whether `public()` declarations must land first, so
+    //! it is tested rather than reasoned about.
+
+    use axum::body::Body;
+    use axum::extract::Request;
+    use axum::http::StatusCode;
+    use axum::middleware::Next;
+    use axum::response::Response;
+    use axum::{Router, routing::get};
+    use tower::ServiceExt;
+
+    async fn ok() -> &'static str {
+        "ok"
+    }
+
+    async fn refuse_everything(_request: Request, _next: Next) -> Response {
+        Response::builder()
+            .status(StatusCode::FORBIDDEN)
+            .body(Body::empty())
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_layer_on_one_nested_router_does_not_reach_a_sibling() {
+        let gated: Router<()> = Router::new()
+            .route("/protected", get(ok))
+            .layer(axum::middleware::from_fn(refuse_everything));
+        let open: Router<()> = Router::new().route("/login", get(ok));
+
+        let app: Router<()> = Router::new().nest("/api", gated).nest("/api", open);
+
+        let gated_res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/protected")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            gated_res.status(),
+            StatusCode::FORBIDDEN,
+            "its own layer applies"
+        );
+
+        let open_res = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/login")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            open_res.status(),
+            StatusCode::OK,
+            "a sibling nested at the same prefix must NOT inherit the layer"
+        );
+    }
+}

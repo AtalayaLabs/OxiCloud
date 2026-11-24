@@ -1122,6 +1122,29 @@ async fn run(config: common::config::AppConfig) -> Result<(), Box<dyn std::error
             .route_layer(axum::middleware::from_fn(
                 oxicloud::interfaces::middleware::anonymous_allowlist::anonymous_allowlist_layer,
             ))
+            // SHADOW: the compiled policy runs alongside the allowlist
+            // above, not instead of it (PR 1 step 4-vi). It carries the
+            // same decision — `visitor_allowed()` on the SEVEN allowlisted
+            // routes, the safe default everywhere else.
+            //
+            // Safe to apply to the whole protected subtree because the
+            // default policy is `principal = User`, which `auth_middleware`
+            // (outermost) already enforces: it 401s a request with no
+            // credential before this runs. So the only principal this can
+            // newly refuse is a VISITOR, and the allowlist already refuses
+            // one off its seven routes.
+            //
+            // The public routers are untouched: they are nested
+            // separately at `/api`, and a layer on one nested router does
+            // not reach a sibling — pinned by
+            // `policy::nest_layer_semantics`.
+            //
+            // `route_layer` for the same reason as the allowlist: it needs
+            // `MatchedPath`, and it must not turn a 404 into a 403.
+            .route_layer(axum::middleware::from_fn_with_state(
+                app_state.clone(),
+                oxicloud::interfaces::middleware::policy::policy_gate_layer,
+            ))
             .layer(axum::middleware::from_fn_with_state(
                 app_state.clone(),
                 require_no_password_change_pending_layer,
