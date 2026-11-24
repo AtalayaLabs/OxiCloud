@@ -16,24 +16,39 @@ document — see the two § Required sections.
 
 ## Status
 
-**Nothing here is implemented.** Keep this current as that changes.
+**PR 1 is in progress and ENFORCING.** The engine is built and the first
+of the four folded gates is gone. Step-by-step state is § PR 1 — status;
+this table is the coarse view. Keep both current.
 
 | item | status |
 |---|---|
-| Policy engine — `Condition`, the compile step, the operation table | **not started** — PR 1, and 2 and 3 below depend on it |
-| Credential scopes — `Scope`, `ScopeSet`, the 235-operation map | **not started** — PR 2 |
-| Authentication by default (`NotAnonymous` inverted) | **not started** — needs the fold |
+| Policy engine — `Condition`, `Policy`, the compile step, the operation table, the dump, `evaluate` | **built** — PR 1 steps 2 → 4-iii |
+| `.policy([...])` at the route, per VERB | **built** — `policy_router.rs`; `.policy()` on a `MethodRouter` is a compile error, since it could only declare for the whole path |
+| The policy gate, ENFORCING | **live** on the three DAV nests, `/api/admin` and the whole protected `/api` subtree |
+| `require_internal_user_layer` | **DELETED** — and a third fail-open with it (`7a6f939ae`) |
+| `require_admin`, `anonymous_allowlist_layer` | **still applied** — the policy shadows both; § PR 1 — status 4-x |
+| `/api` declarations living at their routes | **partly** — the admin nest is declared at its nest; ten operations with routes still sit in `policy_declarations.rs` and must move |
+| Credential scopes — `ScopeReq`, `ScopeSet`, the area map | **not started** — PR 2. `Scope`/`ScopeSet` exist and are INERT: no credential carries a set, and an absent one grandfathers to FULL |
+| Authentication by default (`NotAnonymous` inverted) | **falls out, not built** — `Policy::default()` IS an authenticated user, so an undeclared operation is already closed to anonymous callers |
 | A password-change condition | **never** — it is a scope narrowing, not a condition; the layer is deleted by `authn-pipeline.md` part B after PR 2. § Fold in |
-| `authorization-axes.md` | **written** — gate/grant distinction, request diagram, enforcement points; scope section marks itself unenforced |
-| `src/AGENTS.md` rule | **not started** |
+| `authorization-axes.md` | **written and current** — describes the END state, so it names no layer being deleted |
+| `AGENTS.md` / `src/AGENTS.md` rules | **written** — grant-vs-scope, declare-at-the-route, the two per-method traps |
+
+The behavioural baseline is `tests/api/gate_matrix.hurl`, green before the
+first layer moved. It exists because the acceptance below — the compiled
+table identical before and after — compares a HAND-WRITTEN table against
+itself, so it proves the fold matches the table and never that the table
+matches the layers.
 
 The companion document's work — `authn-pipeline.md` part A — is MERGED
 (PR #951). It touched the same middleware this plan folds, so four of its
-consequences land before the first line here:
+consequences landed before the first line here:
 
 - **The two fail-open arms are already resolved**, as 503 rather than as
   a denial (§ The two fail-open arms). The gates fold inherits that
-  answer rather than deciding it.
+  answer rather than deciding it. A THIRD fail-open was found during the
+  fold — `require_internal_user_layer` passed a request through when no
+  `CurrentCaller` was present — and went away with the layer.
 - **`resolve_live_role` now takes a `PresentedToken`** and `UserFlags`
   carries `sessions_valid_from` and `revoked_session_ids`. The fold
   touches those call sites, so expect them to look different from the
