@@ -27,7 +27,7 @@ this table is the coarse view. Keep both current.
 | The policy gate, ENFORCING | **live** on the three DAV nests, `/api/admin` and the whole protected `/api` subtree |
 | `require_internal_user_layer` | **DELETED** — and a third fail-open with it (`7a6f939ae`) |
 | `require_admin`, `anonymous_allowlist_layer` | **still applied** — the policy shadows both; § PR 1 — status 4-x |
-| `/api` declarations living at their routes | **partly** — the admin nest is declared at its nest; ten operations with routes still sit in `policy_declarations.rs` and must move |
+| `/api` declarations living at their routes | **partly** — the admin nest is done; TEN operations that have routes still sit in `policy_declarations.rs` (§ PR 1 — status 4-x). Closing PR 1 needs those ten moved, NOT all 279 declared |
 | Credential scopes — `ScopeReq`, `ScopeSet`, the area map | **not started** — PR 2. `Scope`/`ScopeSet` exist and are INERT: no credential carries a set, and an absent one grandfathers to FULL |
 | Authentication by default (`NotAnonymous` inverted) | **falls out, not built** — `Policy::default()` IS an authenticated user, so an undeclared operation is already closed to anonymous callers |
 | A password-change condition | **never** — it is a scope narrowing, not a condition; the layer is deleted by `authn-pipeline.md` part B after PR 2. § Fold in |
@@ -2108,7 +2108,10 @@ Landing them together means PR 2's risk rides in on PR 1's green suite.
 | 4-vii | declare at the route (`.policy()`), not a central table | **done** — `6061aba6b` |
 | 4-viii | REMOVE `require_internal_user_layer` from the DAV nests | **done** — `06a046593`, needs a matrix run |
 | 4-ix | REMOVE `require_internal_user_layer` entirely (+ its fail-open) | **done** — `7a6f939ae`, needs a matrix run |
-| 4-x | remove `require_admin`, then decide the allowlist | not started |
+| 4-x | MOVE the ten `/api` declarations to their routes | not started — the only wide diff left |
+| 4-xi | REMOVE `require_admin` | not started — blocked on its `unauthenticated` audit arm |
+| 4-xii | REMOVE `anonymous_allowlist_layer` | not started — needs 4-x first |
+| 4-xiii | collapse `music_create` / `contacts_create` | not started — they exist only for a layer that is gone |
 
 Step 1 landed as `CurrentCaller.kind: CallerKind`, not the `is_external`
 bool this section first called for: the bool could express three states
