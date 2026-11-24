@@ -52,6 +52,7 @@
           "contacts"
         ],
         "summary": "Create a new personal address book.",
+        "description": "Requires an INTERNAL user. An external (grant-only) account is refused: it is a guest invited to specific resources, and this surface aggregates more than that invitation implied.",
         "operationId": "create_address_book",
         "requestBody": {
           "content": {
@@ -89,7 +90,8 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-minrole": "internal"
       }
     },
     "/api/address-books/{book_id}": {
@@ -1149,7 +1151,7 @@
           "admin"
         ],
         "summary": "GET /api/admin/banners — full list, including `starts_at > now`\nentries not yet visible to users. Admin inspects what they've\nscheduled; the public endpoint filters.",
-        "description": "Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.",
+        "description": "Requires the deployment administrator role; enforced by the compiled policy declared on the `/api/admin` nest.",
         "operationId": "list_ops_banners",
         "responses": {
           "200": {
@@ -1191,14 +1193,14 @@
             "bearerAuth": []
           }
         ],
-        "x-oxicloud-scope": "role:admin"
+        "x-oxicloud-minrole": "admin"
       },
       "post": {
         "tags": [
           "admin"
         ],
         "summary": "POST /api/admin/banners — create a new banner.",
-        "description": "Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.",
+        "description": "Requires the deployment administrator role; enforced by the compiled policy declared on the `/api/admin` nest.",
         "operationId": "create_ops_banner",
         "requestBody": {
           "content": {
@@ -1267,7 +1269,7 @@
             "bearerAuth": []
           }
         ],
-        "x-oxicloud-scope": "role:admin"
+        "x-oxicloud-minrole": "admin"
       }
     },
     "/api/admin/banners/{id}": {
@@ -1276,7 +1278,7 @@
           "admin"
         ],
         "summary": "PUT /api/admin/banners/{id} — full-replacement update of\nseverity/body/starts_at. `id` + `created_by` + `created_at` stay.",
-        "description": "Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.",
+        "description": "Requires the deployment administrator role; enforced by the compiled policy declared on the `/api/admin` nest.",
         "operationId": "update_ops_banner",
         "parameters": [
           {
@@ -1356,14 +1358,14 @@
             "bearerAuth": []
           }
         ],
-        "x-oxicloud-scope": "role:admin"
+        "x-oxicloud-minrole": "admin"
       },
       "delete": {
         "tags": [
           "admin"
         ],
         "summary": "DELETE /api/admin/banners/{id} — remove one banner.",
-        "description": "Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.",
+        "description": "Requires the deployment administrator role; enforced by the compiled policy declared on the `/api/admin` nest.",
         "operationId": "delete_ops_banner",
         "parameters": [
           {
@@ -1416,7 +1418,7 @@
             "bearerAuth": []
           }
         ],
-        "x-oxicloud-scope": "role:admin"
+        "x-oxicloud-minrole": "admin"
       }
     },
     "/api/admin/dashboard": {
@@ -1425,7 +1427,7 @@
           "admin"
         ],
         "summary": "GET /api/admin/dashboard — full dashboard statistics",
-        "description": "Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.",
+        "description": "Requires the deployment administrator role; enforced by the compiled policy declared on the `/api/admin` nest.",
         "operationId": "get_dashboard_stats",
         "responses": {
           "200": {
@@ -1464,7 +1466,7 @@
             "bearerAuth": []
           }
         ],
-        "x-oxicloud-scope": "role:admin"
+        "x-oxicloud-minrole": "admin"
       }
     },
     "/api/admin/dedup/check/{hash}": {
@@ -1472,7 +1474,7 @@
         "tags": [
           "admin"
         ],
-        "description": "Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.",
+        "description": "Requires the deployment administrator role; enforced by the compiled policy declared on the `/api/admin` nest.",
         "operationId": "admin_check_hash",
         "parameters": [
           {
@@ -1532,7 +1534,7 @@
             "bearerAuth": []
           }
         ],
-        "x-oxicloud-scope": "role:admin"
+        "x-oxicloud-minrole": "admin"
       }
     },
     "/api/admin/dedup/recalculate": {
@@ -1540,7 +1542,7 @@
         "tags": [
           "admin"
         ],
-        "description": "Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.",
+        "description": "Requires the deployment administrator role; enforced by the compiled policy declared on the `/api/admin` nest.",
         "operationId": "recalculate_stats",
         "responses": {
           "200": {
@@ -1589,7 +1591,7 @@
             "bearerAuth": []
           }
         ],
-        "x-oxicloud-scope": "role:admin"
+        "x-oxicloud-minrole": "admin"
       }
     },
     "/api/admin/dedup/stats": {
@@ -1597,7 +1599,7 @@
         "tags": [
           "admin"
         ],
-        "description": "Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.",
+        "description": "Requires the deployment administrator role; enforced by the compiled policy declared on the `/api/admin` nest.",
         "operationId": "get_stats",
         "responses": {
           "200": {
@@ -1636,7 +1638,7 @@
             "bearerAuth": []
           }
         ],
-        "x-oxicloud-scope": "role:admin"
+        "x-oxicloud-minrole": "admin"
       }
     },
     "/api/admin/drive-policies/defaults/{kind}": {
@@ -1645,7 +1647,7 @@
           "admin"
         ],
         "summary": "GET /api/admin/drive-policies/defaults/{kind}",
-        "description": "The policy every new drive of this kind inherits, and that existing\ndrives resolve against for every knob they have not overridden.\n\nRequires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.",
+        "description": "The policy every new drive of this kind inherits, and that existing\ndrives resolve against for every knob they have not overridden.\n\nRequires the deployment administrator role; enforced by the compiled policy declared on the `/api/admin` nest.",
         "operationId": "get_drive_policy_defaults",
         "parameters": [
           {
@@ -1705,14 +1707,14 @@
             "bearerAuth": []
           }
         ],
-        "x-oxicloud-scope": "role:admin"
+        "x-oxicloud-minrole": "admin"
       },
       "put": {
         "tags": [
           "admin"
         ],
         "summary": "PUT /api/admin/drive-policies/defaults/{kind}",
-        "description": "**Replaces** the bag rather than merging it. The per-drive PATCH merges\nso an admin can nudge one knob without restating the rest, but a default\nis a complete statement of posture for the kind — merging would leave no\nway to express \"unset this knob\", since a key could never be taken back\nout.\n\nWith `?dry_run=true` nothing is written and the response is the impact\nthe change *would* have: how many drives follow it, how many override it\nand stay put, and how many end up laxer than the new default. That turns\nboth compliance reports into a pre-commit check rather than an\nafter-the-fact audit.\n\nRefuses (400) rather than silently dropping a knob that cannot take\neffect — `read_only`, which is per-drive only, and knobs that do not\napply to the kind. A setting stored where it does nothing is one the\nadmin believes they made.\n\nRequires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.",
+        "description": "**Replaces** the bag rather than merging it. The per-drive PATCH merges\nso an admin can nudge one knob without restating the rest, but a default\nis a complete statement of posture for the kind — merging would leave no\nway to express \"unset this knob\", since a key could never be taken back\nout.\n\nWith `?dry_run=true` nothing is written and the response is the impact\nthe change *would* have: how many drives follow it, how many override it\nand stay put, and how many end up laxer than the new default. That turns\nboth compliance reports into a pre-commit check rather than an\nafter-the-fact audit.\n\nRefuses (400) rather than silently dropping a knob that cannot take\neffect — `read_only`, which is per-drive only, and knobs that do not\napply to the kind. A setting stored where it does nothing is one the\nadmin believes they made.\n\nRequires the deployment administrator role; enforced by the compiled policy declared on the `/api/admin` nest.",
         "operationId": "set_drive_policy_defaults",
         "parameters": [
           {
@@ -1789,7 +1791,7 @@
             "bearerAuth": []
           }
         ],
-        "x-oxicloud-scope": "role:admin"
+        "x-oxicloud-minrole": "admin"
       }
     },
     "/api/admin/drive-policies/drift": {
@@ -1798,7 +1800,7 @@
           "admin"
         ],
         "summary": "GET /api/admin/drive-policies/drift",
-        "description": "Drives that are currently laxer than their kind's default, across both\nkinds, computed live.\n\nDeliberately NOT a consistency-job finding. It reads two small tables, so\na page load can afford it — and being live is what makes it correct: a\nscan reports a completed run, so a drive the admin has just fixed stays\non the list until someone re-scans. Here the row disappears as soon as\nthe override is corrected.\n\nRequires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.",
+        "description": "Drives that are currently laxer than their kind's default, across both\nkinds, computed live.\n\nDeliberately NOT a consistency-job finding. It reads two small tables, so\na page load can afford it — and being live is what makes it correct: a\nscan reports a completed run, so a drive the admin has just fixed stays\non the list until someone re-scans. Here the row disappears as soon as\nthe override is corrected.\n\nRequires the deployment administrator role; enforced by the compiled policy declared on the `/api/admin` nest.",
         "operationId": "get_drive_policy_drift",
         "responses": {
           "200": {
@@ -1840,7 +1842,7 @@
             "bearerAuth": []
           }
         ],
-        "x-oxicloud-scope": "role:admin"
+        "x-oxicloud-minrole": "admin"
       }
     },
     "/api/admin/drives": {
@@ -1849,7 +1851,7 @@
           "admin"
         ],
         "summary": "GET /api/admin/drives — list every drive on the system, admin-only.",
-        "description": "Distinct from `GET /api/drives`, which is the caller's own listing\nfiltered through `role_grants`. An admin who creates a shared drive\nfor someone else has no grant on it — but the admin panel still\nneeds to see the drive (to audit, to manage, to delete). The admin\nguard at the handler edge is the access control; no role filtering\nhappens in the repo (see `drive_repository::list_all`).\n\nReturns rows ordered by display name. `caller_role` is omitted —\nthe admin is not necessarily a drive member, so the field would be\nmisleading here.\n\nRequires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.",
+        "description": "Distinct from `GET /api/drives`, which is the caller's own listing\nfiltered through `role_grants`. An admin who creates a shared drive\nfor someone else has no grant on it — but the admin panel still\nneeds to see the drive (to audit, to manage, to delete). The admin\nguard at the handler edge is the access control; no role filtering\nhappens in the repo (see `drive_repository::list_all`).\n\nReturns rows ordered by display name. `caller_role` is omitted —\nthe admin is not necessarily a drive member, so the field would be\nmisleading here.\n\nRequires the deployment administrator role; enforced by the compiled policy declared on the `/api/admin` nest.",
         "operationId": "list_all_drives",
         "responses": {
           "200": {
@@ -1891,7 +1893,7 @@
             "bearerAuth": []
           }
         ],
-        "x-oxicloud-scope": "role:admin"
+        "x-oxicloud-minrole": "admin"
       }
     },
     "/api/admin/drives/{id}": {
@@ -1900,7 +1902,7 @@
           "admin"
         ],
         "summary": "`DELETE /api/admin/drives/{id}` — admin-only drive delete (D3b).",
-        "description": "Same shape as the user-facing `DELETE /api/drives/{id}`, but\nbypasses the per-drive `Manage` check (the admin guard at the\nroute edge is the access control). The remaining invariants —\ndefault Personal drive is undeletable, drive must be empty — still\napply: an admin can't accidentally wipe a populated drive or the\ndefault home folder of any user. Audit emits\n`drive.deleted_via_admin` on success.\n\nRequires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.",
+        "description": "Same shape as the user-facing `DELETE /api/drives/{id}`, but\nbypasses the per-drive `Manage` check (the admin guard at the\nroute edge is the access control). The remaining invariants —\ndefault Personal drive is undeletable, drive must be empty — still\napply: an admin can't accidentally wipe a populated drive or the\ndefault home folder of any user. Audit emits\n`drive.deleted_via_admin` on success.\n\nRequires the deployment administrator role; enforced by the compiled policy declared on the `/api/admin` nest.",
         "operationId": "delete_drive_admin",
         "parameters": [
           {
@@ -1964,7 +1966,7 @@
             "bearerAuth": []
           }
         ],
-        "x-oxicloud-scope": "role:admin"
+        "x-oxicloud-minrole": "admin"
       }
     },
     "/api/admin/drives/{id}/members": {
@@ -1973,7 +1975,7 @@
           "admin"
         ],
         "summary": "GET /api/admin/drives/{id}/members — list every role grant on a drive,\nadmin-only.",
-        "description": "Distinct from `GET /api/drives/{id}/members` which goes through\n`DriveManagementService::list_members` and requires `Permission::Read`\non the drive. The admin who created the drive for someone else has\nno role on it, so the user-facing endpoint would 404 for them.\n\nThis endpoint reuses the engine's `list_grants_on_resource` directly\n— same query, same shape, just gated by the admin middleware instead\nof by `authz.require`. Returns the same `Vec<GrantDto>` so the\nfrontend renders it through the existing grant types.\n\nRequires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.",
+        "description": "Distinct from `GET /api/drives/{id}/members` which goes through\n`DriveManagementService::list_members` and requires `Permission::Read`\non the drive. The admin who created the drive for someone else has\nno role on it, so the user-facing endpoint would 404 for them.\n\nThis endpoint reuses the engine's `list_grants_on_resource` directly\n— same query, same shape, just gated by the admin middleware instead\nof by `authz.require`. Returns the same `Vec<GrantDto>` so the\nfrontend renders it through the existing grant types.\n\nRequires the deployment administrator role; enforced by the compiled policy declared on the `/api/admin` nest.",
         "operationId": "list_drive_members_admin",
         "parameters": [
           {
@@ -2027,14 +2029,14 @@
             "bearerAuth": []
           }
         ],
-        "x-oxicloud-scope": "role:admin"
+        "x-oxicloud-minrole": "admin"
       },
       "post": {
         "tags": [
           "admin"
         ],
         "summary": "POST /api/admin/drives/{id}/members — add or refresh a member's role\nwithout holding `Manage` on the drive. Admin-only; bypasses the\nper-drive authz check via the `caller_is_admin = true` argument on\n`DriveManagementService::set_member_role`. Personal-drive guard and\nlast-owner protection still apply.",
-        "description": "Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.",
+        "description": "Requires the deployment administrator role; enforced by the compiled policy declared on the `/api/admin` nest.",
         "operationId": "add_drive_member_admin",
         "parameters": [
           {
@@ -2115,7 +2117,7 @@
             "bearerAuth": []
           }
         ],
-        "x-oxicloud-scope": "role:admin"
+        "x-oxicloud-minrole": "admin"
       }
     },
     "/api/admin/drives/{id}/members/{kind}/{sid}": {
@@ -2124,7 +2126,7 @@
           "admin"
         ],
         "summary": "DELETE /api/admin/drives/{id}/members/{kind}/{sid} — remove a\nmember as an admin. Bypasses `Manage`; keeps last-owner protection.",
-        "description": "Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.",
+        "description": "Requires the deployment administrator role; enforced by the compiled policy declared on the `/api/admin` nest.",
         "operationId": "remove_drive_member_admin",
         "parameters": [
           {
@@ -2207,14 +2209,14 @@
             "bearerAuth": []
           }
         ],
-        "x-oxicloud-scope": "role:admin"
+        "x-oxicloud-minrole": "admin"
       },
       "patch": {
         "tags": [
           "admin"
         ],
         "summary": "PATCH /api/admin/drives/{id}/members/{kind}/{sid} — change a member's\nrole / expiry as an admin. Same admin-bypass shape as\n`add_drive_member_admin`.",
-        "description": "Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.",
+        "description": "Requires the deployment administrator role; enforced by the compiled policy declared on the `/api/admin` nest.",
         "operationId": "update_drive_member_admin",
         "parameters": [
           {
@@ -2314,7 +2316,7 @@
             "bearerAuth": []
           }
         ],
-        "x-oxicloud-scope": "role:admin"
+        "x-oxicloud-minrole": "admin"
       }
     },
     "/api/admin/jobs": {
@@ -2323,7 +2325,7 @@
           "admin"
         ],
         "summary": "`body` is spelled out rather than left as `Object`: the admin panel\nswitches on `mutates`, `parameters[].type` and `parameters[].allowed`,\nand an untyped body meant the generated SDK carried no TS type for any\nof them — so the panel's `JobSummary`/`JobParam` were hand-written and\nungoverned, exactly the drift `PhotoResourceItemDto` was registered to\nstop.",
-        "description": "Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.",
+        "description": "Requires the deployment administrator role; enforced by the compiled policy declared on the `/api/admin` nest.",
         "operationId": "list_jobs",
         "responses": {
           "200": {
@@ -2365,7 +2367,7 @@
             "bearerAuth": []
           }
         ],
-        "x-oxicloud-scope": "role:admin"
+        "x-oxicloud-minrole": "admin"
       }
     },
     "/api/admin/jobs/{name}/cancel": {
@@ -2374,7 +2376,7 @@
           "admin"
         ],
         "summary": "`POST /api/admin/jobs/{name}/cancel` — cooperative cancel of the\ncurrently-running recoverable run for `{name}`.",
-        "description": "Flips the row's `status` from `Running` → `CancelRequested`. The\nhandler is responsible for polling `store.status()` between batches\nand returning `RunOutcome::Paused` at the next safe boundary; if it\ndoesn't, the cancel is a no-op until the run completes naturally.\n\nReturns 200 with the run_id when a Running row was flipped, 200 with\n`cancelled: false` when nothing was running (either no runs exist,\nor the latest is Paused / Completed / Failed / already CancelRequested).\nNever 404 on \"no active run\" — the job name is registered and the\nendpoint just reports the truth.\n\nRequires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.",
+        "description": "Flips the row's `status` from `Running` → `CancelRequested`. The\nhandler is responsible for polling `store.status()` between batches\nand returning `RunOutcome::Paused` at the next safe boundary; if it\ndoesn't, the cancel is a no-op until the run completes naturally.\n\nReturns 200 with the run_id when a Running row was flipped, 200 with\n`cancelled: false` when nothing was running (either no runs exist,\nor the latest is Paused / Completed / Failed / already CancelRequested).\nNever 404 on \"no active run\" — the job name is registered and the\nendpoint just reports the truth.\n\nRequires the deployment administrator role; enforced by the compiled policy declared on the `/api/admin` nest.",
         "operationId": "cancel_job",
         "parameters": [
           {
@@ -2434,7 +2436,7 @@
             "bearerAuth": []
           }
         ],
-        "x-oxicloud-scope": "role:admin"
+        "x-oxicloud-minrole": "admin"
       }
     },
     "/api/admin/jobs/{name}/pause": {
@@ -2443,7 +2445,7 @@
           "admin"
         ],
         "summary": "`POST /api/admin/jobs/{name}/pause` — cooperative PAUSE of the\ncurrently-running recoverable run for `{name}`.",
-        "description": "Same DB mechanism as the old cancel (Running → CancelRequested,\nhandler yields to Paused), but no `cancel_intent` stamp so the\nengine writes `Paused`. Use this to interrupt a long-running\njob and resume it later; use `/cancel` to abandon it terminally.\n\nIdempotent: if the row is already Paused, returns 200 with\n`paused: false, reason: \"already_paused\"`.\n\nRequires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.",
+        "description": "Same DB mechanism as the old cancel (Running → CancelRequested,\nhandler yields to Paused), but no `cancel_intent` stamp so the\nengine writes `Paused`. Use this to interrupt a long-running\njob and resume it later; use `/cancel` to abandon it terminally.\n\nIdempotent: if the row is already Paused, returns 200 with\n`paused: false, reason: \"already_paused\"`.\n\nRequires the deployment administrator role; enforced by the compiled policy declared on the `/api/admin` nest.",
         "operationId": "pause_job",
         "parameters": [
           {
@@ -2503,7 +2505,7 @@
             "bearerAuth": []
           }
         ],
-        "x-oxicloud-scope": "role:admin"
+        "x-oxicloud-minrole": "admin"
       }
     },
     "/api/admin/jobs/{name}/runs": {
@@ -2512,7 +2514,7 @@
           "admin"
         ],
         "summary": "`GET /api/admin/jobs/{name}/runs?limit=N` — history of recoverable\nruns for a registered job, newest first. Includes terminal +\nnon-terminal rows.",
-        "description": "Read-only, no audit line — standard admin-middleware auth is enough.\n\nRequires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.",
+        "description": "Read-only, no audit line — standard admin-middleware auth is enough.\n\nRequires the deployment administrator role; enforced by the compiled policy declared on the `/api/admin` nest.",
         "operationId": "list_job_runs",
         "parameters": [
           {
@@ -2583,7 +2585,7 @@
             "bearerAuth": []
           }
         ],
-        "x-oxicloud-scope": "role:admin"
+        "x-oxicloud-minrole": "admin"
       }
     },
     "/api/admin/jobs/{name}/runs/{id}": {
@@ -2592,7 +2594,7 @@
           "admin"
         ],
         "summary": "`GET /api/admin/jobs/{name}/runs/{id}` — single-run detail.",
-        "description": "Returns 404 when the id doesn't exist. `{name}` is not validated\nagainst the run's `job_name` — the id is globally unique — but\nkeeping the name in the URL path lets operators build stable\nper-job history links without knowing individual run ids upfront.\n\nRequires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.",
+        "description": "Returns 404 when the id doesn't exist. `{name}` is not validated\nagainst the run's `job_name` — the id is globally unique — but\nkeeping the name in the URL path lets operators build stable\nper-job history links without knowing individual run ids upfront.\n\nRequires the deployment administrator role; enforced by the compiled policy declared on the `/api/admin` nest.",
         "operationId": "get_job_run",
         "parameters": [
           {
@@ -2671,7 +2673,7 @@
             "bearerAuth": []
           }
         ],
-        "x-oxicloud-scope": "role:admin"
+        "x-oxicloud-minrole": "admin"
       }
     },
     "/api/admin/jobs/{name}/runs/{id}/findings": {
@@ -2680,7 +2682,7 @@
           "admin"
         ],
         "summary": "`GET /api/admin/jobs/{name}/runs/{id}/findings?limit=N&offset=M` —\npaginated findings emitted by a specific run of a recoverable job.",
-        "description": "404 when the run id doesn't exist (anti-enum: caller knew the id\nsomehow; we don't leak whether it was pruned vs never-existed).\nRead-only, no audit — standard admin-middleware auth is enough.\n\n`{name}` is not validated against the run's `job_name` (the id is\nglobally unique) but keeps the URL path consistent with the other\nper-run endpoints for stable per-job history links.\n\nRequires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.",
+        "description": "404 when the run id doesn't exist (anti-enum: caller knew the id\nsomehow; we don't leak whether it was pruned vs never-existed).\nRead-only, no audit — standard admin-middleware auth is enough.\n\n`{name}` is not validated against the run's `job_name` (the id is\nglobally unique) but keeps the URL path consistent with the other\nper-run endpoints for stable per-job history links.\n\nRequires the deployment administrator role; enforced by the compiled policy declared on the `/api/admin` nest.",
         "operationId": "list_job_run_findings",
         "parameters": [
           {
@@ -2781,7 +2783,7 @@
             "bearerAuth": []
           }
         ],
-        "x-oxicloud-scope": "role:admin"
+        "x-oxicloud-minrole": "admin"
       }
     },
     "/api/admin/jobs/{name}/trigger": {
@@ -2790,7 +2792,7 @@
           "admin"
         ],
         "summary": "`POST /api/admin/jobs/{name}/trigger` — dispatch one run off-schedule.",
-        "description": "Returns the job's `JobOutcome` inline. Idempotent under exclusivity:\nif the previous run is still in flight, the handler returns\n`Ok { count: 0, extra: { \"skipped\": \"already_running\" } }` rather\nthan spawning a parallel dispatch.\n\nEmits an audit line before dispatch — bulk-mutation side effects on\noperator command belong on the audit stream.\n\nRequires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.",
+        "description": "Returns the job's `JobOutcome` inline. Idempotent under exclusivity:\nif the previous run is still in flight, the handler returns\n`Ok { count: 0, extra: { \"skipped\": \"already_running\" } }` rather\nthan spawning a parallel dispatch.\n\nEmits an audit line before dispatch — bulk-mutation side effects on\noperator command belong on the audit stream.\n\nRequires the deployment administrator role; enforced by the compiled policy declared on the `/api/admin` nest.",
         "operationId": "trigger_job",
         "parameters": [
           {
@@ -2850,7 +2852,7 @@
             "bearerAuth": []
           }
         ],
-        "x-oxicloud-scope": "role:admin"
+        "x-oxicloud-minrole": "admin"
       }
     },
     "/api/admin/notify/info": {
@@ -2859,7 +2861,7 @@
           "admin"
         ],
         "summary": "`GET /api/admin/notify/info` — the alerting policy, as the running\nprocess sees it.",
-        "description": "Separate from `/smtp/info` and `/webhook/info`, which describe\n*transports*. This describes what gets sent: the severity floor, and\nwhich channels are actually wired. Worth its own endpoint because the\nfloor was invisible in the panel until now — an operator could see a\nconfigured webhook, a healthy SMTP server, and still be told nothing,\nbecause the default threshold only admits `data_loss`.\n\nRequires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.",
+        "description": "Separate from `/smtp/info` and `/webhook/info`, which describe\n*transports*. This describes what gets sent: the severity floor, and\nwhich channels are actually wired. Worth its own endpoint because the\nfloor was invisible in the panel until now — an operator could see a\nconfigured webhook, a healthy SMTP server, and still be told nothing,\nbecause the default threshold only admits `data_loss`.\n\nRequires the deployment administrator role; enforced by the compiled policy declared on the `/api/admin` nest.",
         "operationId": "get_notify_info",
         "responses": {
           "200": {
@@ -2898,7 +2900,7 @@
             "bearerAuth": []
           }
         ],
-        "x-oxicloud-scope": "role:admin"
+        "x-oxicloud-minrole": "admin"
       }
     },
     "/api/admin/search/cache": {
@@ -2906,7 +2908,7 @@
         "tags": [
           "admin"
         ],
-        "description": "Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.",
+        "description": "Requires the deployment administrator role; enforced by the compiled policy declared on the `/api/admin` nest.",
         "operationId": "clear_search_cache",
         "responses": {
           "200": {
@@ -2955,7 +2957,7 @@
             "bearerAuth": []
           }
         ],
-        "x-oxicloud-scope": "role:admin"
+        "x-oxicloud-minrole": "admin"
       }
     },
     "/api/admin/sessions": {
@@ -2964,7 +2966,7 @@
           "admin"
         ],
         "summary": "GET /api/admin/sessions?user_id=&include_revoked=&limit=&offset= — list sessions",
-        "description": "Global cross-user listing by default. `user_id` narrows to one\nuser; omit for cross-user. `include_revoked=true` opts into\nshowing revoked / expired rows for forensics (default hides).\nResponse is `{sessions, limit, offset}` — no total count (would\nrequire a second scan; the panel paginates on presence of\nexactly `limit` rows returned).\n\nRequires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.",
+        "description": "Global cross-user listing by default. `user_id` narrows to one\nuser; omit for cross-user. `include_revoked=true` opts into\nshowing revoked / expired rows for forensics (default hides).\nResponse is `{sessions, limit, offset}` — no total count (would\nrequire a second scan; the panel paginates on presence of\nexactly `limit` rows returned).\n\nRequires the deployment administrator role; enforced by the compiled policy declared on the `/api/admin` nest.",
         "operationId": "list_sessions",
         "parameters": [
           {
@@ -3043,7 +3045,7 @@
             "bearerAuth": []
           }
         ],
-        "x-oxicloud-scope": "role:admin"
+        "x-oxicloud-minrole": "admin"
       }
     },
     "/api/admin/sessions/{id}": {
@@ -3052,7 +3054,7 @@
           "admin"
         ],
         "summary": "DELETE /api/admin/sessions/:id — revoke a session",
-        "description": "Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.",
+        "description": "Requires the deployment administrator role; enforced by the compiled policy declared on the `/api/admin` nest.",
         "operationId": "revoke_session",
         "parameters": [
           {
@@ -3122,7 +3124,7 @@
             "bearerAuth": []
           }
         ],
-        "x-oxicloud-scope": "role:admin"
+        "x-oxicloud-minrole": "admin"
       }
     },
     "/api/admin/settings/appearance": {
@@ -3130,7 +3132,7 @@
         "tags": [
           "admin"
         ],
-        "description": "Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.",
+        "description": "Requires the deployment administrator role; enforced by the compiled policy declared on the `/api/admin` nest.",
         "operationId": "get_appearance",
         "responses": {
           "200": {
@@ -3155,13 +3157,13 @@
             "bearerAuth": []
           }
         ],
-        "x-oxicloud-scope": "role:admin"
+        "x-oxicloud-minrole": "admin"
       },
       "put": {
         "tags": [
           "admin"
         ],
-        "description": "Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.",
+        "description": "Requires the deployment administrator role; enforced by the compiled policy declared on the `/api/admin` nest.",
         "operationId": "select_theme",
         "requestBody": {
           "content": {
@@ -3202,7 +3204,7 @@
             "bearerAuth": []
           }
         ],
-        "x-oxicloud-scope": "role:admin"
+        "x-oxicloud-minrole": "admin"
       }
     },
     "/api/admin/settings/appearance/reload": {
@@ -3210,7 +3212,7 @@
         "tags": [
           "admin"
         ],
-        "description": "Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.",
+        "description": "Requires the deployment administrator role; enforced by the compiled policy declared on the `/api/admin` nest.",
         "operationId": "reload_themes",
         "responses": {
           "200": {
@@ -3241,7 +3243,7 @@
             "bearerAuth": []
           }
         ],
-        "x-oxicloud-scope": "role:admin"
+        "x-oxicloud-minrole": "admin"
       }
     },
     "/api/admin/settings/oidc": {
@@ -3250,7 +3252,7 @@
           "admin"
         ],
         "summary": "GET /api/admin/settings/oidc — get OIDC settings for the admin panel",
-        "description": "Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.",
+        "description": "Requires the deployment administrator role; enforced by the compiled policy declared on the `/api/admin` nest.",
         "operationId": "get_oidc_settings",
         "responses": {
           "200": {
@@ -3289,14 +3291,14 @@
             "bearerAuth": []
           }
         ],
-        "x-oxicloud-scope": "role:admin"
+        "x-oxicloud-minrole": "admin"
       },
       "put": {
         "tags": [
           "admin"
         ],
         "summary": "PUT /api/admin/settings/oidc — save OIDC settings + hot-reload",
-        "description": "Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.",
+        "description": "Requires the deployment administrator role; enforced by the compiled policy declared on the `/api/admin` nest.",
         "operationId": "save_oidc_settings",
         "requestBody": {
           "content": {
@@ -3365,7 +3367,7 @@
             "bearerAuth": []
           }
         ],
-        "x-oxicloud-scope": "role:admin"
+        "x-oxicloud-minrole": "admin"
       }
     },
     "/api/admin/settings/registration": {
@@ -3374,7 +3376,7 @@
           "admin"
         ],
         "summary": "PUT /api/admin/settings/registration — enable/disable public registration",
-        "description": "Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.",
+        "description": "Requires the deployment administrator role; enforced by the compiled policy declared on the `/api/admin` nest.",
         "operationId": "set_registration_setting",
         "requestBody": {
           "content": {
@@ -3431,7 +3433,7 @@
             "bearerAuth": []
           }
         ],
-        "x-oxicloud-scope": "role:admin"
+        "x-oxicloud-minrole": "admin"
       }
     },
     "/api/admin/settings/storage": {
@@ -3440,7 +3442,7 @@
           "admin"
         ],
         "summary": "GET /api/admin/settings/storage — get storage backend settings",
-        "description": "Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.",
+        "description": "Requires the deployment administrator role; enforced by the compiled policy declared on the `/api/admin` nest.",
         "operationId": "get_storage_settings",
         "responses": {
           "200": {
@@ -3479,14 +3481,14 @@
             "bearerAuth": []
           }
         ],
-        "x-oxicloud-scope": "role:admin"
+        "x-oxicloud-minrole": "admin"
       },
       "put": {
         "tags": [
           "admin"
         ],
         "summary": "PUT /api/admin/settings/storage — save storage backend settings",
-        "description": "Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.",
+        "description": "Requires the deployment administrator role; enforced by the compiled policy declared on the `/api/admin` nest.",
         "operationId": "save_storage_settings",
         "requestBody": {
           "content": {
@@ -3535,7 +3537,7 @@
             "bearerAuth": []
           }
         ],
-        "x-oxicloud-scope": "role:admin"
+        "x-oxicloud-minrole": "admin"
       }
     },
     "/api/admin/settings/storage/generate-key": {
@@ -3544,7 +3546,7 @@
           "admin"
         ],
         "summary": "POST /api/admin/settings/storage/generate-key — generate a random AES-256 key.",
-        "description": "Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.",
+        "description": "Requires the deployment administrator role; enforced by the compiled policy declared on the `/api/admin` nest.",
         "operationId": "generate_encryption_key",
         "responses": {
           "200": {
@@ -3583,7 +3585,7 @@
             "bearerAuth": []
           }
         ],
-        "x-oxicloud-scope": "role:admin"
+        "x-oxicloud-minrole": "admin"
       }
     },
     "/api/admin/smtp/info": {
@@ -3592,7 +3594,7 @@
           "admin"
         ],
         "summary": "GET /api/admin/smtp/info — read-only view of the running SMTP config.",
-        "description": "Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.",
+        "description": "Requires the deployment administrator role; enforced by the compiled policy declared on the `/api/admin` nest.",
         "operationId": "get_smtp_info",
         "responses": {
           "200": {
@@ -3631,7 +3633,7 @@
             "bearerAuth": []
           }
         ],
-        "x-oxicloud-scope": "role:admin"
+        "x-oxicloud-minrole": "admin"
       }
     },
     "/api/admin/smtp/test": {
@@ -3640,7 +3642,7 @@
           "admin"
         ],
         "summary": "POST /api/admin/smtp/test — send a diagnostic email to `dto.to`.",
-        "description": "Returns 200 regardless of SMTP outcome; the body's `success` flag\n+ `code`/`message` (or `error`) tell the frontend what to render.\nThis keeps SMTP-level failures (4xx/5xx replies, connection\ntimeouts) as ordinary diagnostic data rather than HTTP errors.\n\nRequires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.",
+        "description": "Returns 200 regardless of SMTP outcome; the body's `success` flag\n+ `code`/`message` (or `error`) tell the frontend what to render.\nThis keeps SMTP-level failures (4xx/5xx replies, connection\ntimeouts) as ordinary diagnostic data rather than HTTP errors.\n\nRequires the deployment administrator role; enforced by the compiled policy declared on the `/api/admin` nest.",
         "operationId": "send_smtp_test",
         "requestBody": {
           "content": {
@@ -3699,7 +3701,7 @@
             "bearerAuth": []
           }
         ],
-        "x-oxicloud-scope": "role:admin"
+        "x-oxicloud-minrole": "admin"
       }
     },
     "/api/admin/storage/entries/{name}/rotate": {
@@ -3708,7 +3710,7 @@
           "admin"
         ],
         "summary": "POST /api/admin/storage/entries/{name}/rotate — trigger the\n`backend_rotate` recoverable job on a specific entry.",
-        "description": "Normalises every blob on `<name>` to the entry's head-pair\nformat: legacy → v1, plaintext ↔ encrypted, old-key → new-key.\nSee `docs/plan/storage-key-rotation.md` §\"The rotation job\".\n\nUnlike migration, rotation does NOT engage read-only mode —\nrewrites happen in place under normal traffic. Concurrent user\nwrites coexist safely.\n\nThe handler validates the entry name synchronously (400 on\nunknown entry); the actual walk detaches into a\n`tokio::spawn` so the HTTP call returns immediately.\n\nRequires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.",
+        "description": "Normalises every blob on `<name>` to the entry's head-pair\nformat: legacy → v1, plaintext ↔ encrypted, old-key → new-key.\nSee `docs/plan/storage-key-rotation.md` §\"The rotation job\".\n\nUnlike migration, rotation does NOT engage read-only mode —\nrewrites happen in place under normal traffic. Concurrent user\nwrites coexist safely.\n\nThe handler validates the entry name synchronously (400 on\nunknown entry); the actual walk detaches into a\n`tokio::spawn` so the HTTP call returns immediately.\n\nRequires the deployment administrator role; enforced by the compiled policy declared on the `/api/admin` nest.",
         "operationId": "trigger_backend_rotate",
         "parameters": [
           {
@@ -3761,7 +3763,7 @@
             "bearerAuth": []
           }
         ],
-        "x-oxicloud-scope": "role:admin"
+        "x-oxicloud-minrole": "admin"
       }
     },
     "/api/admin/storage/migration": {
@@ -3770,7 +3772,7 @@
           "admin"
         ],
         "summary": "GET /api/admin/storage/migration — current migration progress.",
-        "description": "Shim over the recoverable-run engine: reads the latest\n`backend_migration` run from `jobs.recoverable_runs` (via the\n`JobStoreProvider`) and projects it into the legacy\n`MigrationStateDto` shape the admin storage tab expects. When no\nrun has ever been triggered the response is an empty \"idle\" DTO —\nsame behaviour the old in-memory `MigrationState::default()`\nproduced.\n\nRequires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.",
+        "description": "Shim over the recoverable-run engine: reads the latest\n`backend_migration` run from `jobs.recoverable_runs` (via the\n`JobStoreProvider`) and projects it into the legacy\n`MigrationStateDto` shape the admin storage tab expects. When no\nrun has ever been triggered the response is an empty \"idle\" DTO —\nsame behaviour the old in-memory `MigrationState::default()`\nproduced.\n\nRequires the deployment administrator role; enforced by the compiled policy declared on the `/api/admin` nest.",
         "operationId": "get_migration_status",
         "responses": {
           "200": {
@@ -3809,7 +3811,7 @@
             "bearerAuth": []
           }
         ],
-        "x-oxicloud-scope": "role:admin"
+        "x-oxicloud-minrole": "admin"
       }
     },
     "/api/admin/storage/migration/pause": {
@@ -3818,7 +3820,7 @@
           "admin"
         ],
         "summary": "POST /api/admin/storage/migration/pause — pause a running migration.",
-        "description": "Shim over cooperative cancel: flips the run row's status to\n`CancelRequested`; the recoverable handler polls between batches\nand returns `Paused` at the next boundary. If nothing is running,\nreturns 200 with `paused: false` — matches the \"no-op is fine\"\ncontract of `/api/admin/jobs/{name}/cancel`.\n\nRequires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.",
+        "description": "Shim over cooperative cancel: flips the run row's status to\n`CancelRequested`; the recoverable handler polls between batches\nand returns `Paused` at the next boundary. If nothing is running,\nreturns 200 with `paused: false` — matches the \"no-op is fine\"\ncontract of `/api/admin/jobs/{name}/cancel`.\n\nRequires the deployment administrator role; enforced by the compiled policy declared on the `/api/admin` nest.",
         "operationId": "pause_migration",
         "responses": {
           "200": {
@@ -3857,7 +3859,7 @@
             "bearerAuth": []
           }
         ],
-        "x-oxicloud-scope": "role:admin"
+        "x-oxicloud-minrole": "admin"
       }
     },
     "/api/admin/storage/migration/resume": {
@@ -3866,7 +3868,7 @@
           "admin"
         ],
         "summary": "POST /api/admin/storage/migration/resume — resume a paused migration.",
-        "description": "Same underlying trigger as `/start`: `run_or_resume` inspects the\nlatest row and picks Fresh / Resume / AlreadyActive at dispatch\ntime. Kept as a distinct endpoint for wire-compat.\n\nRequires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.",
+        "description": "Same underlying trigger as `/start`: `run_or_resume` inspects the\nlatest row and picks Fresh / Resume / AlreadyActive at dispatch\ntime. Kept as a distinct endpoint for wire-compat.\n\nRequires the deployment administrator role; enforced by the compiled policy declared on the `/api/admin` nest.",
         "operationId": "resume_migration",
         "responses": {
           "200": {
@@ -3905,7 +3907,7 @@
             "bearerAuth": []
           }
         ],
-        "x-oxicloud-scope": "role:admin"
+        "x-oxicloud-minrole": "admin"
       }
     },
     "/api/admin/storage/migration/start": {
@@ -3914,7 +3916,7 @@
           "admin"
         ],
         "summary": "POST /api/admin/storage/migration/start — begin background migration.",
-        "description": "Shim that forwards to `JobRegistry::trigger(\"backend_migration\",\n...)`. `run_or_resume` (the RecoverableAdapter's inner dispatch)\nresumes a Paused run or starts a fresh one — one endpoint covers\nboth. Exclusivity is enforced at the DB layer (the partial unique\nindex on `jobs.recoverable_runs`), so a second concurrent trigger\nis a no-op that returns the existing run.\n\n`StartMigrationDto.concurrency` is currently ignored — the\nrecoverable copy loop runs sequentially. Kept in the DTO for\nwire-compat with the admin UI; will be honoured if a concurrency\nknob is added later.\n\nRequires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.",
+        "description": "Shim that forwards to `JobRegistry::trigger(\"backend_migration\",\n...)`. `run_or_resume` (the RecoverableAdapter's inner dispatch)\nresumes a Paused run or starts a fresh one — one endpoint covers\nboth. Exclusivity is enforced at the DB layer (the partial unique\nindex on `jobs.recoverable_runs`), so a second concurrent trigger\nis a no-op that returns the existing run.\n\n`StartMigrationDto.concurrency` is currently ignored — the\nrecoverable copy loop runs sequentially. Kept in the DTO for\nwire-compat with the admin UI; will be honoured if a concurrency\nknob is added later.\n\nRequires the deployment administrator role; enforced by the compiled policy declared on the `/api/admin` nest.",
         "operationId": "start_migration",
         "requestBody": {
           "content": {
@@ -3963,7 +3965,7 @@
             "bearerAuth": []
           }
         ],
-        "x-oxicloud-scope": "role:admin"
+        "x-oxicloud-minrole": "admin"
       }
     },
     "/api/admin/storage/write-lock": {
@@ -3972,7 +3974,7 @@
           "admin"
         ],
         "summary": "GET /api/admin/storage/write-lock — current holder, or `None`.",
-        "description": "Public contract: the response is a stable\n[`BackendWriteLockStatusDto`] carrying `is_held` + an optional\n`holder` (typed reason). Called by the admin UI on every\nStorage-tab visit, and by hurl tests to assert pre/post state.\n\nRequires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.",
+        "description": "Public contract: the response is a stable\n[`BackendWriteLockStatusDto`] carrying `is_held` + an optional\n`holder` (typed reason). Called by the admin UI on every\nStorage-tab visit, and by hurl tests to assert pre/post state.\n\nRequires the deployment administrator role; enforced by the compiled policy declared on the `/api/admin` nest.",
         "operationId": "get_backend_write_lock",
         "responses": {
           "200": {
@@ -4011,14 +4013,14 @@
             "bearerAuth": []
           }
         ],
-        "x-oxicloud-scope": "role:admin"
+        "x-oxicloud-minrole": "admin"
       },
       "post": {
         "tags": [
           "admin"
         ],
         "summary": "POST /api/admin/storage/write-lock — engage the External lock.",
-        "description": "Takes a one-line label the UI surfaces alongside the lock icon\n(e.g., \"nightly restic to NAS\"). Fails with 409 if any OTHER\nholder is already engaged — operator must release the current\nhold first via DELETE, which is audit-logged.\n\nRequires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.",
+        "description": "Takes a one-line label the UI surfaces alongside the lock icon\n(e.g., \"nightly restic to NAS\"). Fails with 409 if any OTHER\nholder is already engaged — operator must release the current\nhold first via DELETE, which is audit-logged.\n\nRequires the deployment administrator role; enforced by the compiled policy declared on the `/api/admin` nest.",
         "operationId": "acquire_backend_write_lock",
         "requestBody": {
           "description": "Label + optional auto-expiry",
@@ -4078,14 +4080,14 @@
             "bearerAuth": []
           }
         ],
-        "x-oxicloud-scope": "role:admin"
+        "x-oxicloud-minrole": "admin"
       },
       "delete": {
         "tags": [
           "admin"
         ],
         "summary": "DELETE /api/admin/storage/write-lock — release the lock,\nwhatever variant currently holds it.",
-        "description": "Clears both the typed holder and the legacy bool, so writes\nresume AND backend-writer jobs stop deferring on the next tick.\nAudit-logged with the previous holder's kind for the trail.\n\nRequires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.",
+        "description": "Clears both the typed holder and the legacy bool, so writes\nresume AND backend-writer jobs stop deferring on the next tick.\nAudit-logged with the previous holder's kind for the trail.\n\nRequires the deployment administrator role; enforced by the compiled policy declared on the `/api/admin` nest.",
         "operationId": "release_backend_write_lock",
         "responses": {
           "200": {
@@ -4124,7 +4126,7 @@
             "bearerAuth": []
           }
         ],
-        "x-oxicloud-scope": "role:admin"
+        "x-oxicloud-minrole": "admin"
       }
     },
     "/api/admin/transfer-ownership": {
@@ -4133,7 +4135,7 @@
           "admin"
         ],
         "summary": "POST /api/admin/transfer-ownership — hand the instance to another user.",
-        "description": "Owner-only, and the only way the owner's own role ever changes: the\ngeneric role endpoint refuses `\"owner\"` in both directions. The swap is\none transaction, so the instance is never briefly ownerless or briefly\ndouble-owned.\n\nRequires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.",
+        "description": "Owner-only, and the only way the owner's own role ever changes: the\ngeneric role endpoint refuses `\"owner\"` in both directions. The swap is\none transaction, so the instance is never briefly ownerless or briefly\ndouble-owned.\n\nRequires the SERVER OWNER — stricter than admin. An administrator is refused.",
         "operationId": "transfer_ownership",
         "requestBody": {
           "content": {
@@ -4202,7 +4204,7 @@
             "bearerAuth": []
           }
         ],
-        "x-oxicloud-scope": "role:admin"
+        "x-oxicloud-minrole": "owner"
       }
     },
     "/api/admin/users": {
@@ -4211,7 +4213,7 @@
           "admin"
         ],
         "summary": "GET /api/admin/users?limit=50&offset=0 — list all users",
-        "description": "Always returns `Vec<FullUserDto>` — the shape one row of the\n`/me` response's embedded `full` block carries. The former\n`?summary` toggle (flat `PublicUserDto` vs nested `FullUserDto`)\nhas been retired: admin listing is low-volume and the FE always\nasked for the nested shape anyway, so the two-shape split served\nno caller and only invited jq-path bugs. See\n`docs/plan/userdto-refactor.md`.\n\nRequires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.",
+        "description": "Always returns `Vec<FullUserDto>` — the shape one row of the\n`/me` response's embedded `full` block carries. The former\n`?summary` toggle (flat `PublicUserDto` vs nested `FullUserDto`)\nhas been retired: admin listing is low-volume and the FE always\nasked for the nested shape anyway, so the two-shape split served\nno caller and only invited jq-path bugs. See\n`docs/plan/userdto-refactor.md`.\n\nRequires the deployment administrator role; enforced by the compiled policy declared on the `/api/admin` nest.",
         "operationId": "list_users",
         "parameters": [
           {
@@ -4272,14 +4274,14 @@
             "bearerAuth": []
           }
         ],
-        "x-oxicloud-scope": "role:admin"
+        "x-oxicloud-minrole": "admin"
       },
       "post": {
         "tags": [
           "admin"
         ],
         "summary": "POST /api/admin/users — create a new user (admin only)",
-        "description": "Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.",
+        "description": "Requires the deployment administrator role; enforced by the compiled policy declared on the `/api/admin` nest.",
         "operationId": "create_user",
         "requestBody": {
           "content": {
@@ -4338,7 +4340,7 @@
             "bearerAuth": []
           }
         ],
-        "x-oxicloud-scope": "role:admin"
+        "x-oxicloud-minrole": "admin"
       }
     },
     "/api/admin/users/{id}": {
@@ -4347,7 +4349,7 @@
           "admin"
         ],
         "summary": "GET /api/admin/users/:id — get single user",
-        "description": "Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.",
+        "description": "Requires the deployment administrator role; enforced by the compiled policy declared on the `/api/admin` nest.",
         "operationId": "get_user",
         "parameters": [
           {
@@ -4407,14 +4409,14 @@
             "bearerAuth": []
           }
         ],
-        "x-oxicloud-scope": "role:admin"
+        "x-oxicloud-minrole": "admin"
       },
       "delete": {
         "tags": [
           "admin"
         ],
         "summary": "DELETE /api/admin/users/:id — delete a user",
-        "description": "Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.",
+        "description": "Requires the deployment administrator role; enforced by the compiled policy declared on the `/api/admin` nest.",
         "operationId": "delete_user",
         "parameters": [
           {
@@ -4474,7 +4476,7 @@
             "bearerAuth": []
           }
         ],
-        "x-oxicloud-scope": "role:admin"
+        "x-oxicloud-minrole": "admin"
       }
     },
     "/api/admin/users/{id}/active": {
@@ -4483,7 +4485,7 @@
           "admin"
         ],
         "summary": "PUT /api/admin/users/:id/active — activate/deactivate user",
-        "description": "Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.",
+        "description": "Requires the deployment administrator role; enforced by the compiled policy declared on the `/api/admin` nest.",
         "operationId": "update_user_active",
         "parameters": [
           {
@@ -4553,7 +4555,7 @@
             "bearerAuth": []
           }
         ],
-        "x-oxicloud-scope": "role:admin"
+        "x-oxicloud-minrole": "admin"
       }
     },
     "/api/admin/users/{id}/password": {
@@ -4562,7 +4564,7 @@
           "admin"
         ],
         "summary": "PUT /api/admin/users/:id/password — reset a user's password (admin only)",
-        "description": "Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.",
+        "description": "Requires the deployment administrator role; enforced by the compiled policy declared on the `/api/admin` nest.",
         "operationId": "reset_user_password",
         "parameters": [
           {
@@ -4632,7 +4634,7 @@
             "bearerAuth": []
           }
         ],
-        "x-oxicloud-scope": "role:admin"
+        "x-oxicloud-minrole": "admin"
       }
     },
     "/api/admin/users/{id}/promote-to-internal": {
@@ -4641,7 +4643,7 @@
           "admin"
         ],
         "summary": "POST /api/admin/users/{id}/promote-to-internal — flip an external\n(grant-only) account into a normal internal account, provisioning\nits personal drive on the way. The deployment MUST have magic-link\nlogin enabled (the admin doesn't set the user's password on their\nbehalf, so the promoted user needs some way to log in). Refuses\nOIDC-linked users and users who are already internal.",
-        "description": "Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.",
+        "description": "Requires the deployment administrator role; enforced by the compiled policy declared on the `/api/admin` nest.",
         "operationId": "admin_promote_external_to_internal",
         "parameters": [
           {
@@ -4721,7 +4723,7 @@
             "bearerAuth": []
           }
         ],
-        "x-oxicloud-scope": "role:admin"
+        "x-oxicloud-minrole": "admin"
       }
     },
     "/api/admin/users/{id}/quota": {
@@ -4730,7 +4732,7 @@
           "admin"
         ],
         "summary": "PUT /api/admin/users/:id/quota — update user storage quota",
-        "description": "Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.",
+        "description": "Requires the deployment administrator role; enforced by the compiled policy declared on the `/api/admin` nest.",
         "operationId": "update_user_quota",
         "parameters": [
           {
@@ -4790,7 +4792,7 @@
             "bearerAuth": []
           }
         ],
-        "x-oxicloud-scope": "role:admin"
+        "x-oxicloud-minrole": "admin"
       }
     },
     "/api/admin/users/{id}/role": {
@@ -4799,7 +4801,7 @@
           "admin"
         ],
         "summary": "PUT /api/admin/users/:id/role — change user role",
-        "description": "Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.",
+        "description": "Requires the deployment administrator role; enforced by the compiled policy declared on the `/api/admin` nest.",
         "operationId": "update_user_role",
         "parameters": [
           {
@@ -4869,7 +4871,7 @@
             "bearerAuth": []
           }
         ],
-        "x-oxicloud-scope": "role:admin"
+        "x-oxicloud-minrole": "admin"
       }
     },
     "/api/admin/webhook/info": {
@@ -4878,7 +4880,7 @@
           "admin"
         ],
         "summary": "GET /api/admin/webhook/info — read-only view of the running webhook\nconfig, beside SMTP on the admin Notifications page.",
-        "description": "Reports the host but **never the full URL**: a Telegram endpoint carries\nthe bot token in its path, and a Slack or Discord webhook URL *is* the\ncredential. The host answers \"does this point where I think it does\"\nwithout putting a secret in a browser's network log.\n\nRequires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.",
+        "description": "Reports the host but **never the full URL**: a Telegram endpoint carries\nthe bot token in its path, and a Slack or Discord webhook URL *is* the\ncredential. The host answers \"does this point where I think it does\"\nwithout putting a secret in a browser's network log.\n\nRequires the deployment administrator role; enforced by the compiled policy declared on the `/api/admin` nest.",
         "operationId": "get_webhook_info",
         "responses": {
           "200": {
@@ -4917,7 +4919,7 @@
             "bearerAuth": []
           }
         ],
-        "x-oxicloud-scope": "role:admin"
+        "x-oxicloud-minrole": "admin"
       }
     },
     "/api/admin/webhook/test": {
@@ -4926,7 +4928,7 @@
           "admin"
         ],
         "summary": "`POST /api/admin/webhook/test` — POST a synthetic alert to the\nconfigured webhook.",
-        "description": "Under `/webhook` rather than `/jobs`: the webhook is a transport, and\njob findings are its first consumer rather than its definition. What\nthis verifies is the URL, the format and the credentials — not anything\nabout jobs.\n\nSame shape as `POST /api/admin/smtp/test`, and for the same reason: 200\nregardless of the transport's verdict, with the detail in the body. A\nwebhook returning 404 is diagnostic data an operator needs to read, not\nan HTTP error for the panel to swallow.\n\nThe synthetic alert deliberately bypasses the severity threshold that\ngates real findings — testing with the default `data_loss` threshold\nwould otherwise deliver nothing and read as a broken webhook.\n\nRequires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.",
+        "description": "Under `/webhook` rather than `/jobs`: the webhook is a transport, and\njob findings are its first consumer rather than its definition. What\nthis verifies is the URL, the format and the credentials — not anything\nabout jobs.\n\nSame shape as `POST /api/admin/smtp/test`, and for the same reason: 200\nregardless of the transport's verdict, with the detail in the body. A\nwebhook returning 404 is diagnostic data an operator needs to read, not\nan HTTP error for the panel to swallow.\n\nThe synthetic alert deliberately bypasses the severity threshold that\ngates real findings — testing with the default `data_loss` threshold\nwould otherwise deliver nothing and read as a broken webhook.\n\nRequires the deployment administrator role; enforced by the compiled policy declared on the `/api/admin` nest.",
         "operationId": "send_webhook_test",
         "responses": {
           "200": {
@@ -4975,7 +4977,7 @@
             "bearerAuth": []
           }
         ],
-        "x-oxicloud-scope": "role:admin"
+        "x-oxicloud-minrole": "admin"
       }
     },
     "/api/auth/app-passwords": {
@@ -9668,7 +9670,7 @@
           "files"
         ],
         "summary": "`GET /api/files/recent-changes`",
-        "description": "Returns the standard `CursorListResponse` envelope. A file may appear more\nthan once in a page — once per lane that touched it — which is why\n`changed_at` and `modifier` are per-row rather than per-file.",
+        "description": "Returns the standard `CursorListResponse` envelope. A file may appear more\nthan once in a page — once per lane that touched it — which is why\n`changed_at` and `modifier` are per-row rather than per-file.\n\nRequires an INTERNAL user. An external (grant-only) account is refused: it is a guest invited to specific resources, and this surface aggregates more than that invitation implied.",
         "operationId": "list_recent_changes",
         "parameters": [
           {
@@ -9808,7 +9810,8 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-minrole": "internal"
       }
     },
     "/api/files/upload": {
@@ -9877,7 +9880,7 @@
         "tags": [
           "files"
         ],
-        "description": "Reachable with a public-share token (`share:read`): a visitor holding an unlocked share link may call this, scoped to what that share grants.",
+        "description": "Reachable by a public-share VISITOR: someone holding an unlocked share link may call this, scoped to what that share grants. No account is required, but a share ring is.",
         "operationId": "download_file",
         "parameters": [
           {
@@ -9949,7 +9952,7 @@
             "bearerAuth": []
           }
         ],
-        "x-oxicloud-scope": "share:read"
+        "x-oxicloud-principal": "visitor"
       },
       "delete": {
         "tags": [
@@ -10135,7 +10138,7 @@
         "tags": [
           "files"
         ],
-        "description": "Reachable with a public-share token (`share:read`): a visitor holding an unlocked share link may call this, scoped to what that share grants.",
+        "description": "Reachable by a public-share VISITOR: someone holding an unlocked share link may call this, scoped to what that share grants. No account is required, but a share ring is.",
         "operationId": "get_file_metadata",
         "parameters": [
           {
@@ -10175,7 +10178,7 @@
             "bearerAuth": []
           }
         ],
-        "x-oxicloud-scope": "share:read"
+        "x-oxicloud-principal": "visitor"
       }
     },
     "/api/files/{id}/move": {
@@ -10292,7 +10295,7 @@
         "tags": [
           "files"
         ],
-        "description": "Reachable with a public-share token (`share:read`): a visitor holding an unlocked share link may call this, scoped to what that share grants.",
+        "description": "Reachable by a public-share VISITOR: someone holding an unlocked share link may call this, scoped to what that share grants. No account is required, but a share ring is.",
         "operationId": "get_thumbnail",
         "parameters": [
           {
@@ -10343,7 +10346,7 @@
             "bearerAuth": []
           }
         ],
-        "x-oxicloud-scope": "share:read"
+        "x-oxicloud-principal": "visitor"
       },
       "put": {
         "tags": [
@@ -10492,7 +10495,7 @@
         "tags": [
           "folders"
         ],
-        "description": "Reachable with a public-share token (`share:read`): a visitor holding an unlocked share link may call this, scoped to what that share grants.",
+        "description": "Reachable by a public-share VISITOR: someone holding an unlocked share link may call this, scoped to what that share grants. No account is required, but a share ring is.",
         "operationId": "get_folder",
         "parameters": [
           {
@@ -10532,7 +10535,7 @@
             "bearerAuth": []
           }
         ],
-        "x-oxicloud-scope": "share:read"
+        "x-oxicloud-principal": "visitor"
       },
       "delete": {
         "tags": [
@@ -10577,7 +10580,7 @@
         "tags": [
           "folders"
         ],
-        "description": "Reachable with a public-share token (`share:read`): a visitor holding an unlocked share link may call this, scoped to what that share grants.",
+        "description": "Reachable by a public-share VISITOR: someone holding an unlocked share link may call this, scoped to what that share grants. No account is required, but a share ring is.",
         "operationId": "get_folder_ancestors",
         "parameters": [
           {
@@ -10636,7 +10639,7 @@
             "bearerAuth": []
           }
         ],
-        "x-oxicloud-scope": "share:read"
+        "x-oxicloud-principal": "visitor"
       }
     },
     "/api/folders/{id}/download": {
@@ -10644,7 +10647,7 @@
         "tags": [
           "folders"
         ],
-        "description": "Reachable with a public-share token (`share:read`): a visitor holding an unlocked share link may call this, scoped to what that share grants.",
+        "description": "Reachable by a public-share VISITOR: someone holding an unlocked share link may call this, scoped to what that share grants. No account is required, but a share ring is.",
         "operationId": "download_folder_zip",
         "parameters": [
           {
@@ -10690,7 +10693,7 @@
             "bearerAuth": []
           }
         ],
-        "x-oxicloud-scope": "share:read"
+        "x-oxicloud-principal": "visitor"
       }
     },
     "/api/folders/{id}/move": {
@@ -10812,7 +10815,7 @@
         "tags": [
           "folders"
         ],
-        "description": "Reachable with a public-share token (`share:read`): a visitor holding an unlocked share link may call this, scoped to what that share grants.",
+        "description": "Reachable by a public-share VISITOR: someone holding an unlocked share link may call this, scoped to what that share grants. No account is required, but a share ring is.",
         "operationId": "list_folder_resources",
         "parameters": [
           {
@@ -10912,7 +10915,7 @@
             "bearerAuth": []
           }
         ],
-        "x-oxicloud-scope": "share:read"
+        "x-oxicloud-principal": "visitor"
       }
     },
     "/api/folders/{id}/upload-preflight": {
@@ -13261,6 +13264,7 @@
         "tags": [
           "playlists"
         ],
+        "description": "Requires an INTERNAL user. An external (grant-only) account is refused: it is a guest invited to specific resources, and this surface aggregates more than that invitation implied.",
         "operationId": "create_playlist",
         "requestBody": {
           "content": {
@@ -13308,7 +13312,8 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-minrole": "internal"
       }
     },
     "/api/playlists/audio-metadata/{file_id}": {

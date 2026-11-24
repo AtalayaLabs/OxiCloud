@@ -197,6 +197,27 @@ pub fn create_public_api_routes(app_state: &Arc<AppState>) -> Router<Arc<AppStat
 /// These routes require authentication when auth is enabled.
 /// Receives the fully-assembled `AppState` and extracts all needed services
 /// from it, avoiding a long parameter list.
+/// The router AND the fully-resolved policy registry, ready to install or
+/// to mark a spec with.
+///
+/// One function because there are TWO callers that must not drift: the
+/// server, which installs the registry for the gate, and
+/// `generate-openapi`, which marks the published spec from it. When the
+/// rebasing lived in `main.rs` alone, the generator produced a registry
+/// keyed `/admin` instead of `/api/admin` and silently marked nothing.
+pub fn api_router_and_policies(
+    app_state: &Arc<AppState>,
+) -> (Router<Arc<AppState>>, PolicyRegistry) {
+    let (router, declared) = create_api_routes(app_state);
+    // Declarations are written RELATIVE to this router, which does not
+    // know it will be mounted at `/api`.
+    let mut registry = declared.rebased_under("/api");
+    // Plus the operations that have no route to declare against — the DAV
+    // surfaces.
+    registry.absorb(crate::interfaces::api::policy_declarations::declarations());
+    (router, registry)
+}
+
 /// Returns the router AND the policy declarations made against it.
 ///
 /// Route, layer and policy are declared in ONE place — that is the point

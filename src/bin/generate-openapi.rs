@@ -1,22 +1,85 @@
+use oxicloud::common::config::AppConfig;
+use oxicloud::common::di::AppServiceFactory;
 use oxicloud::common::spec_tag::require_release_tag_or_exit;
-use oxicloud::interfaces::api::ApiDoc;
+use oxicloud::infrastructure::db::DbPools;
+use oxicloud::interfaces::api::{ApiDoc, mark_policies};
+use sqlx::postgres::PgPoolOptions;
 use std::fs;
 use std::path::PathBuf;
 use utoipa::OpenApi;
 
-fn main() {
+/// Writes `resources/gen/openapi.json`.
+///
+/// # Why this builds the whole service graph
+///
+/// The per-operation security markers are DERIVED from the compiled policy
+/// table, not from a list kept alongside it — so the published spec and the
+/// enforced gate are one thing rather than two that agree. The table is
+/// produced by `create_api_routes`, because policies are declared at their
+/// routes (`policy_get(h).policy([...])`), and a `Router` cannot be asked
+/// what it holds.
+///
+/// So this needs an `AppState` VALUE. It does NOT need a database:
+///
+/// * `DbPools` holds two `PgPool`s, and `connect_lazy` builds one without
+///   contacting a server.
+/// * `build_app_state` issues exactly two queries while constructing —
+///   `load_ops_banners` and `load_migration_readonly` — and both tolerate
+///   failure by design, logging a warning and returning a default. That is
+///   what makes a dead pool survivable here.
+/// * Nothing in `di.rs` WRITES to the filesystem during construction. It
+///   does READ one thing — the locale directory, which `with_config`
+///   turns into a registry and panics without — so that path is anchored
+///   on `CARGO_MANIFEST_DIR` rather than the config default.
+///
+/// It spawns a few background tickers that die with the process, and logs
+/// those two warnings. Nothing persists, and no real instance is touched.
+#[tokio::main]
+async fn main() {
     // `info.version` carries OXICLOUD_TAG (see the utoipa `info()` in
     // src/interfaces/api/mod.rs). Refuse to write a spec stamped with a
     // bare commit SHA — it would pass locally and fail CI's drift job for
     // everyone. See src/common/spec_tag.rs.
     require_release_tag_or_exit("generate-openapi", env!("OXICLOUD_TAG"));
 
-    let openapi = ApiDoc::openapi();
+    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let mut openapi = ApiDoc::openapi();
+
+    // A pool that never connects. The router is only CONSTRUCTED here, so
+    // no query runs through it.
+    let lazy = |url: &str| {
+        PgPoolOptions::new()
+            .max_connections(1)
+            .connect_lazy(url)
+            .expect("a parseable connection string")
+    };
+    let config = AppConfig::default();
+    let url = &config.database.connection_string;
+    let pools = DbPools {
+        primary: lazy(url),
+        maintenance: lazy(url),
+    };
+
+    // The locales path IS read — `with_config` builds the locale registry
+    // from it and panics if the directory is missing. Anchored on
+    // `CARGO_MANIFEST_DIR` so `just openapi` works from any cwd. The
+    // storage path is never touched: no request is served here.
+    let factory = AppServiceFactory::with_config(
+        config.storage_path.clone(),
+        manifest_dir.join("frontend").join("static").join("locales"),
+        config.clone(),
+    );
+    let state = factory
+        .build_app_state(Some(pools))
+        .await
+        .expect("service graph builds without a database");
+    let (_router, registry) =
+        oxicloud::interfaces::api::routes::api_router_and_policies(&state.into());
+
+    mark_policies(&mut openapi, &registry);
 
     let json =
         serde_json::to_string_pretty(&openapi).expect("Failed to serialize OpenAPI spec to JSON");
-
-    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
 
     let resources_gen_dir = manifest_dir.join("resources").join("gen");
     fs::create_dir_all(&resources_gen_dir).expect("Failed to create resources/gen directory");
@@ -24,8 +87,5 @@ fn main() {
     let output_path = resources_gen_dir.join("openapi.json");
     fs::write(&output_path, json).expect("Failed to write OpenAPI spec to file");
 
-    println!(
-        "OpenAPI spec generated successfully at: {}",
-        output_path.display()
-    );
+    println!("OpenAPI spec written to {}", output_path.display());
 }

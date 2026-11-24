@@ -57,7 +57,7 @@ use oxicloud::interfaces;
 use common::di::AppServiceFactory;
 use infrastructure::db::create_database_pools;
 use interfaces::{
-    create_api_routes, create_health_routes, create_public_api_routes,
+    create_health_routes, create_public_api_routes,
     web::{StaticSource, create_web_routes, resolve_static_source},
 };
 
@@ -785,10 +785,14 @@ async fn run(config: common::config::AppConfig) -> Result<(), Box<dyn std::error
     let app_state = Arc::new(app_state);
 
     // Build application router
-    // The policy declarations made against this router come back with it:
-    // route, layer and policy are written in ONE place in `routes.rs`, and
-    // a `Router` cannot be asked what it holds.
-    let (api_routes, api_policy) = create_api_routes(&app_state);
+    // Route, layer and policy are written in ONE place in `routes.rs`, and
+    // a `Router` cannot be asked what it holds — so the declarations come
+    // back alongside it, already rebased and merged with the operations
+    // that have no route. `generate-openapi` calls the same function, so
+    // the published spec cannot be marked from a different table than the
+    // one the gate enforces.
+    let (api_routes, api_policy) =
+        oxicloud::interfaces::api::routes::api_router_and_policies(&app_state);
     let public_api_routes = create_public_api_routes(&app_state);
 
     // Install the compiled policy declarations.
@@ -800,11 +804,7 @@ async fn run(config: common::config::AppConfig) -> Result<(), Box<dyn std::error
     // operations that have no route to declare against (the DAV ops) plus
     // the per-METHOD gates, which `.policy()` cannot express because a
     // `MethodRouter` does not expose its methods.
-    {
-        let mut registry = api_policy.rebased_under("/api");
-        registry.absorb(oxicloud::interfaces::api::policy_declarations::declarations());
-        oxicloud::interfaces::middleware::policy::install_registry(registry);
-    }
+    oxicloud::interfaces::middleware::policy::install_registry(api_policy);
     let health_routes = create_health_routes(&app_state);
     let web_routes = create_web_routes(app_state.clone(), static_source, app_shell);
 

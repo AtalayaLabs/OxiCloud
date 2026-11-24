@@ -93,18 +93,35 @@ mod tests {
     use utoipa::OpenApi;
     #[test]
     fn appearance_openapi_declares_the_enforced_admin_scope() {
-        let spec = serde_json::to_value(crate::interfaces::api::ApiDoc::openapi()).unwrap();
+        // The markers are applied by `mark_policies` from the compiled
+        // table, not by the `ApiDoc` derive — so a spec straight from
+        // `openapi()` carries none. Marked here with the one declaration
+        // that matters, which keeps this a test of THIS operation's
+        // documentation rather than of production wiring.
+        let mut openapi = crate::interfaces::api::ApiDoc::openapi();
+        let mut registry = crate::application::services::scope_table::PolicyRegistry::new();
+        registry.declare(
+            crate::application::services::scope_table::Site::RestPrefix("/api/admin"),
+            vec![crate::application::ports::scope_ports::Condition::role(
+                crate::application::ports::scope_ports::MinRole::Admin,
+            )],
+        );
+        crate::interfaces::api::mark_policies(&mut openapi, &registry);
+        let spec = serde_json::to_value(openapi).unwrap();
         let path = &spec["paths"]["/api/admin/settings/appearance"];
         for verb in ["get", "put"] {
-            // Regression pin: HTTP bearer scopes must stay empty; the central
-            // modifier derives the admin marker from the actual route prefix.
+            // Regression pin: HTTP bearer scopes must stay empty; the admin
+            // marker is DERIVED from the compiled policy, so it cannot
+            // disagree with what the gate enforces.
             assert_eq!(
                 path[verb]["security"][0]["bearerAuth"],
                 serde_json::json!([])
             );
+            // `minrole`, not `scope`: a role floor and a credential scope
+            // are different axes, and one key used to carry both.
             assert_eq!(
-                path[verb][crate::interfaces::api::SCOPE_EXTENSION],
-                "role:admin"
+                path[verb][crate::interfaces::api::MINROLE_EXTENSION],
+                "admin"
             );
             assert!(path[verb]["responses"]["200"]["content"]["application/json"].is_object());
         }
