@@ -1092,6 +1092,26 @@ you must remember to write does. So the value is two narrower things:
 allowlist and must stay `route_layer` (it needs `MatchedPath`). Fold the
 *decision* and leave the allowlist where it is.
 
+**A DAV operation is `(area, access)`, not `(surface, method)`.** The
+method carries exactly one authorization-relevant bit — read or write —
+so keying by it spends 36 declarations on six facts; and the AREA rather
+than the protocol is what a scope names, since a protocol vocabulary
+"would name the same permissions twice" (§ Areas, not protocols). An
+unlisted method classifies as a WRITE, fail-closed.
+
+**The NextCloud DAV doors are NOT in PR 1's fold.** They reach the same
+areas, but no folded layer covers `/remote.php/*`: the NC router carries
+only `access_log`, and `require_internal_user_layer` appears nowhere under
+`interfaces/nextcloud/`. Declaring `MinRole::Internal` for an NC
+operation would ADD a gate rather than fold one.
+
+That exposes an asymmetry worth its own diff: native `/webdav` refuses an
+external user and `/remote.php/dav/files` appears not to — the same
+"a gate on one door is a hole in the other" shape as
+`create_address_book`. `/remote.php/webdav` is a 301 to the former and
+serves no data itself. `/remote.php/ocs` is likewise untouched by PR 1;
+its SCOPES (`sharing`, `account`) are PR 2.
+
 **Gate and Scope on the declaration; Grant in the service.** This is what
 the whole design reduces to, and it is why the table is keyed by
 OPERATION rather than by route. AGENTS.md puts AuthZ in the service layer
