@@ -1081,7 +1081,7 @@ you must remember to write does. So the value is two narrower things:
 
 | Today | Becomes |
 |---|---|
-| `require_internal_user_layer` (11 sites) | `[Condition::role(MinRole::Internal)]` |
+| `require_internal_user_layer` — SIX sites, not 11: three DAV nests in `main.rs` (**removed**, `06a046593`) plus three per-METHOD sites in `routes.rs` | `[Condition::role(MinRole::Internal)]` — on the six DAV operations, and method-qualified for the three REST sites, which `.policy()` cannot express because a `MethodRouter` hides its methods |
 | admin middleware on `/api/admin/*` (3 sites) | `[Condition::role(MinRole::Admin)]` |
 | hand-rolled owner check in `transfer_ownership` | `[Condition::role(MinRole::Owner)]` |
 | `anonymous_allowlist_layer` (1 site) | `[Condition::visitor_allowed()]` on the allowlisted routes; keeps the allowlist itself, and is the mechanism § Authentication by default would promote to the root |
@@ -2090,7 +2090,9 @@ Landing them together means PR 2's risk rides in on PR 1's green suite.
 | 4-iv | SHADOW on the three DAV nests | **done** — `7eccaa28e`, needs a matrix run |
 | 4-v | SHADOW on `/api/admin` (incl. the Owner declaration) | **done** — `bd9359030`, needs a matrix run |
 | 4-vi | SHADOW on the whole protected `/api` subtree | **done** — `3dde235bf`, needs a broad matrix run |
-| 4-vii | remove the four folded gates, one commit each | not started |
+| 4-vii | declare at the route (`.policy()`), not a central table | **done** — `6061aba6b` |
+| 4-viii | REMOVE `require_internal_user_layer` from the DAV nests | **done** — `06a046593`, needs a matrix run |
+| 4-ix | remove it from the three per-method sites, then `require_admin`, then the allowlist | not started |
 
 Step 1 landed as `CurrentCaller.kind: CallerKind`, not the `is_external`
 bool this section first called for: the bool could express three states
