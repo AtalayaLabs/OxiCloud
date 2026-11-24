@@ -188,7 +188,7 @@ mod tests {
     use axum::routing::{get, post};
 
     use super::*;
-    use crate::application::ports::scope_ports::{MinRole, Policy};
+    use crate::application::ports::scope_ports::{Access, MinRole, Policy, Scope};
 
     async fn noop() -> &'static str {
         "ok"
@@ -271,8 +271,6 @@ mod tests {
     /// does not compile, so there is no second way.
     #[test]
     fn several_conditions_belong_in_one_slice() {
-        use crate::application::ports::scope_ports::{Access, Scope};
-
         let (_r, registry) = GatedRouter::<()>::new()
             .route(
                 "/api/auth/password",
@@ -297,10 +295,16 @@ mod tests {
     fn non_rest_surfaces_declare_by_operation() {
         let (_r, registry) = GatedRouter::<()>::new()
             .declare_op(Op::CollabFrame(0x02), [Condition::role(MinRole::Internal)])
-            .declare_op(Op::Dav("MOVE"), [Condition::role(MinRole::Internal)])
+            .declare_op(
+                Op::Dav(Scope::Files, Access::ReadOnly),
+                [Condition::role(MinRole::Internal)],
+            )
             .finish();
 
-        let ops = [Op::CollabFrame(0x02), Op::Dav("MOVE")];
+        let ops = [
+            Op::CollabFrame(0x02),
+            Op::Dav(Scope::Files, Access::ReadOnly),
+        ];
         let table = registry.compile_all(&ops).expect("compiles");
 
         for op in ops {

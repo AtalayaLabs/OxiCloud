@@ -40,11 +40,27 @@ pub enum Op {
     /// `path` is the axum route template, so `/api/files/{id}` and not a
     /// resolved path.
     Rest(&'static str, &'static str),
-    /// The DAV method on the single `any` handler: `PROPFIND`, `MKCOL`,
-    /// `MOVE`, … Shared by WebDAV, CalDAV and CardDAV, which is the point
-    /// — REST and DAV reach the same service methods, so a gate on one
-    /// door is a hole in the other.
-    Dav(&'static str),
+    /// A DAV operation, identified by AREA and ACCESS — not by surface
+    /// and method.
+    ///
+    /// The method carries exactly one authorization-relevant bit: whether
+    /// it reads or writes. Nothing in the gate distinguishes `PROPFIND`
+    /// from `GET`, and nothing in the scope does either — only `files:ro`
+    /// from `files:rw`. So keying by method would spend 12 × 3 = 36
+    /// declarations to encode six facts.
+    ///
+    /// The AREA rather than the protocol surface, because a protocol
+    /// vocabulary (`webdav`, `caldav`, …) "would name the same permissions
+    /// twice" (§ Areas, not protocols). It also closes a door by
+    /// construction instead of by remembering: `/webdav` and
+    /// `/remote.php/dav/files` are both files-area DAV doors, so ONE
+    /// declaration covers both — and "a gate on one door is a hole in the
+    /// other" is how `create_address_book` went wrong.
+    ///
+    /// A method needing its own policy (say `MOVE` requiring elevation)
+    /// would be a new variant, not a reshaping of this one — § 1: a new
+    /// axis cannot change how existing declarations fold.
+    Dav(Scope, Access),
     /// The `rt.*` method name inside `/api/rt/ws`.
     Ws(&'static str),
     /// The collab binary frame kind (`0x01`, `0x02`, SYNC, AWARENESS).
@@ -57,7 +73,7 @@ impl std::fmt::Display for Op {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Op::Rest(m, p) => write!(f, "{m} {p}"),
-            Op::Dav(m) => write!(f, "DAV {m}"),
+            Op::Dav(area, access) => write!(f, "DAV {area:?}:{access:?}"),
             Op::Ws(m) => write!(f, "WS {m}"),
             Op::CollabFrame(k) => write!(f, "collab frame {k:#04x}"),
         }
@@ -272,7 +288,7 @@ impl MinPrincipal {
 /// NOT named `Resource`, which the GRANT axis owns — and whose variants
 /// carry an id, so `Resource::Calendar(Uuid)` is *one* calendar where
 /// `Scope::Calendar` is the calendar *area*.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Scope {
     Files,
     Calendar,
@@ -312,7 +328,7 @@ impl Scope {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Access {
     ReadOnly,
     ReadWrite,

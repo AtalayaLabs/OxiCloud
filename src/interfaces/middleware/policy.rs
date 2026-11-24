@@ -39,7 +39,7 @@ use crate::application::ports::scope_ports::Op;
 use crate::application::services::scope_policy::{Denial, evaluate};
 use crate::application::services::scope_table::PolicyRegistry;
 use crate::common::di::AppState;
-use crate::interfaces::api::policy_declarations::declarations;
+use crate::interfaces::api::policy_declarations::{dav_access, dav_area, declarations};
 use crate::interfaces::errors::AppError;
 
 /// The declarations, built once. Static data, so there is nothing to fail
@@ -47,12 +47,6 @@ use crate::interfaces::errors::AppError;
 /// `policy_declarations`'s test against the real operation list, which is
 /// where a boot refusal would surface.
 static REGISTRY: LazyLock<PolicyRegistry> = LazyLock::new(declarations);
-
-/// The DAV surfaces, whose operation identity is the METHOD rather than
-/// the path: each has a single `any` handler, so every request to it
-/// matches the same route template and a path-keyed lookup could not tell
-/// `PROPFIND` from `DELETE`.
-const DAV_PREFIXES: [&str; 3] = ["/webdav", "/caldav", "/carddav"];
 
 /// Which operation a request IS.
 ///
@@ -68,8 +62,22 @@ fn op_for(request: &Request) -> Option<Op> {
 /// The resolution itself, free of axum so it can be tested directly —
 /// `MatchedPath` has no public constructor.
 fn op_from_parts(method: &str, matched: &str) -> Option<Op> {
-    if DAV_PREFIXES.iter().any(|p| matched.starts_with(p)) {
-        return Some(Op::Dav(leak(method)));
+    // A DAV request is identified by AREA and ACCESS, not by surface and
+    // method: the method carries one authorization-relevant bit, and the
+    // area rather than the protocol is what a scope names. Six `Op`s
+    // therefore replace thirty-six.
+    //
+    // `DAV_AREAS` lists the NATIVE surfaces only. The NextCloud doors
+    // reach the same areas but no folded layer covers them, so they
+    // resolve as REST and keep the safe default — giving them the DAV
+    // declaration would ADD a gate rather than fold one.
+    //
+    // No pattern matching here — `matched` is the route TEMPLATE string
+    // axum hands back (`/webdav/{*path}`), and `dav_area` prefix-matches
+    // it. The template is what REST needs, since a declaration is written
+    // against `/api/files/{id}` and never against a resolved path.
+    if let Some(area) = dav_area(matched) {
+        return Some(Op::Dav(area, dav_access(method)));
     }
     Some(Op::Rest(leak(method), leak(matched)))
 }
@@ -194,22 +202,80 @@ pub async fn policy_gate_layer(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::application::ports::scope_ports::{MinPrincipal, MinRole, Policy};
+    use crate::application::ports::scope_ports::{Access, MinPrincipal, MinRole, Policy, Scope};
 
     /// A DAV request resolves to its METHOD, not its path: all three
     /// surfaces have one `any` handler, so a path-keyed lookup could not
     /// tell `PROPFIND` from `DELETE`. This is the mapping that makes the
     /// AWARENESS-class bug impossible to repeat.
     #[test]
-    fn dav_requests_resolve_to_the_method() {
-        for (prefix, method) in [
-            ("/webdav/{*path}", "PROPFIND"),
-            ("/caldav/{*path}", "REPORT"),
-            ("/carddav/", "DELETE"),
+    fn dav_requests_resolve_to_an_area_and_an_access() {
+        for (prefix, method, area, access) in [
+            (
+                "/webdav/{*path}",
+                "PROPFIND",
+                Scope::Files,
+                Access::ReadOnly,
+            ),
+            ("/webdav/{*path}", "PUT", Scope::Files, Access::ReadWrite),
+            (
+                "/caldav/{*path}",
+                "REPORT",
+                Scope::Calendar,
+                Access::ReadOnly,
+            ),
+            ("/carddav/", "DELETE", Scope::Contacts, Access::ReadWrite),
+            // LOCK mutates lock state, so it is a WRITE — the
+            // classification most easily got wrong by reading the verb.
+            ("/webdav/{*path}", "LOCK", Scope::Files, Access::ReadWrite),
+            // An unlisted or future method is a write: fail-closed, so it
+            // demands the stronger scope rather than slipping through on
+            // a read-only credential.
+            (
+                "/webdav/{*path}",
+                "FUTUREVERB",
+                Scope::Files,
+                Access::ReadWrite,
+            ),
         ] {
             let op = resolve(method, prefix);
-            assert_eq!(op, Some(Op::Dav(method)), "{prefix} {method}");
+            assert_eq!(op, Some(Op::Dav(area, access)), "{prefix} {method}");
         }
+    }
+
+    /// The NextCloud DAV doors resolve as REST, NOT as a DAV area. They
+    /// reach the same files area, but no folded layer covers
+    /// `/remote.php/*` — so giving them the DAV declaration would ADD a
+    /// gate they do not have, which is a behaviour change rather than a
+    /// fold. Pinned so a later "tidy-up" cannot quietly make PR 1 do it.
+    #[test]
+    fn the_nextcloud_dav_doors_are_not_folded_by_pr_1() {
+        assert_eq!(
+            resolve("PROPFIND", "/remote.php/dav/files/{user}"),
+            Some(Op::Rest("PROPFIND", "/remote.php/dav/files/{user}")),
+        );
+        assert_eq!(
+            resolve("GET", "/remote.php/webdav/{*subpath}"),
+            Some(Op::Rest("GET", "/remote.php/webdav/{*subpath}")),
+        );
+    }
+
+    /// The DAV prefix match is SEGMENT-aware, so a lookalike route cannot
+    /// inherit a DAV area — the same class of mistake as `/api/admin`
+    /// capturing `/api/administrators`. Hardening: no such route exists,
+    /// and the alternative is relying on nobody adding one.
+    #[test]
+    fn a_lookalike_path_does_not_inherit_a_dav_area() {
+        assert_eq!(
+            resolve("GET", "/webdavious/thing"),
+            Some(Op::Rest("GET", "/webdavious/thing")),
+            "a lookalike must resolve as REST, not as a DAV area"
+        );
+        // The real surfaces still resolve, including the bare prefix.
+        assert_eq!(
+            resolve("GET", "/webdav"),
+            Some(Op::Dav(Scope::Files, Access::ReadOnly))
+        );
     }
 
     /// REST resolves to (method, TEMPLATE). The template is what a
@@ -227,7 +293,9 @@ mod tests {
     /// enforces what `policy_declarations` transcribed.
     #[test]
     fn the_resolver_returns_the_transcribed_policies() {
-        let dav = REGISTRY.compile_one(Op::Dav("PROPFIND")).expect("compiles");
+        let dav = REGISTRY
+            .compile_one(Op::Dav(Scope::Files, Access::ReadOnly))
+            .expect("compiles");
         assert_eq!(dav.role, Some(MinRole::Internal));
 
         let admin = REGISTRY
@@ -282,5 +350,115 @@ mod tests {
 
     fn resolve(method: &str, template: &str) -> Option<Op> {
         op_from_parts(method, template)
+    }
+
+    /// **The layer ORDER, pinned.** The gate must run AFTER the middleware
+    /// that inserts the `CurrentCaller`, which in tower means it is
+    /// `.layer()`ed BEFORE it — later layers are outermost and run first.
+    ///
+    /// Nothing in the type system enforces that: a `Layer` composes with
+    /// any other `Layer`, so a reordering compiles. What it does do is
+    /// fail LOUDLY rather than silently — a gate running before auth sees
+    /// no caller on every request and answers 401 to everyone, including
+    /// callers who presented a valid credential. So the failure is
+    /// unmissable in production; this test makes it unmissable in `cargo
+    /// test` instead.
+    ///
+    /// Both orders are asserted, because a test of only the right one
+    /// would still pass if the gate stopped reading the caller at all.
+    #[tokio::test]
+    async fn the_gate_must_be_layered_before_the_caller_is_inserted() {
+        use axum::body::Body;
+        use axum::{Router, routing::get};
+        use tower::ServiceExt;
+
+        async fn ok() -> &'static str {
+            "reached the handler"
+        }
+
+        // Stands in for `auth_middleware`: inserts a caller.
+        async fn insert_caller(mut request: Request, next: Next) -> Response {
+            request.extensions_mut().insert(Arc::new(CurrentCaller {
+                id: uuid::Uuid::new_v4(),
+                username: Arc::from("alice"),
+                email: Arc::from("alice@example.com"),
+                kind: crate::domain::entities::user::CallerKind::Internal(
+                    crate::domain::entities::user::UserRole::User,
+                ),
+                dpop_jkt: None,
+                token: Default::default(),
+            }));
+            next.run(request).await
+        }
+
+        // `/api/admin/users` is declared `MinRole::Admin`, so a plain user
+        // is refused on the merits — use an UNDECLARED path, whose policy
+        // is the default `principal=User`. Then the only thing that can
+        // refuse is a missing caller.
+        let gate = axum::middleware::from_fn(|req: Request, next: Next| async move {
+            // `State` is unused by the gate, so call the inner logic
+            // directly rather than building an `AppState`.
+            gate_without_state(req, next).await
+        });
+
+        // RIGHT: caller inserted outermost (layered last) → runs first.
+        let right: Router<()> = Router::new()
+            .route("/api/anything", get(ok))
+            .route_layer(gate.clone())
+            .layer(axum::middleware::from_fn(insert_caller));
+
+        let res = right
+            .oneshot(
+                Request::builder()
+                    .uri("/api/anything")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            res.status(),
+            StatusCode::OK,
+            "with auth outermost the gate sees the caller"
+        );
+
+        // WRONG: the gate outermost, so it runs BEFORE the caller exists.
+        let wrong: Router<()> = Router::new()
+            .route("/api/anything", get(ok))
+            .route_layer(axum::middleware::from_fn(insert_caller))
+            .layer(gate);
+
+        let res = wrong
+            .oneshot(
+                Request::builder()
+                    .uri("/api/anything")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            res.status(),
+            StatusCode::UNAUTHORIZED,
+            "a gate running before auth must refuse everyone — which is \
+             how a misordering announces itself rather than hiding"
+        );
+    }
+
+    /// The gate's logic without the `State` it never reads, so a test can
+    /// compose it without building an `AppState`.
+    async fn gate_without_state(request: Request, next: Next) -> Response {
+        let Some(op) = op_for(&request) else {
+            return next.run(request).await;
+        };
+        let policy = REGISTRY.compile_one(op).expect("declarations compile");
+        let kind = request
+            .extensions()
+            .get::<Arc<CurrentCaller>>()
+            .map(|c| c.kind);
+        match evaluate(&policy, kind, None) {
+            Ok(()) => next.run(request).await,
+            Err(d) => deny(d),
+        }
     }
 }

@@ -952,7 +952,7 @@ mod tests {
     fn every_op_kind_names_itself_in_a_refusal() {
         for op in [
             Op::Rest("MOVE", "/api/files/{id}"),
-            Op::Dav("PROPFIND"),
+            Op::Dav(Scope::Files, Access::ReadOnly),
             Op::Ws("rt.subscribe"),
             Op::CollabFrame(0x02),
         ] {

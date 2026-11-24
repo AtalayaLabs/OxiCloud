@@ -16,33 +16,81 @@
 //! The behavioural half is `tests/api/gate_matrix.hurl`, green before any
 //! of this moves.
 
-use crate::application::ports::scope_ports::{Condition, MinRole, Op};
+use crate::application::ports::scope_ports::{Access, Condition, MinRole, Op, Scope};
 use crate::application::services::scope_table::{PolicyRegistry, Site};
 
-/// DAV methods the single `any` handler dispatches
-/// (`webdav_handler::handle_webdav_methods`). These ARE the operation
-/// identities for all three DAV surfaces — there is no route to key on,
-/// which is why the AWARENESS frame kind and the CardDAV door to
-/// `create_address_book` were both ungated.
+/// The DAV areas and the surfaces that reach them.
 ///
-/// One declaration per method covers `/webdav`, `/caldav` and `/carddav`
-/// together, which is correct because all three carry the SAME condition
-/// today: `require_internal_user_layer`, applied to each nest in
-/// `main.rs`. If they ever diverge, the `Op` has to carry the surface.
-pub const DAV_METHODS: [&str; 12] = [
-    "COPY",
-    "DELETE",
-    "GET",
-    "HEAD",
-    "LOCK",
-    "MKCOL",
-    "MOVE",
-    "OPTIONS",
-    "PROPFIND",
-    "PROPPATCH",
-    "PUT",
-    "UNLOCK",
+/// Keyed by AREA rather than protocol surface, because a protocol
+/// vocabulary "would name the same permissions twice" (§ Areas, not
+/// protocols) — and because the method contributes only read-vs-write, so
+/// six declarations replace thirty-six.
+///
+/// **The NextCloud doors are deliberately ABSENT**, and that is a
+/// correction rather than an omission. `/remote.php/dav/files` reaches the
+/// same files area, so keying by area tempted a declaration covering both
+/// doors at once — but PR 1 is a FOLD, and no folded layer covers
+/// `/remote.php/*`: the NC router carries only `access_log` in `main.rs`,
+/// and `require_internal_user_layer` appears nowhere under
+/// `interfaces/nextcloud/`. Declaring `MinRole::Internal` for an NC
+/// operation would therefore ADD a gate it does not have today, which is
+/// a behaviour change wearing a transcription's clothes.
+///
+/// The asymmetry it exposes is real and wants its own diff: native
+/// `/webdav` refuses an external user and `/remote.php/dav/files` appears
+/// not to. See the plan, § Fold in.
+pub const DAV_AREAS: [(Scope, &[&str]); 3] = [
+    (Scope::Files, &["/webdav"]),
+    (Scope::Calendar, &["/caldav"]),
+    (Scope::Contacts, &["/carddav"]),
 ];
+
+/// Which DAV methods READ. Everything else is treated as a write.
+///
+/// Fail-closed by omission: an unlisted or future method is classified
+/// `ReadWrite`, so it demands the stronger scope. The opposite default
+/// would let a method nobody classified through on a read-only
+/// credential.
+///
+/// `LOCK` and `UNLOCK` are writes — they mutate lock state — which is
+/// the classification most likely to be got wrong by reading the verb
+/// alone.
+pub const DAV_READ_METHODS: [&str; 5] = ["GET", "HEAD", "OPTIONS", "PROPFIND", "REPORT"];
+
+/// Read or write, for scope purposes. See [`DAV_READ_METHODS`] on why an
+/// unknown method is a write.
+pub fn dav_access(method: &str) -> Access {
+    if DAV_READ_METHODS.contains(&method) {
+        Access::ReadOnly
+    } else {
+        Access::ReadWrite
+    }
+}
+
+/// The area a DAV path belongs to, or `None` if it is not a DAV path.
+///
+/// SEGMENT-aware, like the REST prefix match in `scope_table`: a plain
+/// `starts_with` would let a hypothetical `/webdavious` inherit the DAV
+/// area, which is the same class of mistake as `/api/admin` capturing
+/// `/api/administrators` — a widening with no error anywhere.
+///
+/// No route like that exists today, so this is hardening rather than a
+/// fix. It costs one character comparison, and the alternative is relying
+/// on nobody ever adding such a route.
+pub fn dav_area(path: &str) -> Option<Scope> {
+    DAV_AREAS
+        .iter()
+        .find(|(_, prefixes)| prefixes.iter().any(|p| segment_prefix(path, p)))
+        .map(|(area, _)| *area)
+}
+
+/// `path` is `prefix`, or `prefix` followed by a segment break.
+fn segment_prefix(path: &str, prefix: &str) -> bool {
+    match path.strip_prefix(prefix) {
+        Some(rest) => rest.is_empty() || rest.starts_with('/'),
+        None => false,
+    }
+}
 
 /// The seven routes in `ANONYMOUS_ALLOWLIST`
 /// (`middleware/anonymous_allowlist.rs`), copied verbatim.
@@ -84,8 +132,13 @@ pub fn declarations() -> PolicyRegistry {
     // `MinRole::Internal` reproduces it exactly, including the part the
     // bool could not express: the layer asks `!kind.is_internal()`, so it
     // refuses a VISITOR as well as an external user.
-    for method in DAV_METHODS {
-        reg.declare(Site::Exact(Op::Dav(method)), INTERNAL_ONLY.to_vec());
+    // Six declarations, not thirty-six: the method contributes exactly
+    // one authorization-relevant bit (read or write), and the gate is the
+    // same for every area.
+    for (area, _) in DAV_AREAS {
+        for access in [Access::ReadOnly, Access::ReadWrite] {
+            reg.declare(Site::Exact(Op::Dav(area, access)), INTERNAL_ONLY.to_vec());
+        }
     }
 
     // ── admin middleware (/api/admin/*) ──
@@ -123,7 +176,14 @@ pub fn declarations() -> PolicyRegistry {
 /// orphan cross-check. NOT the full 279 — that list comes from
 /// `openapi.json`, and the test below reads it.
 pub fn dav_ops() -> Vec<Op> {
-    DAV_METHODS.into_iter().map(Op::Dav).collect()
+    DAV_AREAS
+        .into_iter()
+        .flat_map(|(area, _)| {
+            [Access::ReadOnly, Access::ReadWrite]
+                .into_iter()
+                .map(move |a| Op::Dav(area, a))
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -220,7 +280,10 @@ mod tests {
 
         // require_internal_user_layer
         assert_eq!(
-            table.get(&Op::Dav("PROPFIND")).unwrap().role,
+            table
+                .get(&Op::Dav(Scope::Files, Access::ReadOnly))
+                .unwrap()
+                .role,
             Some(MinRole::Internal)
         );
 

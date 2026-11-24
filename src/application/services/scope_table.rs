@@ -349,12 +349,15 @@ mod tests {
     #[test]
     fn dav_ws_and_collab_ops_resolve_from_exact_declarations() {
         let mut reg = PolicyRegistry::new();
-        reg.declare(Site::Exact(Op::Dav("MOVE")), ADMIN_ONLY);
+        reg.declare(
+            Site::Exact(Op::Dav(Scope::Files, Access::ReadOnly)),
+            ADMIN_ONLY,
+        );
         reg.declare(Site::Exact(Op::Ws("rt.subscribe")), ADMIN_ONLY);
         reg.declare(Site::Exact(Op::CollabFrame(0x02)), ADMIN_ONLY);
 
         let ops = [
-            Op::Dav("MOVE"),
+            Op::Dav(Scope::Files, Access::ReadOnly),
             Op::Ws("rt.subscribe"),
             Op::CollabFrame(0x02),
         ];
@@ -482,18 +485,24 @@ mod tests {
         let ops = [
             Op::Rest("GET", "/api/admin/sessions"),
             Op::Rest("GET", "/api/files/{id}"),
-            Op::Dav("PROPFIND"),
+            Op::Dav(Scope::Files, Access::ReadOnly),
             Op::Ws("rt.subscribe"),
         ];
 
         let mut a = PolicyRegistry::new();
         a.declare(Site::RestPrefix("/api/admin"), ADMIN_ONLY);
         a.declare(Site::RestPrefix("/api/files"), VISITOR);
-        a.declare(Site::Exact(Op::Dav("PROPFIND")), ADMIN_ONLY);
+        a.declare(
+            Site::Exact(Op::Dav(Scope::Files, Access::ReadOnly)),
+            ADMIN_ONLY,
+        );
 
         // Same declarations, reversed.
         let mut b = PolicyRegistry::new();
-        b.declare(Site::Exact(Op::Dav("PROPFIND")), ADMIN_ONLY);
+        b.declare(
+            Site::Exact(Op::Dav(Scope::Files, Access::ReadOnly)),
+            ADMIN_ONLY,
+        );
         b.declare(Site::RestPrefix("/api/files"), VISITOR);
         b.declare(Site::RestPrefix("/api/admin"), ADMIN_ONLY);
 
