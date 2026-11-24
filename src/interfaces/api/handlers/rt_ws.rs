@@ -1731,7 +1731,7 @@ mod tests {
     /// The WS upgrade is registered OUTSIDE the protected router — a browser
     /// cannot set `Authorization` on `new WebSocket()`, so it self-
     /// authenticates and neither `auth_middleware` nor
-    /// `anonymous_allowlist_layer` ever sees it. Closing
+    /// the visitor declarations ever s it. Closing
     /// `POST /api/rt/ticket` to anonymous sessions therefore does NOT close
     /// this door; this check is the door.
     ///

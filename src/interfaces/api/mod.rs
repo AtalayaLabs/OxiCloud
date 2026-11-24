@@ -841,11 +841,10 @@ pub const SCOPE_EXTENSION: &str = "x-oxicloud-scope";
 ///
 /// ## Why it is generated, not annotated
 ///
-/// The marked set is read straight from `ANONYMOUS_ALLOWLIST` — the constant
-/// the runtime gate itself uses. Hand-annotating each handler would put the
-/// published description and the enforced rule in two places that can
-/// disagree; deriving one from the other means they cannot. The gate stays
-/// the authority: an extension here grants nothing.
+/// Hand-annotating each handler would put the published description and
+/// the enforced rule in two places that can disagree; deriving one from
+/// the other means they cannot. The policy stays the authority — an
+/// extension here grants nothing.
 struct SecurityAddon;
 
 impl Modify for SecurityAddon {
@@ -937,12 +936,9 @@ pub fn audit_declared_security(
 /// the same data the gate enforces, so the published description and the
 /// enforced rule are one thing rather than two kept in agreement.
 ///
-/// This replaced marking from `ANONYMOUS_ALLOWLIST` and the `/api/admin`
-/// path prefix. Those were already derived-not-annotated, which was the
-/// right instinct — but they derived from a copy of the gate rather than
-/// from the gate. Per-operation beats both: the table knows that
-/// `GET /api/files/{id}` is visitor-reachable while the `DELETE` on the
-/// same path is not, where a path prefix cannot say so.
+/// Per-operation, which is what a path prefix could not be: the table
+/// knows `GET /api/files/{id}` is visitor-reachable while the `DELETE` on
+/// the same path is not.
 pub fn mark_policies(
     openapi: &mut utoipa::openapi::OpenApi,
     registry: &crate::application::services::scope_table::PolicyRegistry,
@@ -1069,14 +1065,9 @@ mod tests {
     /// The three axes land in three KEYS, and only when they differ from
     /// the default.
     ///
-    /// Replaces a test that compared the markers against
-    /// `ANONYMOUS_ALLOWLIST`. That guarded a copy: the markers were
-    /// derived from a list beside the gate rather than from the gate, so
-    /// the two could disagree and a test had to say they did not. They are
-    /// now derived from the compiled table, so drift is not possible and
-    /// there is nothing to compare — what IS worth pinning is that each
-    /// axis gets its own key, because one key used to carry all three
-    /// (`role:admin` and `share:read` both sat in `x-oxicloud-scope`).
+    /// Markers are derived from the compiled table, so there is no copy to
+    /// drift from and nothing to compare. What IS worth pinning is that
+    /// each axis gets its own key — one key used to carry all three.
     #[test]
     fn each_axis_marks_its_own_extension_key() {
         use crate::application::ports::scope_ports::{Condition, MinRole};

@@ -241,8 +241,8 @@ impl MinRole {
 ///   * `Public`  — no credential. Public by MOUNT today, outside
 ///     `auth_middleware`.
 ///   * `Visitor` — a public-share session exists, carrying a `visitor_id`
-///     that matches no `auth.users` row. Confined today by
-///     `anonymous_allowlist_layer`, whose route list IS this set.
+///     that matches no `auth.users` row. Confined to the operations that
+///     declare `visitor_allowed()` — seven GETs, and nothing else.
 ///   * `User`    — an authenticated user session. The DEFAULT.
 ///
 /// ORDERED ascending in strictness so the fold takes the MAX, like

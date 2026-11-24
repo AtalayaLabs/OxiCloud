@@ -48,8 +48,8 @@ pub struct Gated<T> {
 /// FORGOTTEN it is a GET — and `.policy()` on that could only declare for
 /// the whole path. A path-level declaration is how
 /// `visitor_allowed()` on `/api/files/{id}` silently granted a share
-/// visitor `DELETE`: `ANONYMOUS_ALLOWLIST` is GET-only, and three of its
-/// seven paths carry a write.
+/// visitor `DELETE`: three of the seven visitor-reachable paths also
+/// serve a write.
 ///
 /// So the verb constructors here remember their verb:
 ///

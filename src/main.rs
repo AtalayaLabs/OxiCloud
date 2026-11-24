@@ -1132,18 +1132,10 @@ async fn run(config: common::config::AppConfig) -> Result<(), Box<dyn std::error
 
         // Protected API routes — require valid JWT token
         let protected_api = api_routes
-            // `route_layer`, NOT `layer` — this must run AFTER routing so
-            // `MatchedPath` is populated. It confines anonymous public-share
-            // sessions to an explicit allowlist and is independent of the
-            // extractor guards: neither relies on the other. See
-            // `middleware/anonymous_allowlist.rs`.
-            .route_layer(axum::middleware::from_fn(
-                oxicloud::interfaces::middleware::anonymous_allowlist::anonymous_allowlist_layer,
-            ))
-            // SHADOW: the compiled policy runs alongside the allowlist
-            // above, not instead of it (PR 1 step 4-vi). It carries the
-            // same decision — `visitor_allowed()` on the SEVEN allowlisted
-            // routes, the safe default everywhere else.
+            // The compiled policy is the ONLY thing confining a
+            // public-share visitor now: `visitor_allowed()` is declared
+            // on the seven reachable GETs at their routes, and the safe
+            // default refuses one everywhere else.
             //
             // Safe to apply to the whole protected subtree because the
             // default policy is `principal = User`, which `auth_middleware`

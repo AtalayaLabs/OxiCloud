@@ -92,10 +92,9 @@ fn segment_prefix(path: &str, prefix: &str) -> bool {
     }
 }
 
-/// The visitor-reachable routes come from `ANONYMOUS_ALLOWLIST` itself,
-/// not a copy of it. An earlier version of this file duplicated the seven
-/// paths and cross-checked the two lists with a test — which defended the
-/// duplication instead of removing it.
+/// The visitor-reachable GETs are declared at their routes, per verb — not
+/// here. Three of those paths also serve a write, which no visitor may
+/// reach.
 const INTERNAL_ONLY: [Condition; 1] = [Condition::role(MinRole::Internal)];
 const OWNER_ONLY: [Condition; 1] = [Condition::role(MinRole::Owner)];
 
