@@ -2092,7 +2092,8 @@ Landing them together means PR 2's risk rides in on PR 1's green suite.
 | 4-vi | SHADOW on the whole protected `/api` subtree | **done** — `3dde235bf`, needs a broad matrix run |
 | 4-vii | declare at the route (`.policy()`), not a central table | **done** — `6061aba6b` |
 | 4-viii | REMOVE `require_internal_user_layer` from the DAV nests | **done** — `06a046593`, needs a matrix run |
-| 4-ix | remove it from the three per-method sites, then `require_admin`, then the allowlist | not started |
+| 4-ix | REMOVE `require_internal_user_layer` entirely (+ its fail-open) | **done** — `7a6f939ae`, needs a matrix run |
+| 4-x | remove `require_admin`, then decide the allowlist | not started |
 
 Step 1 landed as `CurrentCaller.kind: CallerKind`, not the `is_external`
 bool this section first called for: the bool could express three states
@@ -2113,7 +2114,8 @@ missing: `/webdav` (nothing in `tests/api` ever PROPFINDed it),
 anonymous against each folded surface, allowlisted vs non-allowlisted
 under one subtree, and the NOT-folded DPoP layer.
 
-**A third fail-open, currently unreachable, that step 4 could wake.**
+**The third fail-open is GONE** (`7a6f939ae`), deleted with the layer that
+held it. Recorded because the reasoning is reusable:
 `require_internal_user_layer`'s else-branch passes the request through
 when no `CurrentCaller` is in the extensions ("No auth populated, or auth
 disabled globally"). It is distinct from the two `src/AGENTS.md`
