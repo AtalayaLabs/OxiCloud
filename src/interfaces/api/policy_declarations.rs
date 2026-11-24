@@ -141,6 +141,29 @@ pub fn declarations() -> PolicyRegistry {
         }
     }
 
+    // ── require_internal_user_layer, the three NON-DAV sites ──
+    //
+    // `Site::Exact`, not `RestPrefix`, because two of these gate ONE
+    // METHOD on a path whose other methods stay open — the layer is on a
+    // sub-router holding only the create route (`routes.rs`:
+    // `music_create`, and the address-book equivalent). A path-level
+    // declaration would widen the gate to GET and cut external users off
+    // from listing the books shared WITH them, which the comment at that
+    // site calls out as deliberate: "gating the nest would make that
+    // branch dead code and cut guests off from books shared with them".
+    //
+    // This is the per-method case I earlier recorded as absent: the two
+    // per-method layers in the tree are rate limiters, but these two
+    // sub-routers achieve per-method AUTHZ by routing, which a grep for
+    // `.layer(` on a `MethodRouter` does not find.
+    for op in [
+        Op::Rest("POST", "/api/playlists"),
+        Op::Rest("POST", "/api/address-books"),
+        Op::Rest("GET", "/api/files/recent-changes"),
+    ] {
+        reg.declare(Site::Exact(op), INTERNAL_ONLY.to_vec());
+    }
+
     // ── admin middleware (/api/admin/*) ──
     //
     // One prefix for the whole subtree, which is what the middleware is.
@@ -275,6 +298,13 @@ mod tests {
             Op::Rest("GET", "/api/admin/users"),
             Op::Rest("POST", "/api/admin/transfer-ownership"),
             Op::Rest("GET", "/api/folders"),
+            // The three non-DAV internal-user sites, plus the GET
+            // siblings that must stay OPEN.
+            Op::Rest("POST", "/api/playlists"),
+            Op::Rest("GET", "/api/playlists"),
+            Op::Rest("POST", "/api/address-books"),
+            Op::Rest("GET", "/api/address-books"),
+            Op::Rest("GET", "/api/files/recent-changes"),
         ]);
         let table = declarations().compile_all(&ops).expect("compiles");
 
@@ -323,6 +353,33 @@ mod tests {
             Some(&Policy::default()),
             "a non-allowlisted route must keep the safe default"
         );
+
+        // require_internal_user_layer's non-DAV sites gate ONE METHOD.
+        // The GET siblings must stay open, or external users lose the
+        // ability to list the address books shared WITH them — which
+        // `routes.rs` calls out as deliberate.
+        for gated in [
+            Op::Rest("POST", "/api/playlists"),
+            Op::Rest("POST", "/api/address-books"),
+            Op::Rest("GET", "/api/files/recent-changes"),
+        ] {
+            assert_eq!(
+                table.get(&gated).unwrap().role,
+                Some(MinRole::Internal),
+                "{gated} must require an internal user"
+            );
+        }
+        for open in [
+            Op::Rest("GET", "/api/playlists"),
+            Op::Rest("GET", "/api/address-books"),
+        ] {
+            assert_eq!(
+                table.get(&open),
+                Some(&Policy::default()),
+                "{open} must stay open to externals — a path-level \
+                 declaration would have widened the gate onto it"
+            );
+        }
     }
 
     /// The allowlist is copied verbatim from the middleware, so a route
