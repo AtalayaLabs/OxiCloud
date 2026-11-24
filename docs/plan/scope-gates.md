@@ -2108,10 +2108,11 @@ Landing them together means PR 2's risk rides in on PR 1's green suite.
 | 4-vii | declare at the route (`.policy()`), not a central table | **done** — `6061aba6b` |
 | 4-viii | REMOVE `require_internal_user_layer` from the DAV nests | **done** — `06a046593`, needs a matrix run |
 | 4-ix | REMOVE `require_internal_user_layer` entirely (+ its fail-open) | **done** — `7a6f939ae`, needs a matrix run |
-| 4-x | MOVE the ten `/api` declarations to their routes | not started — the only wide diff left |
-| 4-xi | REMOVE `require_admin` | not started — UNBLOCKED by `348e757d9` |
-| 4-xii | REMOVE `anonymous_allowlist_layer` | not started — needs 4-x first |
-| 4-xiii | collapse `music_create` / `contacts_create` | not started — they exist only for a layer that is gone |
+| 4-x | MOVE the `/api` declarations to their routes | **done** — `b9f055275` · `eaa3c1974`; only `transfer-ownership` left, which needs `admin_routes()` to return a `GatedRouter` |
+| 4-xi | REMOVE `require_admin` | not started — unblocked by `348e757d9` |
+| 4-xii-a | re-point `SecurityAddon` at the policy table | not started — **prerequisite** for 4-xii-b |
+| 4-xii-b | REMOVE `anonymous_allowlist_layer` + the constant | not started |
+| 4-xiii | collapse `music_create` / `contacts_create` | **done** — `eaa3c1974`, fell out of per-verb policies |
 
 Step 1 landed as `CurrentCaller.kind: CallerKind`, not the `is_external`
 bool this section first called for: the bool could express three states
@@ -2191,6 +2192,20 @@ what the layers enforce today.
 `.policy(..).policy(..)` does not COMPILE — a contradiction the compiler
 refuses beats one the server refuses at boot. The array literal is what
 makes one slice the natural way to write several conditions.
+
+**Deleting `ANONYMOUS_ALLOWLIST` has a consumer nobody had counted.**
+`SecurityAddon` (`interfaces/api/mod.rs`) GENERATES the OpenAPI security
+markers from that constant, deliberately — "deriving one from the other
+means they cannot disagree" — with a drift test enforcing it. So the
+published spec's anonymous-reachable set is downstream of the constant,
+and deleting it either strands the markers or fails that test.
+
+That is § engine → spec arriving early rather than a problem: the
+generator should read the COMPILED TABLE and mark every operation whose
+`principal` is `Visitor`. Strictly better than today, twice over — it
+covers every visitor-reachable operation rather than one hand-kept list,
+and it is per VERB, so the spec stops implying a path is
+anonymous-reachable when only its GET is.
 
 **Row 6 is load-bearing, not belt-and-braces.** `axum::Router` cannot be
 asked which paths it holds (`has_routes() -> bool` is the whole public
