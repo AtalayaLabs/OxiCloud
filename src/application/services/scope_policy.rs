@@ -329,42 +329,59 @@ pub enum Denial {
 }
 
 impl Denial {
-    /// The `(event, reason)` pair to log — chosen to REPRODUCE what the
-    /// layer being folded emits today.
+    /// The `(event, reason)` pair to log.
     ///
-    /// AGENTS.md: `event` "stays stable — log aggregators key off it", and
-    /// a new denial cause gets a new `reason` rather than repurposing one.
-    /// A fold that collapsed five distinct pairs into one `authz.denied`
-    /// would be invisible to the gate matrix (status codes) and to the
-    /// policy dump (fields), while silently blinding every operator alert
-    /// keyed on them. So the pair is derived from WHICH condition failed:
+    /// **The engine emits its OWN vocabulary rather than reproducing the
+    /// five pairs the folded layers used.** An earlier version mapped
+    /// each denial back to its layer's pair to keep aggregators matching;
+    /// that was the wrong call for three reasons:
     ///
-    /// | failed | today's emitter | pair |
-    /// |---|---|---|
-    /// | `MinRole::Internal` | `require_internal_user_layer` | `authz.external_user_blocked` / `internal_only_surface` |
-    /// | `MinRole::Admin` | admin middleware | `authz.admin_denied` / `not_admin` |
-    /// | `MinRole::Owner` | `transfer_ownership` service check | `server_owner.transfer_rejected` / `caller_not_owner` |
-    /// | principal, no caller | admin middleware | `authz.denied` / `anonymous_not_authenticated` |
-    /// | principal, visitor | `anonymous_allowlist_layer` | `authz.denied` / `anonymous_route_not_allowlisted` |
-    /// | scope | nothing yet | `authz.scope_denied` / `scope_not_granted` |
+    /// - AGENTS.md's rule is "a new denial cause gets a new `reason`,
+    ///   never a repurposed one" — and a policy denial IS a new cause, a
+    ///   different mechanism, so a new reason is the compliant answer
+    ///   rather than a break of stability.
+    /// - the mapping was already wrong for `MinRole::Owner`: it borrowed
+    ///   `server_owner.transfer_rejected` because there is exactly ONE
+    ///   Owner site today, so a second would have emitted an
+    ///   ownership-transfer event for an unrelated refusal.
+    /// - it encoded dead history. Nobody would later know why
+    ///   `MinRole::Internal` emitted `authz.external_user_blocked`.
     ///
-    /// `MinRole::Owner` maps to the ownership-transfer pair because that
-    /// is the ONLY `Owner` site. A second one would need its own pair
-    /// rather than borrowing this.
+    /// `event` stays `authz.denied` for every gate refusal, so a filter
+    /// on the `authz.*` domain keeps working; scope gets
+    /// `authz.scope_denied`, which § Wire contracts fixed in advance.
+    /// The ROLE is a structured field, not part of the reason — one
+    /// reason per cause, with `required` carrying which floor was missed.
+    ///
+    /// Every reason reads `<what>_required`, so the vocabulary is one
+    /// shape rather than a mix of imperatives and nouns.
+    ///
+    /// Retired by this change, and worth listing for release notes:
+    /// `authz.admin_denied`/`not_admin`,
+    /// `authz.external_user_blocked`/`internal_only_surface`,
+    /// `server_owner.transfer_rejected`/`caller_not_owner`,
+    /// `authz.denied`/`anonymous_not_authenticated`,
+    /// `authz.denied`/`anonymous_route_not_allowlisted`.
     pub const fn audit(self) -> (&'static str, &'static str) {
         match self {
-            Denial::AuthenticationRequired => ("authz.denied", "anonymous_not_authenticated"),
-            Denial::VisitorRefused => ("authz.denied", "anonymous_route_not_allowlisted"),
+            Denial::AuthenticationRequired => ("authz.denied", "authentication_required"),
+            Denial::VisitorRefused => ("authz.denied", "user_session_required"),
+            // Not a "higher role": `Internal` is "not external", a
+            // different question from a rank, so it gets its own reason.
             Denial::RoleInsufficient {
                 required: MinRole::Internal,
-            } => ("authz.external_user_blocked", "internal_only_surface"),
-            Denial::RoleInsufficient {
-                required: MinRole::Admin,
-            } => ("authz.admin_denied", "not_admin"),
-            Denial::RoleInsufficient {
-                required: MinRole::Owner,
-            } => ("server_owner.transfer_rejected", "caller_not_owner"),
+            } => ("authz.denied", "internal_user_required"),
+            Denial::RoleInsufficient { .. } => ("authz.denied", "higher_role_required"),
             Denial::ScopeNotGranted { .. } => ("authz.scope_denied", "scope_not_granted"),
+        }
+    }
+
+    /// The floor that was missed, for the `required` field. `None` where
+    /// the denial is not about a role.
+    pub const fn required_role(self) -> Option<MinRole> {
+        match self {
+            Denial::RoleInsufficient { required } => Some(required),
+            _ => None,
         }
     }
 }
@@ -892,48 +909,43 @@ mod tests {
         );
     }
 
-    /// THE audit-stability pin. Folding five layers into one evaluator
-    /// must not collapse five `(event, reason)` pairs into one
-    /// `authz.denied`: AGENTS.md requires `event` to stay stable because
-    /// aggregators key off it, and this is invisible to both the gate
-    /// matrix (status codes) and the policy dump (fields). Every pair
-    /// below is copied from the layer it replaces.
+    /// The engine's OWN audit vocabulary: one `reason` per cause, with
+    /// the role as a structured field rather than baked into the reason.
+    ///
+    /// Pinned because `reason` is what aggregators filter on, so these
+    /// strings are a contract — "do not reword across releases"
+    /// (AGENTS.md). `event` stays inside the `authz.*` domain, so a
+    /// filter on that keeps working across the fold.
     #[test]
-    fn each_denial_keeps_the_audit_pair_of_the_layer_it_replaces() {
+    fn each_denial_has_one_stable_reason_and_no_role_in_it() {
+        assert_eq!(
+            Denial::AuthenticationRequired.audit(),
+            ("authz.denied", "authentication_required")
+        );
+        assert_eq!(
+            Denial::VisitorRefused.audit(),
+            ("authz.denied", "user_session_required")
+        );
+        // `Internal` is "not external", not a rank — its own reason.
         assert_eq!(
             Denial::RoleInsufficient {
                 required: MinRole::Internal
             }
             .audit(),
-            ("authz.external_user_blocked", "internal_only_surface"),
-            "require_internal_user_layer"
+            ("authz.denied", "internal_user_required")
         );
-        assert_eq!(
-            Denial::RoleInsufficient {
-                required: MinRole::Admin
-            }
-            .audit(),
-            ("authz.admin_denied", "not_admin"),
-            "admin middleware"
-        );
-        assert_eq!(
-            Denial::RoleInsufficient {
-                required: MinRole::Owner
-            }
-            .audit(),
-            ("server_owner.transfer_rejected", "caller_not_owner"),
-            "transfer_ownership service check"
-        );
-        assert_eq!(
-            Denial::AuthenticationRequired.audit(),
-            ("authz.denied", "anonymous_not_authenticated"),
-            "admin middleware, anonymous arm"
-        );
-        assert_eq!(
-            Denial::VisitorRefused.audit(),
-            ("authz.denied", "anonymous_route_not_allowlisted"),
-            "anonymous_allowlist_layer"
-        );
+        // Admin and Owner share a reason; which floor was missed is the
+        // `required` FIELD. A reason per role would multiply the
+        // vocabulary for no gain, and the previous attempt to do that is
+        // how `MinRole::Owner` ended up borrowing
+        // `server_owner.transfer_rejected` — an event about one specific
+        // operation, which a second Owner site would have emitted
+        // wrongly.
+        for role in [MinRole::Admin, MinRole::Owner] {
+            let d = Denial::RoleInsufficient { required: role };
+            assert_eq!(d.audit(), ("authz.denied", "higher_role_required"));
+            assert_eq!(d.required_role(), Some(role));
+        }
         assert_eq!(
             Denial::ScopeNotGranted {
                 scope: Scope::Files,
@@ -941,8 +953,21 @@ mod tests {
             }
             .audit(),
             ("authz.scope_denied", "scope_not_granted"),
-            "new cause, new reason — never a repurposed one"
+            "§ Wire contracts fixed this one in advance"
         );
+
+        // Every gate refusal stays in the `authz.*` domain aggregators
+        // already filter, so the fold does not strand a filter.
+        for d in [
+            Denial::AuthenticationRequired,
+            Denial::VisitorRefused,
+            Denial::RoleInsufficient {
+                required: MinRole::Admin,
+            },
+        ] {
+            assert!(d.audit().0.starts_with("authz."), "{d:?}");
+        }
+        assert_eq!(Denial::AuthenticationRequired.required_role(), None);
     }
 
     /// Every operation kind must render identifiably in a boot message,

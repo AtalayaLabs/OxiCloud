@@ -211,6 +211,10 @@ pub async fn policy_gate_layer(
             event = event,
             reason = reason,
             op = %op,
+            // The floor that was missed, as a FIELD rather than baked
+            // into `reason` — one reason per cause keeps the vocabulary
+            // small and leaves the detail queryable.
+            required = denial.required_role().map(|r| format!("{r:?}")),
             caller_id = caller.as_ref().map(|c| c.id.to_string()).unwrap_or_default(),
             "👮🏻‍♂️ policy gate refused the caller",
         );
