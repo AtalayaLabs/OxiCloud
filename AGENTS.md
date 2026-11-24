@@ -320,6 +320,33 @@ Moving a check also changes its **audit event** — e.g.
 event. `event` must stay stable (below), so either keep emitting the
 original from the new denial path or treat it as a breaking audit change.
 
+**Declare the policy where the route is — a central table is for what has
+no route.** Route, layer and policy belong in one place, so a reader of
+`routes.rs` sees all three without cross-referencing:
+
+```rust
+router.nest("/admin", admin_router.policy([Condition::role(MinRole::Admin)]))
+```
+
+`policy_declarations.rs` holds only what cannot be written at a route: the
+DAV operations (one `any` handler each, so no route per operation) and
+per-METHOD gates, since a `MethodRouter` does not expose its methods.
+Anything else there is drift — and NEVER a copy of a list that already
+exists elsewhere. A duplicated list with a test cross-checking the two
+copies defends the duplication instead of removing it; declare from the
+original, or move the original here.
+
+Two traps, both of which produced real holes on `feat/scopes`:
+
+- **A path-level declaration covers every METHOD on that path.** Check
+  what else the path carries before writing one. `ANONYMOUS_ALLOWLIST` is
+  GET-only, so a path-level `visitor_allowed()` on `/api/files/{id}`
+  silently granted a share visitor `DELETE`.
+- **A grep for `.layer(` on a `MethodRouter` does not find per-method
+  gating.** Two sub-routers achieve it by ROUTING — a router holding only
+  the create route, with the layer on it — so the gate is per-method while
+  looking per-path.
+
 The engine is in `docs/architecture/authorization-axes.md` (concepts) and
 `docs/plan/scope-gates.md` (design and rollout).
 

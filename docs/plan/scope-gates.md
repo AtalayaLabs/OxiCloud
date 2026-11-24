@@ -2182,6 +2182,24 @@ gating anything. Nothing else in the design notices. It immediately
 earned its place by catching two tests in `scope_table` that declared
 prefixes covering no operation.
 
+**Policies attach per ACTION, not per path.** `.policy()` on a `Router`
+covers a subtree and on a `MethodRouter` covers every method that router
+holds — which is wrong wherever two verbs on one path need different
+policies, and `ANONYMOUS_ALLOWLIST` (GET-only, on paths that also carry
+DELETE) proves that is not hypothetical. The shape to wire is per verb:
+
+```rust
+.route("/{id}", get(read).policy([visitor_allowed()]))
+.route("/{id}", delete(remove).policy([role(Internal)]))
+```
+
+Today `Site::Exact(Op::Rest(method, path))` expresses it, declared
+centrally. What is missing is the affordance at the route: axum's
+`get(h)` returns a `MethodRouter` that has forgotten it is GET, so the
+verb has to be re-stated. The fix is our own verb constructors that
+remember — a small wrapper in `policy_router`, not a change to the
+engine, since `Op::Rest` already carries the method.
+
 **`.policy()` cannot record its own path**, for the same reason: neither
 a `Router` nor a `MethodRouter` knows where it will be mounted. It
 attaches conditions, and the `Site` is learned at the `nest` / `route`
