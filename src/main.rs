@@ -1177,13 +1177,23 @@ async fn run(config: common::config::AppConfig) -> Result<(), Box<dyn std::error
                 auth_middleware,
             ));
 
-        // CalDAV/CardDAV/WebDAV with auth + internal-only middleware
+        // CalDAV/CardDAV/WebDAV with auth + the compiled policy gate
         // (merged, not nested). External users have no calendar, no
         // address book, and no home folder — locking them out of these
-        // protocol subtrees in one place avoids leaking the protocol
-        // surface to a principal kind that can do nothing with it. The
-        // `require_internal_user_layer` runs AFTER auth (tower order:
-        // later .layer() = outermost = runs first).
+        // protocol subtrees avoids leaking the protocol surface to a
+        // principal kind that can do nothing with it.
+        //
+        // That gate was `require_internal_user_layer` until PR 1 step
+        // 4-vii; it is now `[Condition::role(MinRole::Internal)]` on the
+        // six DAV operations, declared in `policy_declarations` because a
+        // DAV surface has one `any` handler and so no route to declare
+        // against. The policy ALSO refuses a visitor, which the layer's
+        // `!is_internal()` did and its older `is_external` bool could
+        // not express.
+        //
+        // The gate runs AFTER auth (tower order: later .layer() =
+        // outermost = runs first), which `policy::tests` pins — it reads
+        // the `CurrentCaller` auth inserts.
         //
         // `require_no_password_change_pending_layer` is layered on
         // every authenticated /api/* subtree so an admin-set temp
@@ -1193,9 +1203,7 @@ async fn run(config: common::config::AppConfig) -> Result<(), Box<dyn std::error
         // complete the reset flow — see the middleware doc for the
         // allowlist and its rationale.
         use oxicloud::interfaces::middleware::dpop::require_dpop_layer;
-        use oxicloud::interfaces::middleware::user::{
-            require_internal_user_layer, require_no_password_change_pending_layer,
-        };
+        use oxicloud::interfaces::middleware::user::require_no_password_change_pending_layer;
         let caldav_protected = caldav_router
             .layer(axum::middleware::from_fn_with_state(
                 app_state.clone(),
@@ -1205,14 +1213,11 @@ async fn run(config: common::config::AppConfig) -> Result<(), Box<dyn std::error
                 app_state.clone(),
                 require_dpop_layer,
             ))
-            .layer(axum::middleware::from_fn_with_state(
-                app_state.clone(),
-                require_internal_user_layer,
-            ))
-            // SHADOW: the compiled policy runs alongside
-            // `require_internal_user_layer` above, not instead of it
-            // (PR 1 step 4-iii). `route_layer` rather than `layer` so an
-            // unmatched path stays a 404 instead of becoming a 401.
+            // The compiled policy is now the ONLY internal-user gate on
+            // this surface: `require_internal_user_layer` is gone, folded
+            // into `[Condition::role(MinRole::Internal)]` on the six DAV
+            // operations (§ Fold in). `route_layer` rather than `layer` so
+            // an unmatched path stays a 404 instead of becoming a 401.
             .route_layer(axum::middleware::from_fn_with_state(
                 app_state.clone(),
                 oxicloud::interfaces::middleware::policy::policy_gate_layer,
@@ -1230,14 +1235,11 @@ async fn run(config: common::config::AppConfig) -> Result<(), Box<dyn std::error
                 app_state.clone(),
                 require_dpop_layer,
             ))
-            .layer(axum::middleware::from_fn_with_state(
-                app_state.clone(),
-                require_internal_user_layer,
-            ))
-            // SHADOW: the compiled policy runs alongside
-            // `require_internal_user_layer` above, not instead of it
-            // (PR 1 step 4-iii). `route_layer` rather than `layer` so an
-            // unmatched path stays a 404 instead of becoming a 401.
+            // The compiled policy is now the ONLY internal-user gate on
+            // this surface: `require_internal_user_layer` is gone, folded
+            // into `[Condition::role(MinRole::Internal)]` on the six DAV
+            // operations (§ Fold in). `route_layer` rather than `layer` so
+            // an unmatched path stays a 404 instead of becoming a 401.
             .route_layer(axum::middleware::from_fn_with_state(
                 app_state.clone(),
                 oxicloud::interfaces::middleware::policy::policy_gate_layer,
@@ -1255,14 +1257,11 @@ async fn run(config: common::config::AppConfig) -> Result<(), Box<dyn std::error
                 app_state.clone(),
                 require_dpop_layer,
             ))
-            .layer(axum::middleware::from_fn_with_state(
-                app_state.clone(),
-                require_internal_user_layer,
-            ))
-            // SHADOW: the compiled policy runs alongside
-            // `require_internal_user_layer` above, not instead of it
-            // (PR 1 step 4-iii). `route_layer` rather than `layer` so an
-            // unmatched path stays a 404 instead of becoming a 401.
+            // The compiled policy is now the ONLY internal-user gate on
+            // this surface: `require_internal_user_layer` is gone, folded
+            // into `[Condition::role(MinRole::Internal)]` on the six DAV
+            // operations (§ Fold in). `route_layer` rather than `layer` so
+            // an unmatched path stays a 404 instead of becoming a 401.
             .route_layer(axum::middleware::from_fn_with_state(
                 app_state.clone(),
                 oxicloud::interfaces::middleware::policy::policy_gate_layer,
