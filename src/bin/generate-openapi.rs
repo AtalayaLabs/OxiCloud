@@ -73,7 +73,7 @@ async fn main() {
         .build_app_state(Some(pools))
         .await
         .expect("service graph builds without a database");
-    let (_router, registry) =
+    let (_protected, _public, registry) =
         oxicloud::interfaces::api::routes::api_router_and_policies(&state.into());
 
     // Spec generation validates the declarations: `security(...)` is

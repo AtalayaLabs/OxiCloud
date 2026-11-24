@@ -10,6 +10,10 @@ use crate::interfaces::api::policy_router::{
 /// Declared per VERB: three of their paths also serve a write, which no
 /// visitor may reach.
 const VISITOR: [Condition; 1] = [Condition::visitor_allowed()];
+
+/// No credential at all. The spec turns this into `security: []`, which is
+/// the only honest way to document an endpoint that needs none.
+const PUBLIC: [Condition; 1] = [Condition::public()];
 use axum::{
     Router,
     body::Body,
@@ -115,11 +119,24 @@ pub fn create_health_routes(app_state: &Arc<AppState>) -> Router<Arc<AppState>> 
 }
 
 /// Creates public API routes that should NOT require authentication.
-pub fn create_public_api_routes(app_state: &Arc<AppState>) -> Router<Arc<AppState>> {
+/// Returns the router AND its declarations.
+///
+/// Every operation here is PUBLIC — reachable with no credential — and
+/// says so with `.policy([Condition::public()])`. That is not decoration:
+/// the default policy is an authenticated user, so without it the spec
+/// claims a bearer these routes do not need, and `just openapi` reports
+/// each one as a disagreement.
+///
+/// Declared per route rather than on the subtree, because this router is
+/// nested at `/api` alongside the protected one — a prefix declaration
+/// would cover both.
+pub fn create_public_api_routes(
+    app_state: &Arc<AppState>,
+) -> (Router<Arc<AppState>>, PolicyRegistry) {
     let share_service = app_state.share_service.clone();
     let i18n_service = Some(app_state.applications.i18n_service.clone());
 
-    let mut router = Router::new();
+    let mut router = GatedRouter::<Arc<AppState>>::new();
 
     // Public share access routes — no auth required
     if let Some(share_service) = share_service {
@@ -139,13 +156,20 @@ pub fn create_public_api_routes(app_state: &Arc<AppState>) -> Router<Arc<AppStat
             100_000,
         ));
 
-        let public_share_router = Router::new()
-            .route("/{token}", get(share_handler::access_shared_item))
+        let public_share_router = GatedRouter::new()
+            .route(
+                "/{token}",
+                policy_get(share_handler::access_shared_item).policy(PUBLIC),
+            )
             .route(
                 "/{token}/verify",
-                post(share_handler::verify_shared_item_password).layer(
-                    axum::middleware::from_fn_with_state(verify_limiter, rate_limit_share_verify),
-                ),
+                // A rate limit is not a policy: the two coexist.
+                policy_post(share_handler::verify_shared_item_password)
+                    .policy(PUBLIC)
+                    .layer(axum::middleware::from_fn_with_state(
+                        verify_limiter,
+                        rate_limit_share_verify,
+                    )),
             )
             .with_state(share_service);
 
@@ -161,23 +185,26 @@ pub fn create_public_api_routes(app_state: &Arc<AppState>) -> Router<Arc<AppStat
         // contents/{folder_id}, file/{file_id}, zip, zip/{folder_id}) were a
         // parallel implementation of that surface and are gone; see the
         // Phase 4 commit for what they were and why they could not stay.
-        router = router.nest("/s", public_share_router);
+        router = router.nest_gated("/s", public_share_router);
     }
 
     // i18n routes — no auth required (localization should be available before login)
     if let Some(i18n_service) = i18n_service {
-        let i18n_router = Router::new()
-            .route("/locales", get(get_locales))
-            .route("/translate", get(translate))
-            .route("/locales/{locale_code}", get(get_translations_by_locale))
+        let i18n_router = GatedRouter::new()
+            .route("/locales", policy_get(get_locales).policy(PUBLIC))
+            .route("/translate", policy_get(translate).policy(PUBLIC))
+            .route(
+                "/locales/{locale_code}",
+                policy_get(get_translations_by_locale).policy(PUBLIC),
+            )
             .with_state(i18n_service);
 
-        router = router.nest("/i18n", i18n_router);
+        router = router.nest_gated("/i18n", i18n_router);
     }
 
     // Version endpoint — public, no auth required
-    router = router.route("/version", get(get_version));
-    router = router.route("/openapi.json", get(get_openapi_spec));
+    router = router.route("/version", policy_get(get_version).policy(PUBLIC));
+    router = router.route("/openapi.json", policy_get(get_openapi_spec).policy(PUBLIC));
 
     // Server-configuration discovery endpoint — public, unauthenticated.
     // Returns feature flags, version, and a snapshot of the server-status
@@ -185,11 +212,12 @@ pub fn create_public_api_routes(app_state: &Arc<AppState>) -> Router<Arc<AppStat
     // `handlers/config_handler.rs` for the DTO shape and rationale.
     router = router.route(
         "/config",
-        get(crate::interfaces::api::handlers::config_handler::get_config)
+        policy_get(crate::interfaces::api::handlers::config_handler::get_config)
+            .policy(PUBLIC)
             .with_state(app_state.clone()),
     );
 
-    router
+    router.finish()
 }
 
 /// Creates protected API routes for the application.
@@ -207,15 +235,19 @@ pub fn create_public_api_routes(app_state: &Arc<AppState>) -> Router<Arc<AppStat
 /// keyed `/admin` instead of `/api/admin` and silently marked nothing.
 pub fn api_router_and_policies(
     app_state: &Arc<AppState>,
-) -> (Router<Arc<AppState>>, PolicyRegistry) {
-    let (router, declared) = create_api_routes(app_state);
-    // Declarations are written RELATIVE to this router, which does not
-    // know it will be mounted at `/api`.
-    let mut registry = declared.rebased_under("/api");
+) -> (Router<Arc<AppState>>, Router<Arc<AppState>>, PolicyRegistry) {
+    let (protected, protected_decls) = create_api_routes(app_state);
+    let (public, public_decls) = create_public_api_routes(app_state);
+
+    // Both are nested at `/api` and both write their declarations RELATIVE
+    // to themselves, so both rebase the same way.
+    let mut registry = protected_decls.rebased_under("/api");
+    registry.absorb(public_decls.rebased_under("/api"));
     // Plus the operations that have no route to declare against — the DAV
     // surfaces.
     registry.absorb(crate::interfaces::api::policy_declarations::declarations());
-    (router, registry)
+
+    (protected, public, registry)
 }
 
 /// Returns the router AND the policy declarations made against it.

@@ -68,6 +68,48 @@ pub struct Verb<S> {
 }
 
 impl<S> Verb<S> {
+    /// `MethodRouter::with_state`, carrying the verb and its policy across
+    /// the state change — a handler that supplies its own service state
+    /// still declares at its route.
+    #[must_use]
+    pub fn with_state<S2>(self, state: S) -> Verb<S2>
+    where
+        S: Clone + Send + Sync + 'static,
+        S2: Clone + Send + Sync + 'static,
+    {
+        Verb {
+            method: self.method,
+            inner: self.inner.with_state(state),
+            conditions: self.conditions,
+        }
+    }
+
+    /// `MethodRouter::layer`, passed straight through. A rate limit, a
+    /// CSRF check or a DPoP proof is NOT a policy — no operation has an
+    /// opinion about them (§ Not axes) — so they coexist with one.
+    #[must_use]
+    pub fn layer<L>(self, layer: L) -> Verb<S>
+    where
+        S: Clone + Send + Sync + 'static,
+        L: tower::Layer<axum::routing::Route<std::convert::Infallible>>
+            + Clone
+            + Send
+            + Sync
+            + 'static,
+        L::Service: tower::Service<axum::extract::Request> + Clone + Send + Sync + 'static,
+        <L::Service as tower::Service<axum::extract::Request>>::Response:
+            axum::response::IntoResponse + 'static,
+        <L::Service as tower::Service<axum::extract::Request>>::Error:
+            Into<std::convert::Infallible> + 'static,
+        <L::Service as tower::Service<axum::extract::Request>>::Future: Send + 'static,
+    {
+        Verb {
+            method: self.method,
+            inner: self.inner.layer(layer),
+            conditions: self.conditions,
+        }
+    }
+
     /// Attach the policy for THIS verb.
     #[must_use]
     pub fn policy<const N: usize>(mut self, conditions: [Condition; N]) -> Self {

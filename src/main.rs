@@ -57,7 +57,7 @@ use oxicloud::interfaces;
 use common::di::AppServiceFactory;
 use infrastructure::db::create_database_pools;
 use interfaces::{
-    create_health_routes, create_public_api_routes,
+    create_health_routes,
     web::{StaticSource, create_web_routes, resolve_static_source},
 };
 
@@ -791,9 +791,8 @@ async fn run(config: common::config::AppConfig) -> Result<(), Box<dyn std::error
     // that have no route. `generate-openapi` calls the same function, so
     // the published spec cannot be marked from a different table than the
     // one the gate enforces.
-    let (api_routes, api_policy) =
+    let (api_routes, public_api_routes, api_policy) =
         oxicloud::interfaces::api::routes::api_router_and_policies(&app_state);
-    let public_api_routes = create_public_api_routes(&app_state);
 
     // Install the compiled policy declarations.
     //
