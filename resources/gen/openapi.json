@@ -5657,7 +5657,7 @@
           "auth"
         ],
         "summary": "POST /api/auth/magic-link/send — request a sign-in link by email.",
-        "description": "Always returns 200 with a uniform message regardless of outcome, so\nthe response shape doesn't leak account existence. The real outcome\n(sent / no-account / has-credential / account-deactivated /\nmalformed-email) is recorded in the `audit` channel via\n`MagicLinkInviteService::send_login_link`.\n\n503 only when the magic-link feature isn't configured at all\n(SMTP env missing) — operators need to know about misconfiguration;\nit's not a state an anonymous caller can probe via timing because\nthe absence of the entire feature is visible from any other\nendpoint touching `/api/auth/magic-link/*`.\n\nPR 12 rate limits:\n- **Per-source-IP**, 200/hour — bounds the cost of one attacker\n  spreading low per-email volumes over many target addresses.\n- **Per-target-email**, 5/hour, keyed on the normalised email —\n  stops the endpoint from being an email-bombing primitive against\n  a single known recipient.\nBoth caps return the uniform 200 (never 429 to anonymous callers,\notherwise the status itself becomes an enumeration oracle); the\nreal reason is recorded in the audit channel.\nAuthenticated callers (Authorization header or access cookie\npresent) bypass both limits.",
+        "description": "Always returns 200 with a uniform message regardless of outcome, so\nthe response shape doesn't leak account existence. The real outcome\n(sent / no-account / has-credential / account-deactivated /\nmalformed-email) is recorded in the `audit` channel via\n`MagicLinkInviteService::send_login_link`.\n\n503 only when the magic-link feature isn't configured at all\n(SMTP env missing) — operators need to know about misconfiguration;\nit's not a state an anonymous caller can probe via timing because\nthe absence of the entire feature is visible from any other\nendpoint touching `/api/auth/magic-link/*`.\n\nPR 12 rate limits:\n- **Per-source-IP**, 200/hour — bounds the cost of one attacker\n  spreading low per-email volumes over many target addresses.\n- **Per-target-email**, 5/hour, keyed on the normalised email —\n  stops the endpoint from being an email-bombing primitive against\n  a single known recipient.\nBoth caps return the uniform 200 (never 429 to anonymous callers,\notherwise the status itself becomes an enumeration oracle); the\nreal reason is recorded in the audit channel.\nAuthenticated callers (Authorization header or access cookie\npresent) bypass both limits.\n\nReachable with NO credential at all.",
         "operationId": "send_magic_link",
         "requestBody": {
           "content": {
@@ -5691,7 +5691,8 @@
             }
           }
         },
-        "security": []
+        "security": [],
+        "x-oxicloud-principal": "public"
       }
     },
     "/api/auth/me": {
@@ -5863,7 +5864,7 @@
           "auth"
         ],
         "summary": "Initiate OIDC authorization — redirects to the configured identity provider.",
-        "description": "Generates PKCE, CSRF state, and nonce then issues a 302 redirect to the\nprovider's authorization endpoint.",
+        "description": "Generates PKCE, CSRF state, and nonce then issues a 302 redirect to the\nprovider's authorization endpoint.\n\nReachable with NO credential at all.",
         "operationId": "oidc_authorize",
         "responses": {
           "302": {
@@ -5890,7 +5891,8 @@
             }
           }
         },
-        "security": []
+        "security": [],
+        "x-oxicloud-principal": "public"
       }
     },
     "/api/auth/oidc/backchannel-logout": {
@@ -5899,7 +5901,7 @@
           "auth"
         ],
         "summary": "OIDC Back-Channel Logout 1.0 receiver.",
-        "description": "The IdP POSTs a signed `logout_token` JWT here when a user's SSO\nsession ends (they logged out elsewhere, admin revoked the session,\naccount was disabled). Body is `application/x-www-form-urlencoded`\nper spec §2.5 with a single `logout_token` field.\n\nResponse codes are constrained by the spec (§2.8):\n- 200 on successful processing (including a validated token that\n  matched no OxiCloud sessions — the notification is still \"handled\").\n- 400 on any validation failure (bad signature, expired, missing\n  required claims, replay). We do NOT return 200 with an error body.\n\nThis endpoint is public: no auth middleware, no CSRF, no cookie.\nThe `logout_token` signature IS the authentication — an unsigned or\nwrongly-signed token gets rejected by the OIDC service validator.",
+        "description": "The IdP POSTs a signed `logout_token` JWT here when a user's SSO\nsession ends (they logged out elsewhere, admin revoked the session,\naccount was disabled). Body is `application/x-www-form-urlencoded`\nper spec §2.5 with a single `logout_token` field.\n\nResponse codes are constrained by the spec (§2.8):\n- 200 on successful processing (including a validated token that\n  matched no OxiCloud sessions — the notification is still \"handled\").\n- 400 on any validation failure (bad signature, expired, missing\n  required claims, replay). We do NOT return 200 with an error body.\n\nThis endpoint is public: no auth middleware, no CSRF, no cookie.\nThe `logout_token` signature IS the authentication — an unsigned or\nwrongly-signed token gets rejected by the OIDC service validator.\n\nReachable with NO credential at all.",
         "operationId": "oidc_backchannel_logout",
         "requestBody": {
           "description": "Form-encoded body with a single `logout_token` field (the signed JWT from the IdP)",
@@ -5939,7 +5941,8 @@
             }
           }
         },
-        "security": []
+        "security": [],
+        "x-oxicloud-principal": "public"
       }
     },
     "/api/auth/oidc/callback": {
@@ -5948,7 +5951,7 @@
           "auth"
         ],
         "summary": "Handle the OIDC provider callback.",
-        "description": "Validates the `state` / PKCE / nonce, exchanges the code for tokens, then\nredirects the browser to the frontend login route with a short-lived\nexchange code (`/login?oidc_code=…`), which the SPA swaps for a session.",
+        "description": "Validates the `state` / PKCE / nonce, exchanges the code for tokens, then\nredirects the browser to the frontend login route with a short-lived\nexchange code (`/login?oidc_code=…`), which the SPA swaps for a session.\n\nReachable with NO credential at all.",
         "operationId": "oidc_callback",
         "parameters": [
           {
@@ -5995,7 +5998,8 @@
             }
           }
         },
-        "security": []
+        "security": [],
+        "x-oxicloud-principal": "public"
       }
     },
     "/api/auth/oidc/exchange": {
@@ -6004,7 +6008,7 @@
           "auth"
         ],
         "summary": "Exchange a one-time OIDC code for access + refresh tokens.",
-        "description": "The frontend calls this after being redirected back with `?oidc_code=…`.\nThe exchange code is valid for a single use and expires in 60 s.",
+        "description": "The frontend calls this after being redirected back with `?oidc_code=…`.\nThe exchange code is valid for a single use and expires in 60 s.\n\nReachable with NO credential at all.",
         "operationId": "oidc_exchange",
         "requestBody": {
           "content": {
@@ -6038,7 +6042,8 @@
             }
           }
         },
-        "security": []
+        "security": [],
+        "x-oxicloud-principal": "public"
       }
     },
     "/api/auth/oidc/link/start": {

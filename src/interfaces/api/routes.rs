@@ -243,6 +243,23 @@ pub fn api_router_and_policies(
     // to themselves, so both rebase the same way.
     let mut registry = protected_decls.rebased_under("/api");
     registry.absorb(public_decls.rebased_under("/api"));
+    // Routers that `main.rs` builds and mounts itself, declared here so
+    // ONE function owns the whole registry. Their routers are constructed
+    // and dropped: only the declarations are wanted, and construction is
+    // pure.
+    //
+    // This is deliberate redundancy with `main.rs`'s nests — the prefix
+    // appears in both — and it is policed rather than trusted: a prefix
+    // that matches no operation is an ORPHAN (a boot error), and a public
+    // route whose declaration never lands is reported by `just openapi`.
+    // Both caught the earlier versions of this, where the generator saw a
+    // registry the server did not have.
+    registry.absorb(
+        crate::interfaces::api::handlers::auth_handler::auth_public_routes()
+            .1
+            .rebased_under("/api/auth"),
+    );
+
     // Plus the operations that have no route to declare against — the DAV
     // surfaces.
     registry.absorb(crate::interfaces::api::policy_declarations::declarations());

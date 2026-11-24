@@ -793,6 +793,7 @@ async fn run(config: common::config::AppConfig) -> Result<(), Box<dyn std::error
     // one the gate enforces.
     let (api_routes, public_api_routes, api_policy) =
         oxicloud::interfaces::api::routes::api_router_and_policies(&app_state);
+    oxicloud::interfaces::middleware::policy::install_registry(api_policy);
 
     // Install the compiled policy declarations.
     //
@@ -803,7 +804,6 @@ async fn run(config: common::config::AppConfig) -> Result<(), Box<dyn std::error
     // operations that have no route to declare against (the DAV ops) plus
     // the per-METHOD gates, which `.policy()` cannot express because a
     // `MethodRouter` does not expose its methods.
-    oxicloud::interfaces::middleware::policy::install_registry(api_policy);
     let health_routes = create_health_routes(&app_state);
     let web_routes = create_web_routes(app_state.clone(), static_source, app_shell);
 
@@ -1028,7 +1028,10 @@ async fn run(config: common::config::AppConfig) -> Result<(), Box<dyn std::error
             ))
             .with_state(app_state.clone());
         // Public auth routes (status, OIDC)
-        let auth_public = auth_public_routes().with_state(app_state.clone());
+        // Declarations are owned by `api_router_and_policies`, so the
+        // registry is identical for the server and for spec generation.
+        // Here we only need the router.
+        let auth_public = auth_public_routes().0.with_state(app_state.clone());
         // Protected auth routes (/me, /change-password, /logout) — require auth + CSRF
         let auth_protected = auth_protected_routes()
             .layer(axum::middleware::from_fn_with_state(

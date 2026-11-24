@@ -14,10 +14,23 @@ use crate::application::dtos::user_dto::{
     AuthResponseDto, ChangePasswordDto, LoginDto, OidcCallbackQueryDto, OidcExchangeDto,
     PublicUserDto, RefreshTokenDto, RegisterDto, SelfUserDto, SetupAdminDto, UpgradeToInternalDto,
 };
+use crate::application::ports::scope_ports::Condition;
 use crate::application::services::auth_application_service::{OidcCallbackResult, RegisterResult};
 use crate::application::services::registration_policy::domain_allowed;
+use crate::application::services::scope_table::PolicyRegistry;
 use crate::common::di::AppState;
 use crate::interfaces::api::cookie_auth;
+use crate::interfaces::api::policy_router::{GatedRouter, get as policy_get, post as policy_post};
+
+/// No credential at all. The spec turns this into `security: []`, which is
+/// the only honest way to document an endpoint that needs none.
+///
+/// `policy_get` / `policy_post` are aliased rather than shadowing axum's
+/// only because this file also builds a PLAIN `Router`
+/// (`auth_protected_routes`), so both verb sets are in scope. In a file
+/// that is wholly `GatedRouter`, import them as `get` / `post` and the
+/// prefix disappears.
+const PUBLIC: [Condition; 1] = [Condition::public()];
 use crate::interfaces::errors::AppError;
 use crate::interfaces::middleware::auth::{AuthUser, CurrentUserId};
 use crate::interfaces::middleware::trusted_proxy::client_ip_from_parts;
@@ -25,8 +38,14 @@ use crate::interfaces::middleware::trusted_proxy::request_origin;
 use serde::Deserialize;
 
 /// Public auth routes, no authentication required.
-pub fn auth_public_routes() -> Router<Arc<AppState>> {
-    Router::new()
+/// Returns the router AND its declarations.
+///
+/// Every route here is PUBLIC — reachable with no credential — and says so
+/// per verb. Without that, the default policy is an authenticated user, so
+/// the spec would claim a bearer these need, and `just openapi` reports
+/// each one.
+pub fn auth_public_routes() -> (Router<Arc<AppState>>, PolicyRegistry) {
+    GatedRouter::new()
         // /status endpoint retired. The one unique signal it carried
         // (`initialized`) moved to `/api/config.initialized`; the
         // other three fields (admin_count, registration_allowed,
@@ -35,15 +54,22 @@ pub fn auth_public_routes() -> Router<Arc<AppState>> {
         // at `/oidc/providers`; it was retired on feat/registration —
         // the same payload (plus `password`/`magic_link`/`registration`
         // sibling blocks) is now carried by `GET /api/config.auth.oidc`.
-        .route("/oidc/authorize", get(oidc_authorize))
-        .route("/oidc/callback", get(oidc_callback))
-        .route("/oidc/exchange", post(oidc_exchange))
+        .route("/oidc/authorize", policy_get(oidc_authorize).policy(PUBLIC))
+        .route("/oidc/callback", policy_get(oidc_callback).policy(PUBLIC))
+        .route("/oidc/exchange", policy_post(oidc_exchange).policy(PUBLIC))
         // OIDC Back-Channel Logout 1.0 — public (server-to-server call
         // from the IdP with a signed logout_token; no cookies, no CSRF).
-        .route("/oidc/backchannel-logout", post(oidc_backchannel_logout))
+        .route(
+            "/oidc/backchannel-logout",
+            policy_post(oidc_backchannel_logout).policy(PUBLIC),
+        )
         // Login-via-email — sends a magic-link to the user's email so
         // accounts with no other login credential can sign in.
-        .route("/magic-link/send", post(send_magic_link))
+        .route(
+            "/magic-link/send",
+            policy_post(send_magic_link).policy(PUBLIC),
+        )
+        .finish()
 }
 
 /// Protected auth routes, require authentication (auth + CSRF middleware
