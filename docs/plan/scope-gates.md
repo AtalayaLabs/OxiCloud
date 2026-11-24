@@ -2089,7 +2089,7 @@ Landing them together means PR 2's risk rides in on PR 1's green suite.
 | 4-iii | the policy gate layer | **done** — `1f521fbed` |
 | 4-iv | SHADOW on the three DAV nests | **done** — `7eccaa28e`, needs a matrix run |
 | 4-v | SHADOW on `/api/admin` (incl. the Owner declaration) | **done** — `bd9359030`, needs a matrix run |
-| 4-vi | `public()` declarations, then shadow the allowlist | not started |
+| 4-vi | SHADOW on the whole protected `/api` subtree | **done** — `3dde235bf`, needs a broad matrix run |
 | 4-vii | remove the four folded gates, one commit each | not started |
 
 Step 1 landed as `CurrentCaller.kind: CallerKind`, not the `is_external`
@@ -2228,6 +2228,15 @@ and not from a narrowly-scoped one. Add `/remote.php/new-feature` or
 `/new-feature-dav/` and it inherits a session requirement and no area at
 all, which is exactly the shape of the device-flow bug: a credential
 restricted to `files` reaches a surface nobody classified.
+
+`public()` turned out NOT to be a prerequisite for shadowing `/api`:
+`main.rs:1049` warns that nesting two routers at one prefix composes
+their layers, but that does not apply to `nest` plus an inner `.layer()`
+— a layer on one nested router does not reach a sibling. Pinned by
+`policy::nest_layer_semantics`, because the consequence of guessing wrong
+is refusing every login. `public()` is still needed before the gate can
+become the ONLY enforcement, since the public routers are outside
+`auth_middleware` and the default policy demands a session.
 
 **So the scope requirement is TOTAL and defaults to unsatisfiable.** Not
 an `Option` that defaults to "no requirement":
