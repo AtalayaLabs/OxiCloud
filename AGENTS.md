@@ -333,8 +333,24 @@ no route.** Route, layer and policy belong in one place, so a reader of
 `routes.rs` sees all three without cross-referencing:
 
 ```rust
+// per VERB — the default, and the only form that cannot widen
+.route("/{id}", get(get_file).policy([Condition::visitor_allowed()]))
+
+// per SUBTREE — one declaration for a whole nested router
 router.nest("/admin", admin_router.policy([Condition::role(MinRole::Admin)]))
+GatedRouter::new().policy(PUBLIC).route("/locales", get(get_locales))
 ```
+
+`get`/`post`/… come from `interfaces/api/policy_router.rs`, NOT
+`axum::routing` — they are call-compatible, so a file switches by changing
+its import. Ours carries the verb, which is what lets `.policy()` declare
+for one METHOD; axum's `MethodRouter` has forgotten it. A chained
+`get(a).post(b)` has no equivalent — write one `.route()` per verb on the
+same path, which axum merges.
+
+**A subtree declaration covers every METHOD on every path beneath it**, so
+a write endpoint added later inherits it silently. Use it where that is
+true by construction (a router of public GETs); prefer per-verb elsewhere.
 
 `policy_declarations.rs` holds only what cannot be written at a route: the
 DAV operations (one `any` handler each, so no route per operation) and
