@@ -185,7 +185,7 @@ pub fn create_public_api_routes(
         // contents/{folder_id}, file/{file_id}, zip, zip/{folder_id}) were a
         // parallel implementation of that surface and are gone; see the
         // Phase 4 commit for what they were and why they could not stay.
-        router = router.nest_gated("/s", public_share_router);
+        router = router.nest("/s", public_share_router);
     }
 
     // i18n routes — no auth required (localization should be available before login)
@@ -199,7 +199,7 @@ pub fn create_public_api_routes(
             )
             .with_state(i18n_service);
 
-        router = router.nest_gated("/i18n", i18n_router);
+        router = router.nest("/i18n", i18n_router);
     }
 
     // Version endpoint — public, no auth required
@@ -451,7 +451,7 @@ pub fn create_api_routes(app_state: &Arc<AppState>) -> (Router<Arc<AppState>>, P
     }
 
     // Create routes for batch operations
-    let batch_router = Router::new()
+    let batch_router = GatedRouter::new()
         // File operations
         .route("/files/move", post(batch_handler::move_files_batch))
         .route("/files/copy", post(batch_handler::copy_files_batch))
@@ -473,7 +473,7 @@ pub fn create_api_routes(app_state: &Arc<AppState>) -> (Router<Arc<AppState>>, P
 
     // Create search routes if the service is available
     let search_router = if search_service.is_some() {
-        Router::new()
+        GatedRouter::new()
             // Simple search with query parameters
             // Cursor-paginated search with the `/*/resources` envelope
             // (items + next_cursor + meta). `POST /search/advanced` was
@@ -490,7 +490,7 @@ pub fn create_api_routes(app_state: &Arc<AppState>) -> (Router<Arc<AppState>>, P
             // intent. AuthZ audit #14 (2026-07-16).
             .with_state(app_state.clone())
     } else {
-        Router::new()
+        GatedRouter::new()
     };
 
     // Direct handler implementations for sharing, without depending on ShareHandler
@@ -499,7 +499,7 @@ pub fn create_api_routes(app_state: &Arc<AppState>) -> (Router<Arc<AppState>>, P
     let share_router = if let Some(share_service) = share_service.clone() {
         use crate::interfaces::api::handlers::share_handler;
 
-        Router::new()
+        GatedRouter::new()
             .route("/", post(share_handler::create_shared_link))
             .route("/", get(share_handler::get_user_shares))
             .route("/{id}", get(share_handler::get_shared_link))
@@ -507,7 +507,7 @@ pub fn create_api_routes(app_state: &Arc<AppState>) -> (Router<Arc<AppState>>, P
             .route("/{id}", delete(share_handler::delete_shared_link))
             .with_state(share_service.clone())
     } else {
-        Router::new()
+        GatedRouter::new()
     };
 
     // Create routes for ReBAC grants (/api/grants).
@@ -516,7 +516,7 @@ pub fn create_api_routes(app_state: &Arc<AppState>) -> (Router<Arc<AppState>>, P
     // State<Arc<PgAclEngine>> via the FromRef impl in di.rs.
     let grants_router = {
         use crate::interfaces::api::handlers::grant_handler;
-        Router::new()
+        GatedRouter::new()
             .route("/", post(grant_handler::create_grant))
             .route("/", get(grant_handler::list_on_resource))
             .route("/{id}", delete(grant_handler::revoke_grant))
@@ -537,7 +537,7 @@ pub fn create_api_routes(app_state: &Arc<AppState>) -> (Router<Arc<AppState>>, P
     let favorites_router = if let Some(favorites_service) = favorites_service.clone() {
         use crate::interfaces::api::handlers::favorites_handler::{self, list_favorites_resources};
 
-        Router::new()
+        GatedRouter::new()
             .route("/resources", get(list_favorites_resources))
             .route("/batch", post(favorites_handler::batch_add_favorites))
             .route(
@@ -550,14 +550,14 @@ pub fn create_api_routes(app_state: &Arc<AppState>) -> (Router<Arc<AppState>>, P
             )
             .with_state(favorites_service.clone())
     } else {
-        Router::new()
+        GatedRouter::new()
     };
 
     // Create routes for recent items if the service is available
     let recent_router = if let Some(recent_service) = recent_service.clone() {
         use crate::interfaces::api::handlers::recent_handler;
 
-        Router::new()
+        GatedRouter::new()
             .route("/resources", get(recent_handler::list_recent_resources))
             .route(
                 "/{item_type}/{item_id}",
@@ -570,7 +570,7 @@ pub fn create_api_routes(app_state: &Arc<AppState>) -> (Router<Arc<AppState>>, P
             .route("/clear", delete(recent_handler::clear_recent_items))
             .with_state(recent_service.clone())
     } else {
-        Router::new()
+        GatedRouter::new()
     };
 
     // Notifications bell (Slice E). Mounted only when the service is
@@ -581,7 +581,7 @@ pub fn create_api_routes(app_state: &Arc<AppState>) -> (Router<Arc<AppState>>, P
     // for admin mounts.
     let notifications_router = if let Some(ref svc) = notification_service {
         use crate::interfaces::api::handlers::notifications_handler;
-        Router::new()
+        GatedRouter::new()
             .route("/", get(notifications_handler::list_notifications))
             .route("/unread", get(notifications_handler::unread_count))
             .route("/read-all", post(notifications_handler::mark_all_read))
@@ -589,7 +589,7 @@ pub fn create_api_routes(app_state: &Arc<AppState>) -> (Router<Arc<AppState>>, P
             .route("/{id}", delete(notifications_handler::delete_notification))
             .with_state(svc.clone())
     } else {
-        Router::new()
+        GatedRouter::new()
     };
 
     // Create routes for chunked uploads (large files >10MB).
@@ -602,7 +602,7 @@ pub fn create_api_routes(app_state: &Arc<AppState>) -> (Router<Arc<AppState>>, P
     // The route registration itself has to keep referencing them until the
     // clients migrate off, so we suppress the local `deprecated` lint here.
     #[allow(deprecated)]
-    let chunked_upload_router = Router::new()
+    let chunked_upload_router = GatedRouter::new()
         .route("/", post(create_upload))
         .route("/{upload_id}", axum::routing::patch(upload_chunk))
         .route("/{upload_id}", axum::routing::head(get_upload_status))
@@ -614,7 +614,7 @@ pub fn create_api_routes(app_state: &Arc<AppState>) -> (Router<Arc<AppState>>, P
     // All handlers are free functions — see dedup_handler.rs for why
     // #[utoipa::path] cannot be applied to DedupHandler impl methods directly.
     use super::handlers::dedup_handler::{check_hash, check_hashes_batch, get_blob};
-    let dedup_router = Router::new()
+    let dedup_router = GatedRouter::new()
         .route("/check/{hash}", get(check_hash))
         .route("/check-batch", post(check_hashes_batch))
         .route("/blob/{hash}", get(get_blob))
@@ -632,8 +632,8 @@ pub fn create_api_routes(app_state: &Arc<AppState>) -> (Router<Arc<AppState>>, P
         .with_state(app_state.clone());
 
     let mut router = GatedRouter::<Arc<AppState>>::new()
-        .nest_gated("/folders", folders_router)
-        .nest_gated("/files", files_router)
+        .nest("/folders", folders_router)
+        .nest("/files", files_router)
         .nest("/uploads", chunked_upload_router)
         .nest("/dedup", dedup_router)
         .nest("/batch", batch_router)
@@ -655,7 +655,7 @@ pub fn create_api_routes(app_state: &Arc<AppState>) -> (Router<Arc<AppState>>, P
         use crate::interfaces::api::handlers::photos_handler;
 
         let mut photos_router =
-            Router::new().route("/resources", get(photos_handler::list_photos_resources));
+            GatedRouter::new().route("/resources", get(photos_handler::list_photos_resources));
         if app_state.places_service.is_some() {
             photos_router = photos_router.route("/geo", get(photos_handler::list_photos_geo));
         }
@@ -669,7 +669,7 @@ pub fn create_api_routes(app_state: &Arc<AppState>) -> (Router<Arc<AppState>>, P
     {
         use crate::interfaces::api::handlers::drive_handler;
 
-        let drives_router = Router::new()
+        let drives_router = GatedRouter::new()
             .route(
                 "/",
                 get(drive_handler::list_drives).post(drive_handler::create_drive),
@@ -698,7 +698,7 @@ pub fn create_api_routes(app_state: &Arc<AppState>) -> (Router<Arc<AppState>>, P
     if app_state.people_service.is_some() {
         use crate::interfaces::api::handlers::people_handler;
 
-        let people_router = Router::new()
+        let people_router = GatedRouter::new()
             .route("/", get(people_handler::list_people))
             .route("/merge", post(people_handler::merge_people))
             .route("/recluster", post(people_handler::recluster))
@@ -715,7 +715,7 @@ pub fn create_api_routes(app_state: &Arc<AppState>) -> (Router<Arc<AppState>>, P
     if let Some(_trash_service_ref) = trash_service.clone() {
         tracing::info!("Setting up trash routes for trash view");
 
-        let trash_router = Router::new()
+        let trash_router = GatedRouter::new()
             // Literal paths first — order matters for axum overlap handling
             // when a wildcard like /{id} could otherwise capture them.
             .route("/resources", get(trash_handler::get_trash_resources))
@@ -799,7 +799,7 @@ pub fn create_api_routes(app_state: &Arc<AppState>) -> (Router<Arc<AppState>>, P
             )
             .with_state(music_svc.clone());
 
-        router = router.nest_gated("/playlists", music_router);
+        router = router.nest("/playlists", music_router);
         tracing::info!("Music routes initialized");
     }
 
@@ -890,7 +890,7 @@ pub fn create_api_routes(app_state: &Arc<AppState>) -> (Router<Arc<AppState>>, P
             )
             .with_state(contacts_state);
 
-        router = router.nest_gated("/address-books", contacts_router);
+        router = router.nest("/address-books", contacts_router);
         tracing::info!("Contacts REST API routes initialized");
     }
 
@@ -909,7 +909,7 @@ pub fn create_api_routes(app_state: &Arc<AppState>) -> (Router<Arc<AppState>>, P
     {
         use crate::interfaces::api::handlers::calendar_handler::{self, CalendarApiState};
 
-        let calendar_router = Router::new()
+        let calendar_router = GatedRouter::new()
             .route(
                 "/",
                 get(calendar_handler::list_calendars).post(calendar_handler::create_calendar),

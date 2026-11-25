@@ -35,13 +35,6 @@ use axum::routing::MethodRouter;
 use crate::application::ports::scope_ports::{Condition, Op};
 use crate::application::services::scope_table::{PolicyRegistry, Site};
 
-/// A router or handler carrying its declared conditions, waiting for the
-/// path that will name its [`Site`].
-pub struct Gated<T> {
-    inner: T,
-    conditions: Vec<Condition>,
-}
-
 /// One HTTP METHOD on one path, with its policy.
 ///
 /// Exists because axum's `get(handler)` returns a `MethodRouter` that has
@@ -156,35 +149,36 @@ verb!(put, put, "PUT");
 verb!(delete, delete, "DELETE");
 verb!(patch, patch, "PATCH");
 
-/// `.policy([...])` on a `Router` (the whole subtree) or a `MethodRouter`
-/// (one route).
+/// `.policy([...])` on a `GatedRouter`, declaring for its whole subtree.
 ///
-/// Deliberately NOT implemented on [`Gated<T>`], which makes
-/// `.policy(..).policy(..)` a COMPILE error rather than § 2b's boot
-/// error. Two declarations on one site are ambiguous — repeated builder
-/// calls conventionally override, so accumulating would read as the
-/// second replacing the first — and a contradiction the compiler refuses
-/// beats one the server refuses at boot.
+/// Implemented for `GatedRouter` and NOT for `Router`, which closes the
+/// last way a bare `Router` could enter the API tree: it could otherwise
+/// be converted by `.policy()` and nested, and then its individual routes
+/// had no way to declare per verb — which is exactly what `/api/admin`
+/// (needs `Owner` on one route) and `/api/auth` (needs `security` on
+/// `change-password`, `account` on `/me*`) require.
 ///
-/// Conditions that belong together go in one slice, which is what the
-/// array literal is for:
-/// `.policy([role(Admin), scope(Security, ReadWrite)])`.
-pub trait Policied: Sized {
-    /// Attach a declaration. Takes an array so the call site reads as a
-    /// slice of conditions rather than a borrow — allocated once at
-    /// startup, never per request.
-    fn policy<const N: usize>(self, conditions: [Condition; N]) -> Gated<Self> {
-        Gated {
-            inner: self,
-            conditions: conditions.to_vec(),
-        }
-    }
+/// The declaration is recorded against `"/"` and rebased by the `nest`
+/// that mounts it, because a router does not know its own mount path.
+///
+/// Deliberately NOT available on a `MethodRouter`: one there could only
+/// declare for the whole PATH, and that is how a `visitor_allowed()` on
+/// `/api/files/{id}` nearly granted a share visitor `DELETE`. Use the verb
+/// constructors, which declare per method.
+pub trait Policied<S>: Sized {
+    fn policy<const N: usize>(self, conditions: [Condition; N]) -> GatedRouter<S>;
 }
 
-impl<S> Policied for Router<S> where S: Clone + Send + Sync + 'static {}
-// NOT implemented for `MethodRouter`: `.policy()` on one could only
-// declare for the whole path, which is the bug that granted a visitor
-// `DELETE /api/files/{id}`. Use the verb constructors above.
+impl<S> Policied<S> for GatedRouter<S>
+where
+    S: Clone + Send + Sync + 'static,
+{
+    fn policy<const N: usize>(mut self, conditions: [Condition; N]) -> GatedRouter<S> {
+        self.registry
+            .declare(Site::RestPrefix("/"), conditions.to_vec());
+        self
+    }
+}
 
 /// A `Router` and the declarations made against it, built together.
 ///
@@ -223,25 +217,6 @@ where
             router,
             registry: PolicyRegistry::new(),
         }
-    }
-
-    /// `Router::nest`, recording the subtree's declaration if it carries
-    /// one. One declaration covers every operation beneath `path`.
-    ///
-    /// Takes `impl Into<Gated<Router<S>>>`, so a bare `Router` nests with
-    /// no declaration and its children inherit whatever is above. That is
-    /// the deliberate consequence of `Policy::default()` being an
-    /// authenticated user: an undeclared subtree is already closed to
-    /// anonymous callers, so requiring a declaration everywhere would be
-    /// busywork rather than safety.
-    #[must_use]
-    pub fn nest(mut self, path: &'static str, inner: impl Into<Gated<Router<S>>>) -> Self {
-        let Gated { inner, conditions } = inner.into();
-        if !conditions.is_empty() {
-            self.registry.declare(Site::RestPrefix(path), conditions);
-        }
-        self.router = self.router.nest(path, inner);
-        self
     }
 
     /// `Router::route`, recording the handler's declaration if it carries
@@ -286,13 +261,22 @@ where
         self
     }
 
-    /// `Router::nest` for a router that carries declarations of its own,
-    /// REBASING them under `path`.
+    /// Nest a `GatedRouter`, REBASING its declarations under `path`.
     ///
     /// This is what lets `.policy()` be written at a route inside a
     /// router that does not know where it will be mounted.
+    ///
+    /// Accepts ONLY a `GatedRouter`, and there is no escape hatch: a bare
+    /// `Router::new()` sub-router does not compile in the API tree. A
+    /// sub-router that was meant to declare something therefore cannot
+    /// quietly fail to — the failure is at build time, not a 403 someone
+    /// notices later or a spec marker nobody reads.
+    ///
+    /// A subtree that genuinely constrains nothing still passes through
+    /// here: it is a `GatedRouter` with an empty registry, and its
+    /// operations take the safe default (an authenticated user).
     #[must_use]
-    pub fn nest_gated(mut self, path: &'static str, inner: GatedRouter<S>) -> Self {
+    pub fn nest(mut self, path: &'static str, inner: GatedRouter<S>) -> Self {
         let (router, registry) = inner.finish();
         self.registry.absorb(registry.rebased_under(path));
         self.router = self.router.nest(path, router);
@@ -371,17 +355,6 @@ where
     }
 }
 
-/// An undeclared router or handler is `Gated` with no conditions, so
-/// `nest`/`route` take both shapes and the common case stays plain.
-impl<T> From<T> for Gated<T> {
-    fn from(inner: T) -> Self {
-        Gated {
-            inner,
-            conditions: Vec::new(),
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -395,7 +368,7 @@ mod tests {
     /// inherited by every operation beneath, path written once.
     #[test]
     fn a_subtree_declaration_is_inherited_by_everything_beneath() {
-        let admin: Router<()> = Router::new()
+        let admin: GatedRouter<()> = GatedRouter::new()
             .route("/sessions", axum::routing::get(noop))
             .route("/settings/oidc", axum::routing::get(noop));
 
@@ -450,7 +423,9 @@ mod tests {
     /// anonymous callers.
     #[test]
     fn undeclared_routers_and_handlers_need_no_policy_call() {
-        let plain: Router<()> = Router::new().route("/thing", axum::routing::get(noop));
+        // A subtree that declares nothing is a `GatedRouter` with an
+        // empty registry — not a bare `Router`, which no longer composes.
+        let plain: GatedRouter<()> = GatedRouter::new().route("/thing", axum::routing::get(noop));
 
         let (_r, registry) = GatedRouter::<()>::new()
             .nest("/api/open", plain)
@@ -524,7 +499,8 @@ mod tests {
         // The nest holds a different path, because axum rejects an
         // overlapping route — so the contradicting leaf is declared
         // alongside it rather than inside it.
-        let admin: Router<()> = Router::new().route("/sessions", axum::routing::get(noop));
+        let admin: GatedRouter<()> =
+            GatedRouter::new().route("/sessions", axum::routing::get(noop));
 
         let (_r, registry) = GatedRouter::<()>::new()
             .nest(
@@ -574,7 +550,7 @@ mod tests {
             GatedRouter::new().route("/{id}", axum::routing::delete(noop));
 
         let files = reads.merge(writes);
-        let api = GatedRouter::<()>::new().nest_gated("/files", files);
+        let api = GatedRouter::<()>::new().nest("/files", files);
         let (_router, registry) = api.finish();
         let registry = registry.rebased_under("/api");
 

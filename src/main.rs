@@ -1039,6 +1039,7 @@ async fn run(config: common::config::AppConfig) -> Result<(), Box<dyn std::error
             .with_state(app_state.clone());
         // Protected auth routes (/me, /change-password, /logout) — require auth + CSRF
         let auth_protected = auth_protected_routes()
+            .into_router()
             .layer(axum::middleware::from_fn_with_state(
                 app_state.clone(),
                 require_no_password_change_pending_layer,

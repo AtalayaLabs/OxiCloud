@@ -62,7 +62,6 @@
 
 use std::sync::Arc;
 
-use axum::Router;
 use axum::extract::{Json, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
@@ -105,6 +104,8 @@ use uuid::Uuid;
 
 use crate::application::dtos::user_dto::AuthResponseDto;
 use crate::application::ports::scope_ports::Condition;
+use axum::Router;
+
 use crate::common::di::AppState;
 use crate::interfaces::api::policy_router::{GatedRouter, get as policy_get, post as policy_post};
 

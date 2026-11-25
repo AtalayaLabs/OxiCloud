@@ -8,7 +8,6 @@
 use std::sync::Arc;
 
 use axum::{
-    Router,
     extract::{Json, Path, Query, State},
     http::{HeaderMap, StatusCode},
     response::IntoResponse,
@@ -21,6 +20,7 @@ use uuid::Uuid;
 use crate::common::di::AppState;
 use crate::domain::entities::subject_group::{GroupMember, SubjectGroup};
 use crate::domain::entities::user::UserRole;
+use crate::interfaces::api::policy_router::GatedRouter;
 use crate::interfaces::errors::AppError;
 use crate::interfaces::middleware::admin::{require_admin, require_authenticated};
 
@@ -142,8 +142,18 @@ impl From<GroupMember> for GroupMemberDto {
 // ── Routes ───────────────────────────────────────────────────────────────────
 
 /// Routes mounted under `/api/groups`.
-pub fn subject_group_routes() -> Router<Arc<AppState>> {
-    Router::new()
+/// Returns the `GatedRouter` — not a bare `Router`, because
+/// `GatedRouter::nest` accepts only the former. A subtree that declares
+/// nothing has to say so at its nest, so a router that SHOULD declare
+/// cannot quietly fail to.
+///
+/// Nothing is declared here yet: the mutating routes are gated inside the
+/// handlers (`require_admin(&state, &headers)`), which is the pattern the
+/// policy engine is meant to replace. Folding them is its own change —
+/// `/groups/search` is authenticated-only while the rest are admin-only,
+/// so this is a per-VERB declaration, not a subtree one.
+pub fn subject_group_routes() -> GatedRouter<Arc<AppState>> {
+    GatedRouter::new()
         .route("/", post(create_group))
         .route("/", get(list_groups))
         .route("/search", get(search_groups))

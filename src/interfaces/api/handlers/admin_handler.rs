@@ -1,5 +1,4 @@
 use axum::{
-    Router,
     extract::{DefaultBodyLimit, Json, Multipart, Path, Query, State},
     http::StatusCode,
     response::{
@@ -37,6 +36,7 @@ use crate::interfaces::api::handlers::dedup_handler::{
     admin_check_hash, get_stats, recalculate_stats,
 };
 use crate::interfaces::api::handlers::search_handler::clear_search_cache;
+use crate::interfaces::api::policy_router::GatedRouter;
 use crate::interfaces::errors::AppError;
 use crate::interfaces::middleware::auth::AuthUser;
 use std::sync::Arc;
@@ -62,9 +62,9 @@ struct AdminUsersPageResponse {
 /// mirrors the `OXICLOUD_ENABLE_EXTERNAL_MOUNTS` flag; when the flag
 /// is off the runtime `MountRegistry` isn't loaded, so exposing the
 /// CRUD would let admins configure mounts that silently don't work).
-pub fn admin_routes(app_state: &Arc<AppState>) -> Router<Arc<AppState>> {
+pub fn admin_routes(app_state: &Arc<AppState>) -> GatedRouter<Arc<AppState>> {
     use super::admin_external_mounts as ext_mounts;
-    let mut router = Router::new().merge(super::admin_appearance_handler::routes());
+    let mut router = GatedRouter::new().merge(super::admin_appearance_handler::routes());
 
     // External file mounts — CRUD registered only when the feature
     // is enabled server-side. Matches the pattern used for the

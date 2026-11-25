@@ -9,7 +9,6 @@
 //!   DELETE /api/auth/device/devices/{id} — Revoke a device (authenticated)
 
 use axum::{
-    Router,
     extract::{ConnectInfo, Json, Path, Query, State},
     http::{HeaderMap, StatusCode},
     response::IntoResponse,
@@ -22,6 +21,8 @@ use uuid::Uuid;
 use crate::application::dtos::device_auth_dto::*;
 use crate::application::ports::scope_ports::Condition;
 use crate::application::services::device_auth_service::{DeviceAuthService, DeviceInfoDto};
+use axum::Router;
+
 use crate::common::di::AppState;
 use crate::interfaces::api::policy_router::{GatedRouter, post as policy_post};
 

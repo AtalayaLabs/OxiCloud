@@ -5,14 +5,16 @@ use crate::{
     interfaces::{errors::AppError, middleware::auth::AuthUser},
 };
 use axum::{
-    Json, Router,
+    Json,
     extract::State,
     routing::{get, post},
 };
 use std::sync::Arc;
 
-pub fn routes() -> Router<Arc<AppState>> {
-    Router::new()
+use crate::interfaces::api::policy_router::GatedRouter;
+
+pub fn routes() -> GatedRouter<Arc<AppState>> {
+    GatedRouter::new()
         .route(
             "/settings/appearance",
             get(get_appearance).put(select_theme),

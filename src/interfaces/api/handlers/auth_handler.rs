@@ -1,5 +1,4 @@
 use axum::{
-    Router,
     extract::{ConnectInfo, Json, Query, State},
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Redirect, Response},
@@ -72,9 +71,14 @@ pub fn auth_public_routes() -> GatedRouter<Arc<AppState>> {
 
 /// Protected auth routes, require authentication (auth + CSRF middleware
 /// must be applied by the caller in main.rs).
-pub fn auth_protected_routes() -> Router<Arc<AppState>> {
+pub fn auth_protected_routes() -> GatedRouter<Arc<AppState>> {
     use axum::routing::patch;
-    Router::new()
+    // A `GatedRouter` even though it declares nothing yet: these
+    // operations are `account` (`/me*`) and `security`
+    // (`change-password`, `upgrade-to-internal`) in § Areas, not
+    // protocols, so PR 2 declares scopes here. Returning a bare `Router`
+    // would mean no route in it could declare per verb.
+    GatedRouter::new()
         .route("/me", get(get_current_user))
         .route("/me/image", put(update_user_image))
         .route("/me/profile", patch(update_profile))
