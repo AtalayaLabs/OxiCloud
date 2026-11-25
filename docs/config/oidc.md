@@ -43,7 +43,7 @@ OXICLOUD_OIDC_PROVIDER_NAME="Authentik"
 | `OXICLOUD_OIDC_ISSUER_URL` | — | Provider's OIDC issuer URL |
 | `OXICLOUD_OIDC_CLIENT_ID` | — | OAuth client ID |
 | `OXICLOUD_OIDC_CLIENT_SECRET` | — | OAuth client secret |
-| `OXICLOUD_OIDC_REDIRECT_URI` | `http://localhost:8086/api/auth/oidc/callback` | Callback URL registered with the IdP |
+| `OXICLOUD_OIDC_REDIRECT_URI` | `http://localhost:8086/api/auth/oidc/callback` | Callback URL registered with the IdP. Comma-separated for multiple origins (first = primary); a login returns to the origin it started on. See [Multiple origins](#multiple-origins). |
 | `OXICLOUD_OIDC_SCOPES` | `openid profile email` | Requested scopes |
 | `OXICLOUD_OIDC_FRONTEND_URL` | `http://localhost:8086` | Where to redirect the browser after auth |
 | `OXICLOUD_OIDC_AUTO_PROVISION` | `true` | Auto-create users on first login |
@@ -55,6 +55,24 @@ OXICLOUD_OIDC_PROVIDER_NAME="Authentik"
 ::: warning
 If `OXICLOUD_OIDC_ENABLED=true` but `issuer_url`, `client_id`, or `client_secret` are empty, OIDC is automatically disabled with an error log.
 :::
+
+### Multiple origins
+
+When the same instance is reached under more than one origin (e.g. a public
+hostname and a LAN IP), set `OXICLOUD_OIDC_REDIRECT_URI` to a comma-separated
+list:
+
+```sh
+OXICLOUD_OIDC_REDIRECT_URI="https://cloud.example.com/api/auth/oidc/callback,http://192.168.1.10:8086/api/auth/oidc/callback"
+```
+
+- The **first** entry is the primary and uses `OXICLOUD_OIDC_FRONTEND_URL`;
+  each other entry's frontend base is the URL before `/api/auth/oidc/callback`.
+- A login started on a listed origin uses that origin's `redirect_uri` and
+  returns there; a request whose origin matches no entry falls back to the
+  primary (it is never echoed into a redirect).
+- **Register every entry** in the IdP's allowed redirect URIs — the admin panel
+  lists them all. An unparseable list makes the server refuse to start.
 
 ## API Endpoints
 

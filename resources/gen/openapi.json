@@ -20848,6 +20848,7 @@
           "disable_password_login",
           "provider_name",
           "callback_url",
+          "callback_urls",
           "env_overrides"
         ],
         "properties": {
@@ -20859,7 +20860,14 @@
           },
           "callback_url": {
             "type": "string",
-            "description": "Auto-generated callback URL the admin must register in their IdP"
+            "description": "Auto-generated callback URL the admin must register in their IdP\n(the primary entry; `callback_urls` carries the full list)."
+          },
+          "callback_urls": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Every callback URL to register in the IdP — one per configured origin\n(#117). Single-origin deployments have exactly one, equal to callback_url."
           },
           "client_id": {
             "type": "string"

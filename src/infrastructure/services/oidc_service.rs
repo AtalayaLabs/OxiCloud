@@ -393,6 +393,7 @@ impl OidcServicePort for OidcService {
         state: &str,
         nonce: &str,
         pkce_challenge: &str,
+        redirect_uri: &str,
     ) -> Result<String, DomainError> {
         // Fetch or use cached discovery to get the correct authorization_endpoint
         let discovery = self.get_discovery().await?;
@@ -403,7 +404,7 @@ impl OidcServicePort for OidcService {
             "{}?response_type=code&client_id={}&redirect_uri={}&scope={}&state={}&nonce={}&code_challenge={}&code_challenge_method=S256",
             auth_endpoint,
             urlencoding::encode(&self.config.client_id),
-            urlencoding::encode(&self.config.redirect_uri),
+            urlencoding::encode(redirect_uri),
             urlencoding::encode(&scopes),
             urlencoding::encode(state),
             urlencoding::encode(nonce),
@@ -417,6 +418,7 @@ impl OidcServicePort for OidcService {
         &self,
         code: &str,
         pkce_verifier: &str,
+        redirect_uri: &str,
     ) -> Result<OidcTokenSet, DomainError> {
         let discovery = self.get_discovery().await?;
 
@@ -431,7 +433,7 @@ impl OidcServicePort for OidcService {
             .form(&[
                 ("grant_type", "authorization_code"),
                 ("code", code),
-                ("redirect_uri", &self.config.redirect_uri),
+                ("redirect_uri", redirect_uri),
                 ("client_id", &self.config.client_id),
                 ("client_secret", &self.config.client_secret),
                 ("code_verifier", pkce_verifier),

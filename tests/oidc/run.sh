@@ -192,6 +192,7 @@ hurl --variables-file "$OIDC_DIR/test.env" \
      --file-root "$REPO_ROOT/tests" \
      --test --jobs 1 \
      "$OIDC_DIR/oidc.hurl" \
+     "$OIDC_DIR/multi_origin.hurl" \
      "$OIDC_DIR/magic_link_coaching.hurl" \
      "$OIDC_DIR/password_login_coaching.hurl" \
      "$OIDC_DIR/link_unlink.hurl"

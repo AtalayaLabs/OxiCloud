@@ -181,6 +181,8 @@ const configuration = {
       // tests/oidc/run-manual-sso-only.sh (SSO-only auto-redirect check).
       redirect_uris: [
         'http://localhost:8087/api/auth/oidc/callback',
+        // 127.0.0.1: second origin for tests/oidc/multi_origin.hurl (#117).
+        'http://127.0.0.1:8087/api/auth/oidc/callback',
         'http://localhost:8090/api/auth/oidc/callback',
       ],
       grant_types: ['authorization_code'],
@@ -203,6 +205,7 @@ const configuration = {
       // registered so both runners can drive the flow.
       post_logout_redirect_uris: [
         'http://localhost:8087/login',
+        'http://127.0.0.1:8087/login',
         'http://localhost:8090/login',
       ],
     },

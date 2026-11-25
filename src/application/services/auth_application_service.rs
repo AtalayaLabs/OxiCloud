@@ -737,6 +737,9 @@ struct PendingOidcFlow {
     /// Defaults to `Login` for every existing flow-mint call site;
     /// self-service linking sets `Link { user_id }`.
     intent: FlowIntent,
+    /// `redirect_uri` sent on `/authorize`; the token request must repeat it
+    /// (RFC 6749 §4.1.3), so it is fixed per flow, not per config (#117).
+    redirect_uri: String,
 }
 
 /// Tracks a pending one-time token exchange after successful OIDC callback
@@ -5533,9 +5536,60 @@ impl AuthApplicationService {
     // OIDC Methods
     // ========================================================================
 
+    /// Mint state + nonce + PKCE, store the pending flow with the redirect
+    /// entry chosen for `origin`, and build the authorize URL.
+    async fn begin_oidc_flow(
+        &self,
+        oidc: &OidcService,
+        nc_flow_token: Option<String>,
+        intent: FlowIntent,
+        origin: Option<&str>,
+    ) -> Result<(String, String), DomainError> {
+        use rand_core::{OsRng, RngCore};
+        use sha2::{Digest, Sha256};
+        let random_hex = || {
+            let mut b = [0u8; 32];
+            OsRng.fill_bytes(&mut b);
+            b
+        };
+        let state_token = hex::encode(random_hex());
+        let nonce = hex::encode(random_hex());
+        let pkce_verifier = base64_url_encode(&random_hex());
+        let pkce_challenge = base64_url_encode(&Sha256::digest(pkce_verifier.as_bytes()));
+        let redirect_uri = self
+            .oidc_config()
+            .map(|c| c.redirect_for_origin(origin).uri)
+            .ok_or_else(|| {
+                DomainError::new(
+                    ErrorKind::InternalError,
+                    "OIDC",
+                    "OIDC config not available",
+                )
+            })?;
+
+        let authorize_url = oidc
+            .get_authorize_url(&state_token, &nonce, &pkce_challenge, &redirect_uri)
+            .await?;
+        // Stored only once the URL exists (auto-expires after 10 min via moka TTL).
+        self.pending_oidc_flows.insert(
+            state_token.clone(),
+            PendingOidcFlow {
+                pkce_verifier,
+                nonce,
+                nc_flow_token,
+                intent,
+                redirect_uri,
+            },
+        );
+        Ok((state_token, authorize_url))
+    }
+
     /// Prepare the OIDC authorization flow: generates CSRF state, PKCE pair,
     /// nonce, stores them in pending_oidc_flows, and returns the authorize URL.
-    pub async fn prepare_oidc_authorize(&self) -> Result<String, DomainError> {
+    pub async fn prepare_oidc_authorize(
+        &self,
+        origin: Option<&str>,
+    ) -> Result<String, DomainError> {
         let oidc = self.oidc_service().ok_or_else(|| {
             DomainError::new(
                 ErrorKind::InternalError,
@@ -5544,41 +5598,8 @@ impl AuthApplicationService {
             )
         })?;
 
-        // Generate CSRF state token
-        use rand_core::{OsRng, RngCore};
-        let mut state_bytes = [0u8; 32];
-        OsRng.fill_bytes(&mut state_bytes);
-        let state_token = hex::encode(state_bytes);
-
-        // Generate nonce for ID token binding
-        let mut nonce_bytes = [0u8; 32];
-        OsRng.fill_bytes(&mut nonce_bytes);
-        let nonce = hex::encode(nonce_bytes);
-
-        // Generate PKCE pair (RFC 7636, S256)
-        let mut verifier_bytes = [0u8; 32];
-        OsRng.fill_bytes(&mut verifier_bytes);
-        let pkce_verifier = base64_url_encode(&verifier_bytes);
-        let pkce_challenge = {
-            use sha2::{Digest, Sha256};
-            let hash = Sha256::digest(pkce_verifier.as_bytes());
-            base64_url_encode(&hash)
-        };
-
-        // Store pending flow (auto-expires after 10 min via moka TTL)
-        self.pending_oidc_flows.insert(
-            state_token.clone(),
-            PendingOidcFlow {
-                pkce_verifier,
-                nonce: nonce.clone(),
-                nc_flow_token: None,
-                intent: FlowIntent::Login,
-            },
-        );
-
-        // Build authorization URL with state, nonce, and PKCE challenge
-        let authorize_url = oidc
-            .get_authorize_url(&state_token, &nonce, &pkce_challenge)
+        let (state_token, authorize_url) = self
+            .begin_oidc_flow(&oidc, None, FlowIntent::Login, origin)
             .await?;
 
         tracing::info!(
@@ -5597,7 +5618,11 @@ impl AuthApplicationService {
     /// The caller MUST have already authenticated the user (this method
     /// takes user_id from the current session context). See
     /// docs/plan/oidc-account-linking.md § UX flow — link.
-    pub async fn prepare_oidc_link(&self, user_id: Uuid) -> Result<String, DomainError> {
+    pub async fn prepare_oidc_link(
+        &self,
+        user_id: Uuid,
+        origin: Option<&str>,
+    ) -> Result<String, DomainError> {
         let oidc = self.oidc_service().ok_or_else(|| {
             DomainError::new(
                 ErrorKind::InternalError,
@@ -5621,37 +5646,8 @@ impl AuthApplicationService {
             ));
         }
 
-        use rand_core::{OsRng, RngCore};
-        use sha2::{Digest, Sha256};
-
-        let mut state_bytes = [0u8; 32];
-        OsRng.fill_bytes(&mut state_bytes);
-        let state_token = hex::encode(state_bytes);
-
-        let mut nonce_bytes = [0u8; 32];
-        OsRng.fill_bytes(&mut nonce_bytes);
-        let nonce = hex::encode(nonce_bytes);
-
-        let mut verifier_bytes = [0u8; 32];
-        OsRng.fill_bytes(&mut verifier_bytes);
-        let pkce_verifier = base64_url_encode(&verifier_bytes);
-        let pkce_challenge = {
-            let hash = Sha256::digest(pkce_verifier.as_bytes());
-            base64_url_encode(&hash)
-        };
-
-        self.pending_oidc_flows.insert(
-            state_token.clone(),
-            PendingOidcFlow {
-                pkce_verifier,
-                nonce: nonce.clone(),
-                nc_flow_token: None,
-                intent: FlowIntent::Link { user_id },
-            },
-        );
-
-        let authorize_url = oidc
-            .get_authorize_url(&state_token, &nonce, &pkce_challenge)
+        let (_state_token, authorize_url) = self
+            .begin_oidc_flow(&oidc, None, FlowIntent::Link { user_id }, origin)
             .await?;
 
         tracing::info!(
@@ -5888,6 +5884,7 @@ impl AuthApplicationService {
     pub async fn prepare_oidc_authorize_for_nextcloud(
         &self,
         nc_flow_token: &str,
+        origin: Option<&str>,
     ) -> Result<String, DomainError> {
         let oidc = self.oidc_service().ok_or_else(|| {
             DomainError::new(
@@ -5897,37 +5894,13 @@ impl AuthApplicationService {
             )
         })?;
 
-        use rand_core::{OsRng, RngCore};
-        let mut state_bytes = [0u8; 32];
-        OsRng.fill_bytes(&mut state_bytes);
-        let state_token = hex::encode(state_bytes);
-
-        let mut nonce_bytes = [0u8; 32];
-        OsRng.fill_bytes(&mut nonce_bytes);
-        let nonce = hex::encode(nonce_bytes);
-
-        let mut verifier_bytes = [0u8; 32];
-        OsRng.fill_bytes(&mut verifier_bytes);
-        let pkce_verifier = base64_url_encode(&verifier_bytes);
-        let pkce_challenge = {
-            use sha2::{Digest, Sha256};
-            let hash = Sha256::digest(pkce_verifier.as_bytes());
-            base64_url_encode(&hash)
-        };
-
-        // Store pending flow (auto-expires after 10 min via moka TTL)
-        self.pending_oidc_flows.insert(
-            state_token.clone(),
-            PendingOidcFlow {
-                pkce_verifier,
-                nonce: nonce.clone(),
-                nc_flow_token: Some(nc_flow_token.to_string()),
-                intent: FlowIntent::Login,
-            },
-        );
-
-        let authorize_url = oidc
-            .get_authorize_url(&state_token, &nonce, &pkce_challenge)
+        let (state_token, authorize_url) = self
+            .begin_oidc_flow(
+                &oidc,
+                Some(nc_flow_token.to_string()),
+                FlowIntent::Login,
+                origin,
+            )
             .await?;
 
         tracing::info!(
@@ -5980,11 +5953,12 @@ impl AuthApplicationService {
                 ));
             }
         };
-        let (pkce_verifier, nonce, nc_flow_token, intent) = (
+        let (pkce_verifier, nonce, nc_flow_token, intent, redirect_uri) = (
             flow.pkce_verifier,
             flow.nonce,
             flow.nc_flow_token,
             flow.intent,
+            flow.redirect_uri,
         );
 
         // Clone the Arc and config out of the RwLock so we don't hold the lock across await points
@@ -6008,7 +5982,9 @@ impl AuthApplicationService {
         };
 
         // 1. Exchange authorization code for tokens (with PKCE verifier)
-        let token_set = oidc.exchange_code(code, &pkce_verifier).await?;
+        let token_set = oidc
+            .exchange_code(code, &pkce_verifier, &redirect_uri)
+            .await?;
 
         // 2. Validate ID token and extract claims (with nonce verification)
         let claims = oidc

@@ -3943,8 +3943,14 @@ export type OidcSettingsDto = {
     auto_provision: boolean;
     /**
      * Auto-generated callback URL the admin must register in their IdP
+     * (the primary entry; `callback_urls` carries the full list).
      */
     callback_url: string;
+    /**
+     * Every callback URL to register in the IdP — one per configured origin
+     * (#117). Single-origin deployments have exactly one, equal to callback_url.
+     */
+    callback_urls: Array<string>;
     client_id: string;
     /**
      * True if a client secret is configured (never reveals the actual value)

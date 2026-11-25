@@ -423,6 +423,7 @@ pub trait OidcServicePort: Send + Sync + 'static {
         state: &str,
         nonce: &str,
         pkce_challenge: &str,
+        redirect_uri: &str,
     ) -> Result<String, DomainError>;
 
     /// Exchange an authorization code for tokens, providing PKCE code_verifier.
@@ -430,6 +431,7 @@ pub trait OidcServicePort: Send + Sync + 'static {
         &self,
         code: &str,
         pkce_verifier: &str,
+        redirect_uri: &str,
     ) -> Result<OidcTokenSet, DomainError>;
 
     /// Validate an ID token and extract claims.

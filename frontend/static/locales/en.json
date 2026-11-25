@@ -1331,6 +1331,7 @@
     "oidc_auth_endpoint": "Auth endpoint",
     "oidc_auto_provision": "Auto-provision users on first login",
     "oidc_callback": "Callback URL",
+    "oidc_callbacks": "Callback URLs",
     "oidc_client_id": "Client ID",
     "oidc_client_secret": "Client secret",
     "oidc_disable_pw": "Disable password login (OIDC only)",

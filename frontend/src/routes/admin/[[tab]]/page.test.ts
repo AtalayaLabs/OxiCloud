@@ -281,6 +281,37 @@ it('loads OIDC settings when the OIDC tab is opened', async () => {
 	await waitFor(() => expect(admin.getOidcSettings).toHaveBeenCalled());
 });
 
+// #117: multi-origin deployments must show every callback URL to register in
+// the IdP. Before, the panel rendered a single `callback_url` (the comma-joined
+// redirect_uri string); this pins that each entry of `callback_urls` renders as
+// its own row with its own copy button. A regression collapsing back to the
+// single field would drop every non-primary URL and this would go red.
+it('renders every callback URL from callback_urls', async () => {
+	m(admin.getOidcSettings).mockResolvedValue({
+		enabled: true,
+		issuer_url: 'https://idp.example',
+		client_id: 'oxi',
+		scopes: null,
+		auto_provision: false,
+		admin_groups: null,
+		disable_password_login: false,
+		provider_name: null,
+		callback_url: 'http://localhost:8087/api/auth/oidc/callback',
+		callback_urls: [
+			'http://localhost:8087/api/auth/oidc/callback',
+			'http://127.0.0.1:8087/api/auth/oidc/callback'
+		],
+		client_secret_set: true,
+		env_overrides: []
+	});
+	setTab('oidc');
+	render(AdminPage);
+	await screen.findByTestId('admin-oidc-callback-copy-btn');
+	// second origin's URL gets its own indexed copy button + code cell
+	expect(await screen.findByTestId('admin-oidc-callback-copy-btn-1')).toBeTruthy();
+	expect(screen.getByText('http://127.0.0.1:8087/api/auth/oidc/callback')).toBeTruthy();
+});
+
 it('loads storage + migration when the storage tab is opened', async () => {
 	setTab('storage');
 	render(AdminPage);
