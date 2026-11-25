@@ -192,7 +192,6 @@ fn service(
         (status = 403, description = "Admin required", body = crate::interfaces::errors::ApiErrorBody),
         (status = 409, description = "Group with this name already exists", body = crate::interfaces::errors::ApiErrorBody),
     ),
-    security(("bearerAuth" = [])),
     tag = "groups",
     operation_id = "subject_group_create"
 )]
@@ -225,7 +224,6 @@ pub async fn create_group(
         (status = 401, description = "Unauthorized", body = crate::interfaces::errors::ApiErrorBody),
         (status = 403, description = "Admin required", body = crate::interfaces::errors::ApiErrorBody),
     ),
-    security(("bearerAuth" = [])),
     tag = "groups",
     operation_id = "subject_group_list"
 )]
@@ -260,7 +258,6 @@ pub async fn list_groups(
         (status = 200, description = "Matching non-virtual groups", body = [GroupDto]),
         (status = 401, description = "Unauthorized", body = crate::interfaces::errors::ApiErrorBody),
     ),
-    security(("bearerAuth" = [])),
     tag = "groups",
     operation_id = "subject_group_search"
 )]
@@ -319,7 +316,6 @@ pub async fn search_groups(
         (status = 403, description = "Admin required", body = crate::interfaces::errors::ApiErrorBody),
         (status = 404, description = "Group not found", body = crate::interfaces::errors::ApiErrorBody),
     ),
-    security(("bearerAuth" = [])),
     tag = "groups",
     operation_id = "subject_group_get"
 )]
@@ -349,7 +345,6 @@ pub async fn get_group(
         (status = 404, description = "Group not found", body = crate::interfaces::errors::ApiErrorBody),
         (status = 409, description = "Name already taken", body = crate::interfaces::errors::ApiErrorBody),
     ),
-    security(("bearerAuth" = [])),
     tag = "groups",
     operation_id = "subject_group_update"
 )]
@@ -387,7 +382,6 @@ pub async fn update_group(
         (status = 403, description = "Admin required, or group is virtual", body = crate::interfaces::errors::ApiErrorBody),
         (status = 404, description = "Group not found", body = crate::interfaces::errors::ApiErrorBody),
     ),
-    security(("bearerAuth" = [])),
     tag = "groups",
     operation_id = "subject_group_delete"
 )]
@@ -413,7 +407,6 @@ pub async fn delete_group(
         (status = 403, description = "Admin required", body = crate::interfaces::errors::ApiErrorBody),
         (status = 404, description = "Group not found", body = crate::interfaces::errors::ApiErrorBody),
     ),
-    security(("bearerAuth" = [])),
     tag = "groups",
     operation_id = "subject_group_list_members"
 )]
@@ -449,7 +442,6 @@ pub async fn list_members(
         (status = 404, description = "Group not found", body = crate::interfaces::errors::ApiErrorBody),
         (status = 409, description = "Member already in group", body = crate::interfaces::errors::ApiErrorBody),
     ),
-    security(("bearerAuth" = [])),
     tag = "groups",
     operation_id = "subject_group_add_member"
 )]
@@ -501,7 +493,6 @@ pub async fn add_member(
         (status = 403, description = "Admin required, or virtual group", body = crate::interfaces::errors::ApiErrorBody),
         (status = 404, description = "Group or member not found", body = crate::interfaces::errors::ApiErrorBody),
     ),
-    security(("bearerAuth" = [])),
     tag = "groups",
     operation_id = "subject_group_remove_user_member"
 )]
@@ -532,7 +523,6 @@ pub async fn remove_user_member(
         (status = 403, description = "Admin required, or virtual group", body = crate::interfaces::errors::ApiErrorBody),
         (status = 404, description = "Group or member not found", body = crate::interfaces::errors::ApiErrorBody),
     ),
-    security(("bearerAuth" = [])),
     tag = "groups",
     operation_id = "subject_group_remove_group_member"
 )]
@@ -561,7 +551,6 @@ pub async fn remove_group_member(
         (status = 403, description = "Admin required", body = crate::interfaces::errors::ApiErrorBody),
         (status = 404, description = "Group not found", body = crate::interfaces::errors::ApiErrorBody),
     ),
-    security(("bearerAuth" = [])),
     tag = "groups",
     operation_id = "subject_group_effective_members"
 )]

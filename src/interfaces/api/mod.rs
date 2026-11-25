@@ -982,6 +982,23 @@ pub fn mark_policies(
                 continue;
             };
 
+            // The engine OWNS the security array, so no operation has to
+            // (and must not) hand-write `security(...)`: a credential is
+            // required unless the principal is Public.
+            op.security = Some(if policy.principal == MinPrincipal::Public {
+                // `[]`, not `[{}]`: an EMPTY array removes the
+                // document-level requirement, while an array holding an
+                // empty object means auth is OPTIONAL. Only the first
+                // says "no credential needed".
+                Vec::new()
+            } else {
+                vec![utoipa::openapi::security::SecurityRequirement::new::<
+                    &str,
+                    [&str; 0],
+                    &str,
+                >("bearerAuth", [])]
+            });
+
             // One key per AXIS. A consumer can now tell "needs admin" from
             // "a share visitor may read this" from "the credential must
             // carry files:rw", which a single key could not express.
@@ -1045,6 +1062,8 @@ pub fn mark_policies(
             }
 
             if notes.is_empty() && policy.scope.is_none() {
+                // No axis differs from the default, so no marker — but
+                // the security array above is already set.
                 continue;
             }
             op.extensions = Some(ext.build());

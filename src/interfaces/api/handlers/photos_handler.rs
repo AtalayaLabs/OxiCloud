@@ -99,7 +99,6 @@ fn default_limit() -> u32 {
         (status = 401, description = "Unauthorized", body = crate::interfaces::errors::ApiErrorBody),
         (status = 500, description = "Internal server error", body = crate::interfaces::errors::ApiErrorBody)
     ),
-    security(("bearerAuth" = [])),
     tag = "photos"
 )]
 pub async fn list_photos_resources(
@@ -302,7 +301,6 @@ pub struct GeoQueryParams {
         (status = 400, description = "Invalid bounding box", body = crate::interfaces::errors::ApiErrorBody),
         (status = 401, description = "Unauthorized", body = crate::interfaces::errors::ApiErrorBody)
     ),
-    security(("bearerAuth" = [])),
     tag = "photos"
 )]
 pub async fn list_photos_geo(

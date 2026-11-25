@@ -225,7 +225,6 @@ pub struct OpaqueRegisterFinishDto {
         (status = 401, description = "Not authenticated", body = crate::interfaces::errors::ApiErrorBody),
         (status = 503, description = "OPAQUE service not configured", body = crate::interfaces::errors::ApiErrorBody),
     ),
-    security(("bearerAuth" = [])),
     tag = "auth"
 )]
 pub async fn register_start(
@@ -299,7 +298,6 @@ pub async fn register_start(
         (status = 401, description = "Not authenticated", body = crate::interfaces::errors::ApiErrorBody),
         (status = 503, description = "OPAQUE service not configured", body = crate::interfaces::errors::ApiErrorBody),
     ),
-    security(("bearerAuth" = [])),
     tag = "auth"
 )]
 pub async fn register_finish(

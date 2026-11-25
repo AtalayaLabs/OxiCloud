@@ -40,7 +40,6 @@ use crate::interfaces::middleware::auth::AuthUser;
         (status = 200, description = "Drives the caller can read", body = Vec<DriveDto>),
         (status = 500, description = "Internal server error", body = crate::interfaces::errors::ApiErrorBody),
     ),
-    security(("bearerAuth" = [])),
     tag = "drives"
 )]
 pub async fn list_drives(
@@ -165,7 +164,6 @@ fn parse_subject(kind: SubjectTypeDto, id: Uuid) -> Subject {
         (status = 403, description = "Caller is not an OxiCloud admin", body = crate::interfaces::errors::ApiErrorBody),
         (status = 501, description = "kind=personal not yet implemented", body = crate::interfaces::errors::ApiErrorBody),
     ),
-    security(("bearerAuth" = [])),
     tag = "drives"
 )]
 pub async fn create_drive(
@@ -210,7 +208,6 @@ pub async fn create_drive(
         (status = 200, description = "Role grants on this drive", body = Vec<GrantDto>),
         (status = 404, description = "Drive not found or caller lacks Read", body = crate::interfaces::errors::ApiErrorBody),
     ),
-    security(("bearerAuth" = [])),
     tag = "drives"
 )]
 pub async fn list_drive_members(
@@ -242,7 +239,6 @@ pub async fn list_drive_members(
         (status = 404, description = "Drive not found or caller lacks Manage", body = crate::interfaces::errors::ApiErrorBody),
         (status = 405, description = "Personal drive — membership is immutable", body = crate::interfaces::errors::ApiErrorBody),
     ),
-    security(("bearerAuth" = [])),
     tag = "drives"
 )]
 pub async fn add_drive_member(
@@ -284,7 +280,6 @@ pub async fn add_drive_member(
         (status = 404, description = "Drive not found or caller lacks Manage", body = crate::interfaces::errors::ApiErrorBody),
         (status = 405, description = "Personal drive — membership is immutable", body = crate::interfaces::errors::ApiErrorBody),
     ),
-    security(("bearerAuth" = [])),
     tag = "drives"
 )]
 pub async fn update_drive_member(
@@ -325,7 +320,6 @@ pub async fn update_drive_member(
         (status = 404, description = "Drive not found or caller lacks Manage", body = crate::interfaces::errors::ApiErrorBody),
         (status = 405, description = "Personal drive — membership is immutable", body = crate::interfaces::errors::ApiErrorBody),
     ),
-    security(("bearerAuth" = [])),
     tag = "drives"
 )]
 pub async fn remove_drive_member(
@@ -365,7 +359,6 @@ pub async fn remove_drive_member(
         (status = 405, description = "Default Personal drive — undeletable", body = crate::interfaces::errors::ApiErrorBody),
         (status = 409, description = "Drive is not empty — move/trash contents first", body = crate::interfaces::errors::ApiErrorBody),
     ),
-    security(("bearerAuth" = [])),
     tag = "drives"
 )]
 pub async fn delete_drive(
@@ -474,7 +467,6 @@ where
         (status = 200, body = Object, description = "Policies merged"),
         (status = 404, description = "Drive not found OR caller is not OxiCloud admin", body = crate::interfaces::errors::ApiErrorBody),
     ),
-    security(("bearerAuth" = [])),
     tag = "drives"
 )]
 pub async fn update_drive_policies(
@@ -626,7 +618,6 @@ pub struct UpdateDriveQuotaDto {
         (status = 400, description = "Personal drive — quota is envelope-managed via the owner user", body = crate::interfaces::errors::ApiErrorBody),
         (status = 404, description = "Drive not found OR caller is not OxiCloud admin", body = crate::interfaces::errors::ApiErrorBody),
     ),
-    security(("bearerAuth" = [])),
     tag = "drives"
 )]
 pub async fn update_drive_quota(

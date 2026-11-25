@@ -99,7 +99,6 @@ pub struct VerifyPasswordRequest {
         (status = 201, description = "Share created", body = crate::application::dtos::share_dto::ShareDto),
         (status = 400, description = "Bad request", body = crate::interfaces::errors::ApiErrorBody)
     ),
-    security(("bearerAuth" = [])),
     tag = "shares"
 )]
 pub async fn create_shared_link(
@@ -122,7 +121,6 @@ pub async fn create_shared_link(
         (status = 200, description = "Share details", body = crate::application::dtos::share_dto::ShareDto),
         (status = 404, description = "Share not found", body = crate::interfaces::errors::ApiErrorBody)
     ),
-    security(("bearerAuth" = [])),
     tag = "shares"
 )]
 pub async fn get_shared_link(
@@ -154,7 +152,6 @@ pub async fn get_shared_link(
     responses(
         (status = 200, description = "List of shares", body = Vec<crate::application::dtos::share_dto::ShareDto>)
     ),
-    security(("bearerAuth" = [])),
     tag = "shares"
 )]
 pub async fn get_user_shares(
@@ -205,7 +202,6 @@ pub async fn get_user_shares(
         (status = 200, description = "Share updated", body = crate::application::dtos::share_dto::ShareDto),
         (status = 404, description = "Share not found", body = crate::interfaces::errors::ApiErrorBody)
     ),
-    security(("bearerAuth" = [])),
     tag = "shares"
 )]
 pub async fn update_shared_link(
@@ -236,7 +232,6 @@ pub async fn update_shared_link(
         (status = 204, description = "Share deleted"),
         (status = 404, description = "Share not found", body = crate::interfaces::errors::ApiErrorBody)
     ),
-    security(("bearerAuth" = [])),
     tag = "shares"
 )]
 pub async fn delete_shared_link(

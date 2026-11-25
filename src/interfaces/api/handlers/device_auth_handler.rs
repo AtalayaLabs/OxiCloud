@@ -162,7 +162,6 @@ pub struct VerifyQuery {
         (status = 200, description = "Info about the pending authorization — `valid: false` means the code is unknown or expired", body = DeviceVerifyInfoDto),
         (status = 401, description = "Caller is not signed in — the user must authenticate before approving a device", body = crate::interfaces::errors::ApiErrorBody),
     ),
-    security(("bearerAuth" = [])),
     tag = "device-auth"
 )]
 pub async fn device_verify_info(
@@ -196,7 +195,6 @@ pub async fn device_verify_info(
         (status = 400, description = "`action` was not one of `approve`/`deny`", body = crate::interfaces::errors::ApiErrorBody),
         (status = 401, description = "Caller is not signed in", body = crate::interfaces::errors::ApiErrorBody),
     ),
-    security(("bearerAuth" = [])),
     tag = "device-auth"
 )]
 pub async fn device_verify_action(
@@ -257,7 +255,6 @@ pub async fn device_verify_action(
         (status = 200, description = "The caller's authorized devices", body = Vec<DeviceInfoDto>),
         (status = 401, description = "Not authenticated", body = crate::interfaces::errors::ApiErrorBody),
     ),
-    security(("bearerAuth" = [])),
     tag = "device-auth"
 )]
 pub async fn list_devices(
@@ -292,7 +289,6 @@ pub async fn list_devices(
         (status = 400, description = "Invalid device id", body = crate::interfaces::errors::ApiErrorBody),
         (status = 401, description = "Not authenticated", body = crate::interfaces::errors::ApiErrorBody),
     ),
-    security(("bearerAuth" = [])),
     tag = "device-auth"
 )]
 pub async fn revoke_device(

@@ -30,7 +30,6 @@ use std::sync::Arc;
         (status = 400, description = "Invalid cursor or query parameters", body = crate::interfaces::errors::ApiErrorBody),
         (status = 501, description = "Trash feature not enabled", body = crate::interfaces::errors::ApiErrorBody),
     ),
-    security(("bearerAuth" = [])),
     tag = "trash"
 )]
 #[instrument(skip_all)]
@@ -104,7 +103,6 @@ pub async fn get_trash_resources(
         (status = 200, body = Object, description = "File moved to trash"),
         (status = 501, description = "Trash feature not enabled", body = crate::interfaces::errors::ApiErrorBody)
     ),
-    security(("bearerAuth" = [])),
     tag = "trash"
 )]
 #[instrument(skip_all)]
@@ -157,7 +155,6 @@ pub async fn move_file_to_trash(
         (status = 200, body = Object, description = "Folder moved to trash"),
         (status = 501, description = "Trash feature not enabled", body = crate::interfaces::errors::ApiErrorBody)
     ),
-    security(("bearerAuth" = [])),
     tag = "trash"
 )]
 #[instrument(skip_all)]
@@ -212,7 +209,6 @@ pub async fn move_folder_to_trash(
         (status = 200, body = Object, description = "Item restored from trash"),
         (status = 501, description = "Trash feature not enabled", body = crate::interfaces::errors::ApiErrorBody)
     ),
-    security(("bearerAuth" = [])),
     tag = "trash"
 )]
 #[instrument(skip_all)]
@@ -259,7 +255,6 @@ pub async fn restore_from_trash(
         (status = 200, body = Object, description = "Item permanently deleted"),
         (status = 501, description = "Trash feature not enabled", body = crate::interfaces::errors::ApiErrorBody)
     ),
-    security(("bearerAuth" = [])),
     tag = "trash"
 )]
 #[instrument(skip_all)]
@@ -307,7 +302,6 @@ pub async fn delete_permanently(
         (status = 200, body = Object, description = "Trash emptied successfully"),
         (status = 501, description = "Trash feature not enabled", body = crate::interfaces::errors::ApiErrorBody)
     ),
-    security(("bearerAuth" = [])),
     tag = "trash"
 )]
 #[instrument(skip_all)]
@@ -364,7 +358,6 @@ pub async fn empty_trash(
         (status = 404, description = "Caller lacks Delete on this drive", body = crate::interfaces::errors::ApiErrorBody),
         (status = 501, description = "Trash feature not enabled", body = crate::interfaces::errors::ApiErrorBody),
     ),
-    security(("bearerAuth" = [])),
     tag = "trash"
 )]
 #[instrument(skip_all)]

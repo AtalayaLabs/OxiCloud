@@ -58,7 +58,6 @@ pub struct RtTicketResponse {
         (status = 200, description = "Ticket issued", body = RtTicketResponse),
         (status = 401, description = "Unauthenticated", body = crate::interfaces::errors::ApiErrorBody),
     ),
-    security(("bearerAuth" = []))
 )]
 pub async fn issue_rt_ticket(
     // `AuthUser` rather than `CurrentUserId` because this handler needs

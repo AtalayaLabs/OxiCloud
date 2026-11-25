@@ -713,7 +713,6 @@ pub async fn refresh_token(
         (status = 200, description = "Current user profile", body = SelfUserDto),
         (status = 401, description = "Not authenticated", body = crate::interfaces::errors::ApiErrorBody),
     ),
-    security(("bearerAuth" = [])),
     tag = "auth"
 )]
 pub async fn get_current_user(
@@ -770,7 +769,6 @@ pub struct UpdateUserImageDto {
         (status = 400, description = "New password does not meet requirements", body = crate::interfaces::errors::ApiErrorBody),
         (status = 401, description = "Not authenticated or current password incorrect", body = crate::interfaces::errors::ApiErrorBody),
     ),
-    security(("bearerAuth" = [])),
     tag = "auth"
 )]
 pub async fn change_password(
@@ -920,7 +918,6 @@ pub async fn change_password(
         (status = 403, description = "OIDC user, or domain not in allowlist", body = crate::interfaces::errors::ApiErrorBody),
         (status = 409, description = "Already internal", body = crate::interfaces::errors::ApiErrorBody),
     ),
-    security(("bearerAuth" = [])),
     tag = "auth"
 )]
 pub async fn upgrade_to_internal(
@@ -1039,7 +1036,6 @@ pub async fn upgrade_to_internal(
         (status = 403, description = "OIDC-managed profile — edit at the IdP", body = crate::interfaces::errors::ApiErrorBody),
         (status = 409, description = "Username already claimed (immutable) or taken by another user", body = crate::interfaces::errors::ApiErrorBody),
     ),
-    security(("bearerAuth" = [])),
     tag = "auth"
 )]
 pub async fn update_profile(
@@ -1098,7 +1094,6 @@ pub async fn update_profile(
         (status = 400, description = "Validation error (invalid data URI / unsupported MIME / oversized / malformed URL)", body = crate::interfaces::errors::ApiErrorBody),
         (status = 401, description = "Not authenticated", body = crate::interfaces::errors::ApiErrorBody),
     ),
-    security(("bearerAuth" = [])),
     tag = "auth"
 )]
 pub async fn update_user_image(
@@ -1138,7 +1133,6 @@ pub async fn update_user_image(
         (status = 200, body = Object, description = "The caller's sessions"),
         (status = 401, description = "Not authenticated", body = crate::interfaces::errors::ApiErrorBody),
     ),
-    security(("bearerAuth" = [])),
     tag = "auth"
 )]
 pub async fn list_own_sessions(
@@ -1194,7 +1188,6 @@ pub async fn list_own_sessions(
         (status = 401, description = "Not authenticated", body = crate::interfaces::errors::ApiErrorBody),
         (status = 404, description = "No such session for this caller", body = crate::interfaces::errors::ApiErrorBody),
     ),
-    security(("bearerAuth" = [])),
     tag = "auth"
 )]
 pub async fn revoke_own_session(
@@ -1238,7 +1231,6 @@ pub async fn revoke_own_session(
         (status = 200, body = Object, description = "Logged out, auth cookies cleared"),
         (status = 401, description = "Not authenticated or refresh token missing", body = crate::interfaces::errors::ApiErrorBody),
     ),
-    security(("bearerAuth" = [])),
     tag = "auth"
 )]
 pub async fn logout(
@@ -1327,7 +1319,6 @@ pub struct DpopBindDto {
         (status = 401, description = "Not authenticated", body = crate::interfaces::errors::ApiErrorBody),
         (status = 409, description = "Session already bound", body = crate::interfaces::errors::ApiErrorBody),
     ),
-    security(("bearerAuth" = [])),
     tag = "auth"
 )]
 pub async fn dpop_bind(
@@ -1662,7 +1653,6 @@ pub async fn oidc_authorize(
         (status = 404, description = "OIDC not enabled", body = crate::interfaces::errors::ApiErrorBody),
         (status = 409, description = "User is already linked — unlink first", body = crate::interfaces::errors::ApiErrorBody),
     ),
-    security(("bearerAuth" = [])),
     tag = "auth"
 )]
 pub async fn oidc_link_start(
@@ -1704,7 +1694,6 @@ pub async fn oidc_link_start(
         (status = 401, description = "Not authenticated", body = crate::interfaces::errors::ApiErrorBody),
         (status = 403, description = "Refused — user has no other credential and would be locked out", body = crate::interfaces::errors::ApiErrorBody),
     ),
-    security(("bearerAuth" = [])),
     tag = "auth"
 )]
 pub async fn oidc_unlink(

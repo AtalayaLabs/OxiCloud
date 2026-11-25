@@ -46,7 +46,6 @@ pub fn user_routes() -> GatedRouter<Arc<AppState>> {
         (status = 404, description = "User does not exist OR caller has no visibility (anti-enumeration: indistinguishable)", body = crate::interfaces::errors::ApiErrorBody),
         (status = 429, description = "Per-caller rate limit exceeded", body = crate::interfaces::errors::ApiErrorBody),
     ),
-    security(("bearerAuth" = [])),
     tag = "users",
 )]
 pub async fn get_user_profile(

@@ -635,7 +635,6 @@ impl DedupHandler {
         (status = 404, description = "No visible reference, unknown hash, or malformed input", body = crate::interfaces::errors::ApiErrorBody),
     ),
     tag = "dedup",
-    security(("bearerAuth" = []))
 )]
 pub async fn check_hash(
     state: State<GlobalState>,
@@ -658,7 +657,6 @@ pub async fn check_hash(
         (status = 404, description = "No blob with this hash is stored (or malformed input)", body = crate::interfaces::errors::ApiErrorBody),
     ),
     tag = "admin",
-    security(("bearerAuth" = []))
 )]
 pub async fn admin_check_hash(
     state: State<GlobalState>,
@@ -677,7 +675,6 @@ pub async fn admin_check_hash(
         (status = 400, description = "Too many hashes in one batch", body = crate::interfaces::errors::ApiErrorBody),
     ),
     tag = "dedup",
-    security(("bearerAuth" = []))
 )]
 pub async fn check_hashes_batch(
     state: State<GlobalState>,
@@ -696,7 +693,6 @@ pub async fn check_hashes_batch(
         (status = 403, description = "Caller is not an admin", body = crate::interfaces::errors::ApiErrorBody),
     ),
     tag = "admin",
-    security(("bearerAuth" = []))
 )]
 pub async fn get_stats(state: State<GlobalState>, auth_user: AuthUser) -> impl IntoResponse {
     DedupHandler::get_stats_impl(state, auth_user).await
@@ -714,7 +710,6 @@ pub async fn get_stats(state: State<GlobalState>, auth_user: AuthUser) -> impl I
         (status = 404, description = "Blob not found or not owned by this user", body = crate::interfaces::errors::ApiErrorBody),
     ),
     tag = "dedup",
-    security(("bearerAuth" = []))
 )]
 pub async fn get_blob(
     state: State<GlobalState>,
@@ -734,7 +729,6 @@ pub async fn get_blob(
         (status = 500, description = "Integrity verification failed", body = crate::interfaces::errors::ApiErrorBody),
     ),
     tag = "admin",
-    security(("bearerAuth" = []))
 )]
 pub async fn recalculate_stats(
     state: State<GlobalState>,

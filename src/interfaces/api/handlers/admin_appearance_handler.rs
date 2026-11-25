@@ -22,8 +22,8 @@ pub fn routes() -> GatedRouter<Arc<AppState>> {
         .route("/settings/appearance/reload", post(reload_themes))
 }
 #[utoipa::path(get, path = "/api/admin/settings/appearance", tag = "admin",
-    responses((status = 200, body = AppearanceDto), (status = 401, description = "Authentication required"), (status = 403, description = "Administrator required")),
-    security(("bearerAuth" = [])))]
+    responses((status = 200, body = AppearanceDto), (status = 401, description = "Authentication required"), (status = 403, description = "Administrator required"))
+)]
 pub async fn get_appearance(
     State(state): State<Arc<AppState>>,
     caller: AuthUser,
@@ -44,8 +44,8 @@ pub async fn get_appearance(
     ))
 }
 #[utoipa::path(put, path = "/api/admin/settings/appearance", tag = "admin", request_body = SelectThemeDto,
-    responses((status = 200, body = AppearanceDto), (status = 400, description = "InvalidInput"), (status = 401, description = "Authentication required"), (status = 403, description = "Administrator required"), (status = 500, description = "Persistence failed")),
-    security(("bearerAuth" = [])))]
+    responses((status = 200, body = AppearanceDto), (status = 400, description = "InvalidInput"), (status = 401, description = "Authentication required"), (status = 403, description = "Administrator required"), (status = 500, description = "Persistence failed"))
+)]
 pub async fn select_theme(
     State(state): State<Arc<AppState>>,
     caller: AuthUser,
@@ -69,7 +69,7 @@ pub async fn select_theme(
 }
 
 #[utoipa::path(post, path = "/api/admin/settings/appearance/reload", tag = "admin",
-    responses((status = 200, body = AppearanceDto), (status = 401, description = "Authentication required"), (status = 403, description = "Administrator required"), (status = 400, description = "Invalid active theme"), (status = 500, description = "Catalogue reload failed")), security(("bearerAuth" = [])))]
+    responses((status = 200, body = AppearanceDto), (status = 401, description = "Authentication required"), (status = 403, description = "Administrator required"), (status = 400, description = "Invalid active theme"), (status = 500, description = "Catalogue reload failed")))]
 pub async fn reload_themes(
     State(state): State<Arc<AppState>>,
     caller: AuthUser,

@@ -2066,7 +2066,6 @@ pub(super) fn build_content_disposition(name: &str, mime: &str, force_inline: bo
         (status = 200, description = "List of files", body = Vec<FileDto>),
         (status = 304, description = "Not modified"),
     ),
-    security(("bearerAuth" = [])),
     tag = "files"
 )]
 pub async fn list_files_query(
@@ -2092,7 +2091,6 @@ pub async fn list_files_query(
         (status = 409, description = "A file with this name and different content already exists in the folder", body = crate::interfaces::errors::ApiErrorBody),
         (status = 507, description = "Storage quota exceeded", body = crate::interfaces::errors::ApiErrorBody),
     ),
-    security(("bearerAuth" = [])),
     tag = "files"
 )]
 pub async fn upload_file_with_thumbnails(
@@ -2170,7 +2168,6 @@ pub struct CreateFileByHashRequest {
         (status = 412, description = "Concurrent modification: expected_hash no longer matches", body = crate::interfaces::errors::ApiErrorBody),
         (status = 507, description = "Storage quota exceeded", body = crate::interfaces::errors::ApiErrorBody),
     ),
-    security(("bearerAuth" = [])),
     tag = "files"
 )]
 pub async fn create_file_by_hash(
@@ -2196,7 +2193,6 @@ pub async fn create_file_by_hash(
         (status = 304, description = "Not modified"),
         (status = 404, description = "File not found", body = crate::interfaces::errors::ApiErrorBody),
     ),
-    security(("bearerAuth" = [])),
     tag = "files"
 )]
 pub async fn download_file(
@@ -2225,7 +2221,6 @@ pub async fn download_file(
         (status = 304, description = "Not modified"),
         (status = 404, description = "File not found", body = crate::interfaces::errors::ApiErrorBody),
     ),
-    security(("bearerAuth" = [])),
     tag = "files"
 )]
 pub async fn get_thumbnail(
@@ -2278,7 +2273,6 @@ pub async fn get_thumbnail(
         (status = 400, description = "Invalid image or size too large", body = crate::interfaces::errors::ApiErrorBody),
         (status = 404, description = "File not found", body = crate::interfaces::errors::ApiErrorBody),
     ),
-    security(("bearerAuth" = [])),
     tag = "files"
 )]
 pub async fn upload_thumbnail(
@@ -2298,7 +2292,6 @@ pub async fn upload_thumbnail(
         (status = 200, body = FileContentMetadataDto, description = "Metadata extracted from the file's CONTENT — the creation date it claims (`created_at`), plus camera, geo and dimensions where the format carries them. Every field is optional; a body whose fields are all null carries `message` instead. Keyed by content hash, so copies of one file share these values."),
         (status = 404, description = "File not found", body = crate::interfaces::errors::ApiErrorBody),
     ),
-    security(("bearerAuth" = [])),
     tag = "files"
 )]
 pub async fn get_file_metadata(
@@ -2317,7 +2310,6 @@ pub async fn get_file_metadata(
         (status = 204, description = "File deleted (moved to trash if enabled)"),
         (status = 404, description = "File not found", body = crate::interfaces::errors::ApiErrorBody),
     ),
-    security(("bearerAuth" = [])),
     tag = "files"
 )]
 pub async fn delete_file(
@@ -2337,7 +2329,6 @@ pub async fn delete_file(
         (status = 200, description = "Renamed file", body = FileDto),
         (status = 404, description = "File not found", body = crate::interfaces::errors::ApiErrorBody),
     ),
-    security(("bearerAuth" = [])),
     tag = "files"
 )]
 pub async fn rename_file(
@@ -2358,7 +2349,6 @@ pub async fn rename_file(
         (status = 200, description = "Moved file", body = FileDto),
         (status = 404, description = "File or destination not found", body = crate::interfaces::errors::ApiErrorBody),
     ),
-    security(("bearerAuth" = [])),
     tag = "files"
 )]
 pub async fn move_file_simple(
