@@ -5,6 +5,7 @@
  */
 import { ApiError, apiFetch } from '$lib/api/client';
 import { getCsrfHeaders } from '$lib/api/csrf';
+import type { ConflictPolicy } from '$lib/api/generated/openapi/types.gen';
 
 const JSON_HEADERS = { 'Content-Type': 'application/json' };
 
@@ -55,15 +56,28 @@ async function post(url: string, body: unknown): Promise<void> {
 	);
 }
 
-export function copyFiles(fileIds: string[], targetFolderId: string | null): Promise<void> {
+export function copyFiles(
+	fileIds: string[],
+	targetFolderId: string | null,
+	opts?: { onConflict?: ConflictPolicy }
+): Promise<void> {
 	if (fileIds.length === 0) return Promise.resolve();
-	return post('/api/batch/files/copy', { file_ids: fileIds, target_folder_id: targetFolderId });
+	return post('/api/batch/files/copy', {
+		file_ids: fileIds,
+		target_folder_id: targetFolderId,
+		...(opts?.onConflict ? { on_conflict: opts.onConflict } : {})
+	});
 }
 
-export function copyFolders(folderIds: string[], targetFolderId: string | null): Promise<void> {
+export function copyFolders(
+	folderIds: string[],
+	targetFolderId: string | null,
+	opts?: { onConflict?: ConflictPolicy }
+): Promise<void> {
 	if (folderIds.length === 0) return Promise.resolve();
 	return post('/api/batch/folders/copy', {
 		folder_ids: folderIds,
-		target_folder_id: targetFolderId
+		target_folder_id: targetFolderId,
+		...(opts?.onConflict ? { on_conflict: opts.onConflict } : {})
 	});
 }

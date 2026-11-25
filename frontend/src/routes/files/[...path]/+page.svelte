@@ -12,7 +12,6 @@
 		deleteFolder,
 		fetchFolderPage,
 		getFolderAncestors,
-		moveFolder,
 		renameFolder,
 		type FolderListing
 	} from '$lib/api/endpoints/folders';
@@ -21,7 +20,6 @@
 		batchDownloadUrl,
 		deleteFile,
 		fileDownloadUrl,
-		moveFile,
 		renameFile,
 		replaceFileContentWithProgress,
 		uploadFileWithProgress
@@ -56,7 +54,7 @@
 		getEditorUrlWithFallback
 	} from '$lib/api/endpoints/wopi';
 	import { addTracks, createPlaylist, listPlaylists } from '$lib/api/endpoints/music';
-	import { copyFiles, copyFolders } from '$lib/api/endpoints/batch';
+	import { runTransfer } from '$lib/transfer/runTransfer';
 	import { apiFetch, withBase } from '$lib/api/client';
 	import { getCsrfHeaders } from '$lib/api/csrf';
 	import { deleteConfirmLabel } from '$lib/utils/deleteConfirm';
@@ -1806,55 +1804,39 @@
 		}
 	}
 
-	async function moveInto(targetFolderId: string, e: DragEvent) {
-		const items = dragPayload(e).filter((it) => it.id !== targetFolderId);
+	async function transferInto(
+		operation: 'move' | 'copy',
+		targetFolderId: string,
+		e: DragEvent,
+		targetName?: string
+	) {
+		const items = dragPayload(e)
+			.filter((it) => it.id !== targetFolderId)
+			.map((it) => ({ id: it.id, kind: it.kind }));
 		if (items.length === 0) return;
-		// Bounded fan-out (was a serial await per item). Every item is
-		// attempted; on any failure the first error is surfaced and the
-		// selection is kept so the drop can be retried, like the old loop.
-		const failures = (
-			await mapLimit(items, 6, async (it) => {
-				try {
-					if (it.kind === 'file') await moveFile(it.id, targetFolderId);
-					else await moveFolder(it.id, targetFolderId);
-					return null;
-				} catch (err) {
-					return err ?? new Error('move failed');
-				}
-			})
-		).filter((err) => err !== null);
-		if (failures.length > 0) {
-			errorToast(failures[0]);
-			return;
-		}
-		clearSelection();
-		await reload();
-	}
-
-	/**
-	 * Copy variant of `moveInto` used when the drop happens with the copy
-	 * modifier held (Ctrl on Win/Linux, ⌘ on macOS). Files and folders go
-	 * through the batch copy endpoints (`copyFiles` / `copyFolders`) —
-	 * there's no per-item copy in the REST API today, only batch.
-	 */
-	async function copyInto(targetFolderId: string, e: DragEvent) {
-		const items = dragPayload(e).filter((it) => it.id !== targetFolderId);
-		if (items.length === 0) return;
-		const fileIds = items.filter((it) => it.kind === 'file').map((it) => it.id);
-		const folderIds = items.filter((it) => it.kind === 'folder').map((it) => it.id);
 		try {
-			// Two batch calls in parallel — the endpoints are independent
-			// and the aggregate error surface is a single toast anyway.
-			await Promise.all([
-				copyFiles(fileIds, targetFolderId),
-				copyFolders(folderIds, targetFolderId)
-			]);
+			const res = await runTransfer({
+				operation,
+				targetFolderId,
+				targetName,
+				items
+			});
+			if (res.status !== 'completed') return;
 		} catch (err) {
 			errorToast(err);
 			return;
 		}
 		clearSelection();
-		await reloadAndTrackNew();
+		if (operation === 'copy') await reloadAndTrackNew();
+		else await reload();
+	}
+
+	function moveInto(targetFolderId: string, e: DragEvent, targetName?: string) {
+		return transferInto('move', targetFolderId, e, targetName);
+	}
+
+	function copyInto(targetFolderId: string, e: DragEvent, targetName?: string) {
+		return transferInto('copy', targetFolderId, e, targetName);
 	}
 
 	function onFolderDrop(e: DragEvent, folder: FolderItem) {
@@ -1875,8 +1857,8 @@
 		e.preventDefault();
 		e.stopPropagation();
 		dropFolderId = null;
-		if (isCopyDrop(e)) void copyInto(folder.id, e);
-		else void moveInto(folder.id, e);
+		if (isCopyDrop(e)) void copyInto(folder.id, e, folder.name);
+		else void moveInto(folder.id, e, folder.name);
 	}
 
 	function onCrumbDrop(e: DragEvent, folderId: string) {

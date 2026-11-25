@@ -604,6 +604,10 @@ export type BatchFileOperationRequest = {
      */
     file_ids: Array<string>;
     /**
+     * Conflict handling policy (`fail` by default, `rename` for `name (2)`).
+     */
+    on_conflict?: ConflictPolicy;
+    /**
      * Target folder ID (optional)
      */
     target_folder_id?: string | null;
@@ -617,6 +621,10 @@ export type BatchFolderOperationRequest = {
      * IDs of the folders to process
      */
     folder_ids: Array<string>;
+    /**
+     * Conflict handling policy (`fail` by default, `rename` for `name (2)`).
+     */
+    on_conflict?: ConflictPolicy;
     /**
      * Whether the operation should be recursive
      */
@@ -3700,12 +3708,21 @@ export type MoveFilePayload = {
      * Target folder ID (None means root)
      */
     folder_id?: string | null;
+    /**
+     * Conflict handling policy (`fail` by default, `rename` for `stem (2).ext`).
+     */
+    on_conflict?: ConflictPolicy;
 };
 
 /**
  * DTO for folder move requests
  */
 export type MoveFolderDto = {
+    /**
+     * Conflict handling policy when a sibling already exists (`fail` by default,
+     * `rename` to atomically pick `name (2)`, `name (3)`, …).
+     */
+    on_conflict?: ConflictPolicy;
     /**
      * New parent folder ID (None for root level)
      */
@@ -6197,6 +6214,118 @@ export type ThumbnailCacheInfoDto = {
 };
 
 /**
+ * Per-item resolution selected by the user for a conflicting transfer item.
+ */
+export type TransferDecisionAction = 'skip' | 'replace' | 'keep_both' | 'merge';
+
+/**
+ * Request body of `POST /api/folders/{id}/transfer`.
+ */
+export type TransferExecuteRequest = {
+    decisions?: Array<TransferItemDecision>;
+    file_ids?: Array<string>;
+    folder_ids?: Array<string>;
+    operation: TransferOperation;
+};
+
+/**
+ * Response body of `POST /api/folders/{id}/transfer`.
+ */
+export type TransferExecuteResponse = {
+    copied_count: number;
+    failed_count: number;
+    merged_count: number;
+    moved_count: number;
+    outcomes: Array<TransferItemOutcome>;
+    renamed_count: number;
+    replaced_count: number;
+    skipped_count: number;
+};
+
+/**
+ * File↔file collision found during transfer preflight (top-level or inside a merged folder).
+ */
+export type TransferFileConflictDto = {
+    can_delete_source: boolean;
+    can_update_target: boolean;
+    identical: boolean;
+    parent_folder_conflict_id?: string | null;
+    relative_path: string;
+    source_hash: string;
+    source_id: string;
+    source_modified_at: string;
+    source_name: string;
+    source_size: number;
+    target_folder_id: string;
+    target_hash: string;
+    target_id: string;
+    target_modified_at: string;
+    target_size: number;
+};
+
+/**
+ * Folder↔folder collision found during transfer preflight.
+ */
+export type TransferFolderConflictDto = {
+    can_delete_source: boolean;
+    nested_conflict_count: number;
+    nested_identical_count: number;
+    relative_path: string;
+    source_file_count: number;
+    source_has_shares: boolean;
+    source_id: string;
+    source_name: string;
+    target_file_count: number;
+    target_id: string;
+};
+
+/**
+ * Single user decision keyed by `(kind, source_id)`.
+ */
+export type TransferItemDecision = {
+    action: TransferDecisionAction;
+    expected_hash?: string | null;
+    kind: ItemKind;
+    source_id: string;
+};
+
+/**
+ * Per-item execution report.
+ */
+export type TransferItemOutcome = {
+    error?: string | null;
+    error_type?: string | null;
+    final_name?: string | null;
+    kind: ItemKind;
+    source_id: string;
+    status: TransferOutcomeStatus;
+    target_id?: string | null;
+};
+
+/**
+ * File↔folder or folder↔file kind mismatch preventing merge or replacement.
+ */
+export type TransferKindConflictDto = {
+    existing_id: string;
+    existing_kind: ItemKind;
+    parent_folder_conflict_id?: string | null;
+    relative_path: string;
+    source_id: string;
+    source_kind: ItemKind;
+    source_name: string;
+};
+
+/**
+ * Kind of internal transfer operation.
+ */
+export type TransferOperation = 'move' | 'copy';
+
+/**
+ * Outcome status of one processed item during `POST /api/folders/{id}/transfer`.
+ */
+export type TransferOutcomeStatus = 'moved' | 'copied' | 'replaced' | 'renamed' | 'merged' | 'skipped' | 'failed';
+
+/**
  * Request body for transferring server ownership.
  *
  * Separate from [`UpdateUserRoleDto`] on purpose: ownership is not an
@@ -6210,6 +6339,47 @@ export type TransferOwnershipDto = {
      * current owner — is demoted to admin in the same transaction.
      */
     new_owner_id: string;
+};
+
+/**
+ * Request body of `POST /api/folders/{id}/transfer-preflight`.
+ */
+export type TransferPreflightRequest = {
+    /**
+     * When `true` (default), recursive folder↔folder collisions expand
+     * nested file and kind conflicts across both subtrees.
+     */
+    expand_folder_conflicts?: boolean;
+    file_ids?: Array<string>;
+    folder_ids?: Array<string>;
+    operation: TransferOperation;
+};
+
+/**
+ * Response body of `POST /api/folders/{id}/transfer-preflight`.
+ */
+export type TransferPreflightResponse = {
+    /**
+     * Folder IDs that would move/copy into themselves or one of their descendants.
+     */
+    cycle_folder_ids: Array<string>;
+    file_conflicts: Array<TransferFileConflictDto>;
+    folder_conflicts: Array<TransferFolderConflictDto>;
+    kind_conflicts: Array<TransferKindConflictDto>;
+    /**
+     * File IDs already directly inside the destination folder.
+     */
+    same_parent_file_ids: Array<string>;
+    /**
+     * Folder IDs already directly inside the destination folder.
+     */
+    same_parent_folder_ids: Array<string>;
+    /**
+     * `true` when all sources and destination are native PostgreSQL items;
+     * `false` for external mounts (`ext:` / mount root) where the client falls
+     * back to sequential move/copy endpoints.
+     */
+    supported: boolean;
 };
 
 /**
@@ -12936,6 +13106,78 @@ export type ListFolderResourcesResponses = {
 };
 
 export type ListFolderResourcesResponse = ListFolderResourcesResponses[keyof ListFolderResourcesResponses];
+
+export type TransferExecuteData = {
+    body: TransferExecuteRequest;
+    path: {
+        /**
+         * Destination folder ID
+         */
+        id: string;
+    };
+    query?: never;
+    url: '/api/folders/{id}/transfer';
+};
+
+export type TransferExecuteErrors = {
+    /**
+     * Transfer item limit exceeded
+     */
+    400: ApiErrorBody;
+    /**
+     * Destination folder not found or caller lacks Create permission
+     */
+    404: ApiErrorBody;
+    /**
+     * Not supported on external mounts
+     */
+    501: ApiErrorBody;
+};
+
+export type TransferExecuteError = TransferExecuteErrors[keyof TransferExecuteErrors];
+
+export type TransferExecuteResponses = {
+    /**
+     * Conflict-resolved transfer execution summary with per-item outcomes
+     */
+    200: TransferExecuteResponse;
+};
+
+export type TransferExecuteResponse2 = TransferExecuteResponses[keyof TransferExecuteResponses];
+
+export type TransferPreflightData = {
+    body: TransferPreflightRequest;
+    path: {
+        /**
+         * Destination folder ID
+         */
+        id: string;
+    };
+    query?: never;
+    url: '/api/folders/{id}/transfer-preflight';
+};
+
+export type TransferPreflightErrors = {
+    /**
+     * Transfer item limit exceeded
+     */
+    400: ApiErrorBody;
+    /**
+     * Folder/item not found or caller lacks permission
+     */
+    404: ApiErrorBody;
+};
+
+export type TransferPreflightError = TransferPreflightErrors[keyof TransferPreflightErrors];
+
+export type TransferPreflightResponses = {
+    /**
+     * Move/copy conflict comparison result (same-parent, cycles, file/folder conflicts, kind mismatches)
+     */
+    200: TransferPreflightResponse;
+};
+
+export type TransferPreflightResponse2 = TransferPreflightResponses[keyof TransferPreflightResponses];
 
 export type UploadPreflightData = {
     body: UploadPreflightRequest;

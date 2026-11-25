@@ -3,6 +3,7 @@ import { uploadTransport } from '../upload-transport';
 import { ApiError, apiErrorFromResponse, apiFetch, withBase } from '$lib/api/client';
 import { getCsrfHeaders } from '$lib/api/csrf';
 import type { FileItem } from '$lib/api/types';
+import type { ConflictPolicy } from '$lib/api/generated/openapi/types.gen';
 
 /**
  * Thin upload-specific wrapper around `apiErrorFromResponse` — the shared
@@ -239,12 +240,19 @@ export async function renameFile(fileId: string, name: string): Promise<void> {
 	if (!res.ok) throw await apiErrorFromResponse(res);
 }
 
-export async function moveFile(fileId: string, targetFolderId: string | null): Promise<void> {
+export async function moveFile(
+	fileId: string,
+	targetFolderId: string | null,
+	opts?: { onConflict?: ConflictPolicy }
+): Promise<void> {
 	const res = await apiFetch(`/api/files/${fileId}/move`, {
 		method: 'PUT',
 		credentials: 'same-origin',
 		headers: { ...JSON_HEADERS, ...getCsrfHeaders() },
-		body: JSON.stringify({ folder_id: targetFolderId || null })
+		body: JSON.stringify({
+			folder_id: targetFolderId || null,
+			...(opts?.onConflict ? { on_conflict: opts.onConflict } : {})
+		})
 	});
 	if (!res.ok) throw await apiErrorFromResponse(res);
 }

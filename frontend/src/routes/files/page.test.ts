@@ -105,6 +105,17 @@ vi.mock('$lib/api/endpoints/folders', () => ({
 	renameFolder: vi.fn(),
 	uploadPreflight: vi.fn()
 }));
+vi.mock('$lib/api/endpoints/transfer', async (importOriginal) => {
+	const actual = await importOriginal<typeof import('$lib/api/endpoints/transfer')>();
+	return {
+		...actual,
+		transferPreflight: vi.fn(async () => ({
+			...actual.emptyTransferPreflight(),
+			supported: false
+		})),
+		executeTransfer: vi.fn()
+	};
+});
 
 import {
 	fetchFolderPage,
@@ -112,6 +123,7 @@ import {
 	deleteFolder,
 	uploadPreflight
 } from '$lib/api/endpoints/folders';
+import { emptyTransferPreflight, transferPreflight } from '$lib/api/endpoints/transfer';
 import {
 	deleteFile,
 	replaceFileContentWithProgress,
@@ -178,6 +190,7 @@ function folderItem(id: string, name: string) {
 
 beforeEach(() => {
 	vi.clearAllMocks();
+	m(transferPreflight).mockResolvedValue({ ...emptyTransferPreflight(), supported: false });
 	m(uploadPreflight).mockResolvedValue({
 		supported: true,
 		existing_folders: [],

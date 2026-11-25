@@ -62,6 +62,7 @@ Paths are relative to `frontend/src/lib/`. Components with inline
 | `components/ShareDialog.svelte` | Grants, link shares, expiry and permissions for one resource. |
 | `components/DedupSiblingsDialog.svelte` | The delete-UX chooser for a photo whose blob has other visible references. |
 | `components/UploadConflictDialog.svelte` | Pre-upload conflict resolver showing new/identical/conflicting items with Skip, Replace (or Replace if newer), and Keep both controls. |
+| `components/TransferConflictDialog.svelte` | Shared move/copy conflict resolver handling recursive folder Merge/Keep both/Skip, inline nested subtree conflicts, CAS file Replace, and kind-mismatch controls across MoveDialog and drag-and-drop. |
 | `components/LanguageSelect.svelte` | Locale picker over the 16 bundled locales. |
 | `components/QuotaEditor.svelte` | The storage-cap modal, shared by both admin surfaces that change one. |
 | `components/CommandPalette.svelte` | ⌘K command palette. |

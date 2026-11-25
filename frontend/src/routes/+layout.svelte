@@ -9,6 +9,7 @@
 	import AppShell from '$lib/components/AppShell.svelte';
 	import AppSplash from '$lib/components/AppSplash.svelte';
 	import DialogHost from '$lib/components/DialogHost.svelte';
+	import TransferConflictDialog from '$lib/components/TransferConflictDialog.svelte';
 	import Toaster from '$lib/components/Toaster.svelte';
 	import { isLogoutInProgress, setPasswordChangeRequiredHandler } from '$lib/api/client';
 	import { onSessionCleared } from '$lib/auth/session-broadcast';
@@ -321,6 +322,7 @@
 
 <Toaster />
 <DialogHost />
+<TransferConflictDialog />
 
 <!--
 	No styles left: the boot loader's are `AppSplash`'s now. `.app-loading`

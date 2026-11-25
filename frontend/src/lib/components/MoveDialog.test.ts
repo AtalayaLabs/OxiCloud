@@ -38,10 +38,28 @@ vi.mock('$lib/utils/errors', () => ({ errorToast: vi.fn() }));
 vi.mock('$lib/api/endpoints/folders', () => ({ listFolder: vi.fn(), moveFolder: vi.fn() }));
 vi.mock('$lib/api/endpoints/files', () => ({ moveFile: vi.fn() }));
 vi.mock('$lib/api/endpoints/batch', () => ({ copyFiles: vi.fn(), copyFolders: vi.fn() }));
+vi.mock('$lib/api/endpoints/transfer', async (importOriginal) => {
+	const actual = await importOriginal<typeof import('$lib/api/endpoints/transfer')>();
+	return {
+		...actual,
+		transferPreflight: vi.fn(async () => ({
+			...actual.emptyTransferPreflight(),
+			supported: false
+		})),
+		executeTransfer: vi.fn()
+	};
+});
+vi.mock('$lib/stores/transferConflict.svelte', () => ({ promptTransferConflicts: vi.fn() }));
 
 import { listFolder, moveFolder } from '$lib/api/endpoints/folders';
 import { moveFile } from '$lib/api/endpoints/files';
 import { copyFiles } from '$lib/api/endpoints/batch';
+import {
+	emptyTransferPreflight,
+	executeTransfer,
+	transferPreflight
+} from '$lib/api/endpoints/transfer';
+import { promptTransferConflicts } from '$lib/stores/transferConflict.svelte';
 import MoveDialog from './MoveDialog.svelte';
 
 const m = (fn: unknown) => fn as ReturnType<typeof vi.fn>;
@@ -64,6 +82,7 @@ function folder(id: string, name: string) {
 
 beforeEach(() => {
 	vi.clearAllMocks();
+	m(transferPreflight).mockResolvedValue({ ...emptyTransferPreflight(), supported: false });
 	m(listFolder).mockResolvedValue({
 		folders: [folder('sub1', 'Sub')],
 		files: []
@@ -102,4 +121,58 @@ it('copies the item in copy mode', async () => {
 	await screen.findByTestId('move-dialog-confirm-btn');
 	await fireEvent.click(screen.getByTestId('move-dialog-confirm-btn'));
 	await waitFor(() => expect(copyFiles).toHaveBeenCalledWith(['f1'], 'home'));
+});
+
+it('prompts conflict resolver and executes decisions when transferPreflight reports collisions', async () => {
+	m(transferPreflight).mockResolvedValueOnce({
+		...emptyTransferPreflight(),
+		file_conflicts: [
+			{
+				source_id: 'f1',
+				source_name: 'a.txt',
+				relative_path: 'a.txt',
+				source_size: 10,
+				source_modified_at: '2026-11-25T10:00:00Z',
+				source_hash: 'h1',
+				target_id: 't1',
+				target_folder_id: 'home',
+				target_size: 8,
+				target_modified_at: '2026-11-20T10:00:00Z',
+				target_hash: 'h0',
+				identical: false,
+				can_update_target: true,
+				can_delete_source: true,
+				parent_folder_conflict_id: null
+			}
+		]
+	});
+	m(promptTransferConflicts).mockResolvedValueOnce([
+		{ source_id: 'f1', kind: 'file', action: 'keep_both' }
+	]);
+	m(executeTransfer).mockResolvedValueOnce({
+		outcomes: [],
+		moved_count: 0,
+		copied_count: 0,
+		replaced_count: 0,
+		renamed_count: 1,
+		merged_count: 0,
+		skipped_count: 0,
+		failed_count: 0
+	});
+
+	const onmoved = vi.fn();
+	render(MoveDialog, { props: { open: true, item, mode: 'move', onmoved } });
+	await screen.findByTestId('move-dialog-confirm-btn');
+	await fireEvent.click(screen.getByTestId('move-dialog-confirm-btn'));
+
+	await waitFor(() => expect(promptTransferConflicts).toHaveBeenCalledTimes(1));
+	await waitFor(() =>
+		expect(executeTransfer).toHaveBeenCalledWith('home', {
+			operation: 'move',
+			fileIds: ['f1'],
+			folderIds: [],
+			decisions: [{ source_id: 'f1', kind: 'file', action: 'keep_both' }]
+		})
+	);
+	await waitFor(() => expect(onmoved).toHaveBeenCalled());
 });

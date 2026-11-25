@@ -1,14 +1,12 @@
 <script lang="ts">
 	import { errorToast } from '$lib/utils/errors';
-	import { listFolder, moveFolder } from '$lib/api/endpoints/folders';
-	import { moveFile } from '$lib/api/endpoints/files';
-	import { copyFiles, copyFolders } from '$lib/api/endpoints/batch';
+	import { listFolder } from '$lib/api/endpoints/folders';
+	import { runTransfer } from '$lib/transfer/runTransfer';
 	import type { Drive, DriveRole, FolderItem } from '$lib/api/types';
 	import Icon from '$lib/icons/Icon.svelte';
 	import Modal from '$lib/components/Modal.svelte';
 	import { t } from '$lib/i18n/index.svelte';
 	import { drives as drivesStore, driveIcon } from '$lib/stores/drives.svelte';
-	import { ui } from '$lib/stores/ui.svelte';
 	import { useAsyncAction } from '$lib/composables/useAsyncAction.svelte';
 
 	// A drive accepts new items only if the caller can Create on its
@@ -139,29 +137,39 @@
 
 	async function confirmMove() {
 		if (!targets.length || !currentId) return;
+		const items = targets
+			.filter((tgt) => mode === 'copy' || tgt.id !== currentId)
+			.map((tgt) => ({ id: tgt.id, kind: tgt.kind }));
+		if (items.length === 0) return;
+
+		let prompted = false;
+		let cancelled = false;
+		const targetName = crumbs[crumbs.length - 1]?.name;
+
 		const ok = await action.run(async () => {
-			if (mode === 'copy') {
-				const fileIds = targets.filter((x) => x.kind === 'file').map((x) => x.id);
-				const folderIds = targets.filter((x) => x.kind === 'folder').map((x) => x.id);
-				await copyFiles(fileIds, currentId!);
-				await copyFolders(folderIds, currentId!);
-			} else {
-				for (const tgt of targets) {
-					if (tgt.id === currentId) continue;
-					if (tgt.kind === 'file') await moveFile(tgt.id, currentId!);
-					else await moveFolder(tgt.id, currentId!);
+			try {
+				const res = await runTransfer({
+					operation: mode,
+					targetFolderId: currentId!,
+					targetName,
+					items,
+					onBeforePrompt: () => {
+						// Close destination picker first so `<TransferConflictDialog>` does not stack.
+						prompted = true;
+						open = false;
+					}
+				});
+				if (res.status === 'cancelled') cancelled = true;
+			} catch (err) {
+				if (prompted) {
+					errorToast(err);
+					cancelled = true;
+					return;
 				}
+				throw err;
 			}
 		});
-		if (ok) {
-			// Toast kept for success — a user who just saw the dialog
-			// close may not notice the row appeared/disappeared from
-			// the listing without this breadcrumb. Only the failure
-			// path moved from toast to inline.
-			ui.notify(
-				mode === 'copy' ? t('files.copied', 'Copied') : t('files.moved', 'Moved'),
-				'success'
-			);
+		if (ok && !cancelled) {
 			open = false;
 			onmoved?.();
 		}

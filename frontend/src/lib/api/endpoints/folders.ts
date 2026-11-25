@@ -327,12 +327,19 @@ export async function renameFolder(folderId: string, name: string): Promise<void
 	if (!res.ok) throw await apiErrorFromResponse(res);
 }
 
-export async function moveFolder(folderId: string, targetFolderId: string | null): Promise<void> {
+export async function moveFolder(
+	folderId: string,
+	targetFolderId: string | null,
+	opts?: { onConflict?: ConflictPolicy }
+): Promise<void> {
 	const res = await apiFetch(`/api/folders/${folderId}/move`, {
 		method: 'PUT',
 		credentials: 'same-origin',
 		headers: { ...JSON_HEADERS, ...getCsrfHeaders() },
-		body: JSON.stringify({ parent_id: targetFolderId || null })
+		body: JSON.stringify({
+			parent_id: targetFolderId || null,
+			...(opts?.onConflict ? { on_conflict: opts.onConflict } : {})
+		})
 	});
 	if (!res.ok) throw await apiErrorFromResponse(res);
 }
