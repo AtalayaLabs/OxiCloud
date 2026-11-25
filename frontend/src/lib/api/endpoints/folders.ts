@@ -4,7 +4,11 @@ import { getCsrfHeaders } from '$lib/api/csrf';
 import { withBase } from '$lib/utils/appPath';
 import { rememberFolderName } from '$lib/utils/folderCache';
 import type { FileItem, FolderAncestorsResponse, FolderItem, ItemType } from '$lib/api/types';
-import type { FolderOrderBy } from '$lib/api/generated/openapi/types.gen';
+import type {
+	ConflictPolicy,
+	FolderOrderBy,
+	UploadPreflightResponse
+} from '$lib/api/generated/openapi/types.gen';
 
 const JSON_HEADERS = { 'Content-Type': 'application/json' };
 const NO_CACHE: RequestInit = {
@@ -229,15 +233,88 @@ export async function listFolder(folderId: string, forceRefresh = false): Promis
 	return res.listing ?? { folders: [], files: [] };
 }
 
-export async function createFolder(name: string, parentId: string | null): Promise<FolderItem> {
+export async function createFolder(
+	name: string,
+	parentId: string | null,
+	opts?: { onConflict?: ConflictPolicy }
+): Promise<FolderItem> {
 	const res = await apiFetch('/api/folders', {
 		method: 'POST',
 		credentials: 'same-origin',
 		headers: { ...JSON_HEADERS, ...getCsrfHeaders() },
-		body: JSON.stringify({ name, parent_id: parentId })
+		body: JSON.stringify({
+			name,
+			parent_id: parentId,
+			...(opts?.onConflict ? { on_conflict: opts.onConflict } : {})
+		})
 	});
 	if (!res.ok) throw await apiErrorFromResponse(res);
 	return (await res.json()) as FolderItem;
+}
+
+export const PREFLIGHT_BATCH_SIZE = 1000;
+
+/**
+ * Batch pre-upload comparison (`POST /api/folders/{id}/upload-preflight`),
+ * chunking large folder trees in slices of 1,000 paths and short-circuiting
+ * cleanly if the destination is an external mount (`supported: false`).
+ */
+export async function uploadPreflight(
+	folderId: string,
+	paths: string[],
+	signal?: AbortSignal
+): Promise<UploadPreflightResponse> {
+	if (paths.length === 0) {
+		return {
+			supported: true,
+			existing_folders: [],
+			existing_files: [],
+			kind_conflicts: []
+		};
+	}
+
+	const existingFoldersMap = new Map<string, UploadPreflightResponse['existing_folders'][number]>();
+	const existingFiles: UploadPreflightResponse['existing_files'] = [];
+	const kindConflictsMap = new Map<string, UploadPreflightResponse['kind_conflicts'][number]>();
+
+	for (let i = 0; i < paths.length; i += PREFLIGHT_BATCH_SIZE) {
+		const chunk = paths.slice(i, i + PREFLIGHT_BATCH_SIZE);
+		const res = await apiFetch(`/api/folders/${folderId}/upload-preflight`, {
+			method: 'POST',
+			credentials: 'same-origin',
+			headers: { ...JSON_HEADERS, ...getCsrfHeaders() },
+			body: JSON.stringify({ paths: chunk }),
+			signal
+		});
+		if (!res.ok) throw await apiErrorFromResponse(res);
+		const data = (await res.json()) as UploadPreflightResponse;
+		if (!data.supported) {
+			return {
+				supported: false,
+				existing_folders: [],
+				existing_files: [],
+				kind_conflicts: []
+			};
+		}
+		for (const folder of data.existing_folders) {
+			if (!existingFoldersMap.has(folder.relative_path)) {
+				existingFoldersMap.set(folder.relative_path, folder);
+			}
+		}
+		existingFiles.push(...data.existing_files);
+		for (const kc of data.kind_conflicts) {
+			if (!kindConflictsMap.has(kc.relative_path)) {
+				kindConflictsMap.set(kc.relative_path, kc);
+			}
+		}
+	}
+
+	return {
+		supported: true,
+		existing_folders: [...existingFoldersMap.values()],
+		existing_files: existingFiles,
+		kind_conflicts: [...kindConflictsMap.values()]
+	};
 }
 
 export async function renameFolder(folderId: string, name: string): Promise<void> {

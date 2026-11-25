@@ -615,7 +615,36 @@
     "new_text_file_binary_ext_title": "Rozszerzenie nietekstowe",
     "new_text_file_binary_ext_message": "„{{name}}\" nie wygląda jak plik tekstowy. Edytor otworzy go jako tekst — zwykle psuje to formaty binarne. Mimo to kontynuować?",
     "confirm_delete_permanent": "Trwale usunąć „{{name}}\"? Tej operacji nie można cofnąć.",
-    "confirm_batch_delete_permanent": "Trwale usunąć {{n}} elementów? Tej operacji nie można cofnąć."
+    "confirm_batch_delete_permanent": "Trwale usunąć {{n}} elementów? Tej operacji nie można cofnąć.",
+    "comparing_n": "Porównywanie {{done}}/{{total}} plików…",
+    "upload_up_to_date": "Wszystko jest aktualne — pominięto {{n}} identycznych plików",
+    "uploaded_with_skipped": "Przesłano {{ok}} · pominięto {{skipped}} bez zmian",
+    "upload_conflict": {
+      "title": "Konflikty przesyłania ({{n}})",
+      "intro": "Niektóre elementy już istnieją w tym folderze z inną zawartością.",
+      "summary_new": "Nowe: {{n}}",
+      "summary_identical": "Bez zmian (pominięto): {{n}}",
+      "summary_conflicts": "Konflikty: {{n}}",
+      "skip_all": "Pomiń wszystko",
+      "replace_if_newer": "Zastąp jeśli nowszy",
+      "replace_all": "Zastąp wszystko",
+      "keep_both_all": "Zachowaj oba",
+      "action_skip": "Pomiń",
+      "action_replace": "Zastąp",
+      "action_keep_both": "Zachowaj oba",
+      "badge_local_newer": "Lokalny nowszy",
+      "badge_remote_newer": "Serwer nowszy",
+      "badge_same_mtime": "Ten sam czas modyfikacji",
+      "badge_readonly": "Tylko do odczytu",
+      "badge_kind_mismatch": "Konflikt folder/plik",
+      "local_label": "To urządzenie: {{size}} · {{date}}",
+      "local_label_nodate": "To urządzenie: {{size}}",
+      "remote_label": "Serwer: {{size}} · {{date}}",
+      "kind_mismatch_hint": "Nie można nadpisać \"{{path}}\", ponieważ na serwerze istnieje już inny typ elementu. Wybierz Pomiń lub Zachowaj oba.",
+      "keep_both_hint": "Zapisano obok jako np. {{name}}",
+      "confirm_continue": "Kontynuuj (do przesłania: {{n}})",
+      "confirm_skip_all": "Pomiń wszystkie konflikty"
+    }
   },
   "dialogs": {
     "rename_folder": "Zmień nazwę folderu",
@@ -688,7 +717,8 @@
     "not_found": "Ten element już nie istnieje.",
     "conflict": "Element o tej nazwie już istnieje.",
     "transient_backend": "Pamięć masowa jest chwilowo niedostępna. Spróbuj ponownie.",
-    "network": "Nie można połączyć się z serwerem. Sprawdź połączenie i spróbuj ponownie."
+    "network": "Nie można połączyć się z serwerem. Sprawdź połączenie i spróbuj ponownie.",
+    "precondition_failed": "Ten plik został zmodyfikowany przez kogoś innego. Odśwież i spróbuj ponownie."
   },
   "breadcrumb": {
     "home": "Strona główna",

@@ -30,12 +30,29 @@ function load() {
 	return modPromise;
 }
 
+const CHUNK_SIZE = 8 * 1024 * 1024;
+
 self.onmessage = async (ev) => {
 	const { id, file } = ev.data;
 	try {
 		const mod = await load();
-		const bytes = new Uint8Array(await file.arrayBuffer());
-		const hex = mod.blake3Hex(bytes);
+		let hex;
+		if (file.size <= CHUNK_SIZE) {
+			const bytes = new Uint8Array(await file.arrayBuffer());
+			hex = mod.blake3Hex(bytes);
+		} else {
+			const hasher = new mod.Blake3Hasher();
+			try {
+				for (let offset = 0; offset < file.size; offset += CHUNK_SIZE) {
+					const slice = file.slice(offset, Math.min(file.size, offset + CHUNK_SIZE));
+					const bytes = new Uint8Array(await slice.arrayBuffer());
+					hasher.update(bytes);
+				}
+				hex = hasher.finalizeHex();
+			} finally {
+				hasher.free();
+			}
+		}
 		self.postMessage({ id, hex });
 	} catch (err) {
 		self.postMessage({ id, error: String(err) });

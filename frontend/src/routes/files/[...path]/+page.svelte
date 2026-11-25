@@ -23,16 +23,26 @@
 		fileDownloadUrl,
 		moveFile,
 		renameFile,
+		replaceFileContentWithProgress,
 		uploadFileWithProgress
 	} from '$lib/api/endpoints/files';
 	import { folderZipUrl } from '$lib/api/endpoints/folders';
 	import { downloadUrlPayload } from '$lib/utils/downloadUrl';
 	import {
+		instantReplaceOwned,
 		instantUploadOwned,
 		resolveOwnedHashes,
 		throwFromDedupAnswer,
 		tryDeltaUpload
 	} from '$lib/api/endpoints/deltaUpload';
+	import {
+		buildExecutionPlan,
+		type ConflictResolution,
+		type UploadPreflightAnalysis
+	} from '$lib/upload/conflictPlan';
+	import { analyzeUploadCandidates } from '$lib/upload/preflight';
+	import type { DroppedEntry } from '$lib/utils/droppedEntries';
+	import UploadConflictDialog from '$lib/components/UploadConflictDialog.svelte';
 	import {
 		acquireUploadGuard,
 		markUploadFinished,
@@ -220,6 +230,30 @@
 	let shareOpen = $state(false);
 	let actionTarget = $state<ActionTarget | null>(null);
 	let moveItems = $state<ActionTarget[] | null>(null);
+	let conflictDialogOpen = $state(false);
+	let conflictAnalysis = $state<UploadPreflightAnalysis | null>(null);
+	let conflictResolver: ((resolutions: Record<string, ConflictResolution> | null) => void) | null =
+		null;
+
+	function promptUploadConflicts(
+		analysis: UploadPreflightAnalysis,
+		signal: AbortSignal
+	): Promise<Record<string, ConflictResolution> | null> {
+		if (signal.aborted) return Promise.resolve(null);
+		return new Promise((resolve) => {
+			const settle = (value: Record<string, ConflictResolution> | null) => {
+				signal.removeEventListener('abort', onAbort);
+				conflictDialogOpen = false;
+				conflictResolver = null;
+				resolve(value);
+			};
+			const onAbort = () => settle(null);
+			signal.addEventListener('abort', onAbort, { once: true });
+			conflictAnalysis = analysis;
+			conflictResolver = settle;
+			conflictDialogOpen = true;
+		});
+	}
 
 	// Favorite / shared state now lives inline on every `FileItem` /
 	// `FolderItem` DTO (`is_favorite`, `is_shared` — see
@@ -610,64 +644,101 @@
 		});
 	}
 
+	type ResolvedTransferItem =
+		| {
+				mode: 'create';
+				file: File;
+				folderId: string | null;
+				onConflict: 'fail' | 'rename';
+		  }
+		| {
+				mode: 'replace';
+				file: File;
+				folderId: string | null;
+				fileId: string;
+				expectedHash: string;
+		  };
+
+	function isNonRetryableUploadError(err: unknown): boolean {
+		const typed = err as { isQuota?: boolean; status?: number } | null;
+		if (!typed) return false;
+		if (typed.isQuota) return true;
+		return typed.status === 403 || typed.status === 409 || typed.status === 412;
+	}
+
 	/**
-	 * Upload one file through the best available path, returning the bytes saved
-	 * by deduplication (0 when the body was sent in full). Order:
-	 *   1. Instant by-hash upload — zero bytes when `ownedHash` is set (the batch
-	 *      check found the server already has this exact blob).
+	 * Upload or replace one file through the best available path, returning the
+	 * bytes saved by deduplication (0 when the body was sent in full). Order:
+	 *   1. Instant by-hash create/replace — zero bytes when `ownedHash` is set.
 	 *   2. Delta upload — sub-file CDC dedup for large files (>= 8 MB).
-	 *   3. Plain byte upload — fallback when neither applies.
-	 * Throws on a hard failure; the error carries `isQuota` so the batch can stop
-	 * early when the disk is full.
+	 *   3. Plain byte upload / PUT `/content` — fallback when neither applies.
+	 * Throws on a hard failure; `412`/`409`/`403`/`507` errors stop retries.
 	 */
 	async function uploadOneFile(
-		folderId: string | null,
-		file: File,
+		item: ResolvedTransferItem,
 		report: (frac: number) => void,
 		ownedHash: string | null,
 		signal?: AbortSignal
 	): Promise<number> {
 		if (signal?.aborted) throw signal.reason ?? new Error('upload cancelled');
+		if (item.mode === 'replace') {
+			const dedup =
+				(ownedHash
+					? await instantReplaceOwned(item.fileId, item.file, ownedHash, item.expectedHash)
+					: null) ??
+				(await tryDeltaUpload(item.file, item.folderId, (pct) => report(pct / 100), signal, {
+					fileId: item.fileId,
+					expectedHash: item.expectedHash
+				}));
+			if (signal?.aborted) throw signal.reason ?? new Error('upload cancelled');
+			if (dedup) {
+				if (!dedup.ok) throwFromDedupAnswer(dedup, `/api/files/${item.fileId}/content`);
+				return dedup.savedBytes ?? 0;
+			}
+			await replaceFileContentWithProgress(item.fileId, item.file, report, signal, {
+				expectedHash: item.expectedHash
+			});
+			return 0;
+		}
+
+		const conflictOpts =
+			item.onConflict === 'rename' ? { onConflict: 'rename' as const } : undefined;
 		const dedup =
-			(ownedHash && folderId ? await instantUploadOwned(folderId, file, ownedHash) : null) ??
-			(await tryDeltaUpload(file, folderId, (pct) => report(pct / 100), signal));
+			(ownedHash && item.folderId
+				? await instantUploadOwned(item.folderId, item.file, ownedHash, conflictOpts)
+				: null) ??
+			(await tryDeltaUpload(
+				item.file,
+				item.folderId,
+				(pct) => report(pct / 100),
+				signal,
+				conflictOpts
+			));
 		if (signal?.aborted) throw signal.reason ?? new Error('upload cancelled');
 		if (dedup) {
 			if (!dedup.ok) throwFromDedupAnswer(dedup, '/api/files/by-hash');
 			return dedup.savedBytes ?? 0;
 		}
-		await uploadFileWithProgress(folderId, file, report, signal);
+		await uploadFileWithProgress(item.folderId, item.file, report, signal, conflictOpts);
 		return 0;
 	}
 
 	/**
-	 * Upload one file, retrying once on a transient failure. A connection the
-	 * watchdog aborted, or an upload the server actually committed before the
-	 * client gave up, both recover here: the backend treats a re-upload of
-	 * byte-identical content as success (idempotent), so the retry is a clean
-	 * no-op for anything that already landed and a real second chance for the
-	 * rest. A quota error is never retried — the disk won't free up mid-batch.
+	 * Upload or replace one file, retrying once on a transient failure. Quota,
+	 * authorization, name conflict, and CAS 412 errors are never retried.
 	 */
 	async function uploadWithRetry(
-		folderId: string | null,
-		file: File,
+		item: ResolvedTransferItem,
 		report: (frac: number) => void,
 		ownedHash: string | null,
 		signal?: AbortSignal
 	): Promise<number> {
 		try {
-			return await withTimeout(
-				uploadOneFile(folderId, file, report, ownedHash, signal),
-				FILE_BACKSTOP_MS
-			);
+			return await withTimeout(uploadOneFile(item, report, ownedHash, signal), FILE_BACKSTOP_MS);
 		} catch (e) {
-			if (signal?.aborted) throw e;
-			if ((e as { isQuota?: boolean } | null)?.isQuota) throw e;
+			if (signal?.aborted || isNonRetryableUploadError(e)) throw e;
 			report(0); // reset this file's progress for the second attempt
-			return await withTimeout(
-				uploadOneFile(folderId, file, report, ownedHash, signal),
-				FILE_BACKSTOP_MS
-			);
+			return await withTimeout(uploadOneFile(item, report, ownedHash, signal), FILE_BACKSTOP_MS);
 		}
 	}
 
@@ -736,14 +807,18 @@
 	 * run early. Returns the bytes deduplicated and the count of files that failed.
 	 */
 	async function uploadAll(
-		items: { file: File; folderId: string | null }[],
+		items: ResolvedTransferItem[],
 		nid: number,
 		label: (done: number) => string,
-		signal: AbortSignal
+		signal: AbortSignal,
+		precomputedHashes?: ReadonlyMap<File, string>
 	): Promise<{ savedBytes: number; failures: number; firstError: unknown; completed: number }> {
 		if (signal.aborted) return { savedBytes: 0, failures: 0, firstError: undefined, completed: 0 };
 		const total = items.length;
-		const owned = await resolveOwnedHashes(items.map((it) => it.file));
+		const owned = await resolveOwnedHashes(
+			items.map((it) => it.file),
+			precomputedHashes
+		);
 		const frac = new Array<number>(total).fill(0);
 		let progressSum = 0;
 		let savedBytes = 0;
@@ -764,7 +839,7 @@
 			while (next < total) {
 				if (signal.aborted) return;
 				const i = next++;
-				const { file, folderId } = items[i];
+				const item = items[i];
 				const report = (f: number) => {
 					if (!Number.isNaN(f)) {
 						const updated = Math.min(1, f);
@@ -774,13 +849,7 @@
 					refresh();
 				};
 				try {
-					savedBytes += await uploadWithRetry(
-						folderId,
-						file,
-						report,
-						owned.get(file) ?? null,
-						signal
-					);
+					savedBytes += await uploadWithRetry(item, report, owned.get(item.file) ?? null, signal);
 					completed++;
 				} catch (e) {
 					if (signal.aborted) return;
@@ -810,21 +879,32 @@
 
 	/** Resolve the upload's bell notification: success, partial, skipped, or failure.
 	 *  `total` is the count of *readable* files actually attempted; `skipped` is the
-	 *  non-regular files (FIFOs/sockets/…) that were filtered out before uploading.
-	 *  `firstError`, when set, carries the error from the FIRST failing upload so
-	 *  the bell can surface the specific reason (e.g. "Not enough space.") instead
-	 *  of a generic "Upload failed". */
+	 *  non-regular files (FIFOs/sockets/…) that were filtered out before uploading;
+	 *  `unchangedSkipped` counts identical/user-skipped conflict items. */
 	function finishUpload(
 		nid: number,
 		savedBytes: number,
 		failures: number,
 		total: number,
 		skipped = 0,
-		firstError: unknown = undefined
+		firstError: unknown = undefined,
+		unchangedSkipped = 0
 	) {
 		const ok = total - failures;
 		if (failures === 0 && skipped === 0) {
-			ui.finishProgress(nid, uploadDoneMessage(savedBytes), 'success');
+			if (unchangedSkipped > 0) {
+				ui.finishProgress(
+					nid,
+					t(
+						'files.uploaded_with_skipped',
+						{ ok, skipped: unchangedSkipped },
+						'{{ok}} uploaded · {{skipped}} unchanged skipped'
+					),
+					'success'
+				);
+			} else {
+				ui.finishProgress(nid, uploadDoneMessage(savedBytes), 'success');
+			}
 		} else if (failures === 0) {
 			// Every readable file uploaded; the rest were non-regular files
 			// (FIFOs/sockets/devices) that can't be read and were skipped.
@@ -918,35 +998,43 @@
 		return false;
 	}
 
+	async function findChildFolderId(parentId: string, name: string): Promise<string | null> {
+		let cursor: string | undefined;
+		do {
+			const page = await fetchFolderPage(parentId, { cursor, forceRefresh: true });
+			const match = page.folders.find((f) => f.name === name);
+			if (match) return match.id;
+			cursor = page.nextCursor;
+		} while (cursor);
+		return null;
+	}
+
 	/**
-	 * `targetId` is the folder the user aimed at — a folder row, a breadcrumb
-	 * crumb — and `null` means "wherever we are", the dropzone case. Threaded
-	 * rather than read from `currentId` inside, because the destination is now
-	 * a property of the DROP, not of the page.
+	 * Unified upload entrypoint for file picks, folder picks, and drag/drop trees.
+	 * Runs pre-upload comparison (`analyzeUploadCandidates`), auto-skips
+	 * byte-identical files silently, opens `<UploadConflictDialog>` only when real
+	 * conflicts occur, creates missing folders cleanly, and transfers remaining files.
 	 */
-	async function uploadBatch(files: File[], targetId: string | null = null) {
-		if (files.length === 0) return;
+	async function uploadEntries(rawEntries: DroppedEntry[], targetId: string | null = null) {
+		if (rawEntries.length === 0) return;
 		const destination = targetId ?? currentId;
 		if (!guardUploadFolderReady(destination)) return;
 		uploading = true;
 		// Arm the reload-guard + persist a "batch in flight" marker so a
-		// page refresh mid-upload (a) prompts the browser's "Leave site?"
-		// dialog and (b) leaves a breadcrumb the layout picks up on the
-		// next mount → toasts a "uploads were interrupted, re-drop to
-		// resume (chunks reuse)" hint.
+		// page refresh mid-upload prompts "Leave site?" and recovers on mount.
 		acquireUploadGuard();
 		const batchDescription =
-			files.length === 1
-				? files[0].name
-				: t('files.n_files_batch', { n: files.length }, `${files.length} files`);
+			rawEntries.length === 1
+				? rawEntries[0].file.name
+				: t('files.n_files_batch', { n: rawEntries.length }, `${rawEntries.length} files`);
 		const batchHandle = markUploadStarted(batchDescription, destination);
 		const ctl = new AbortController();
 		uploadAbort = ctl;
 		const nid = ui.startProgress(
 			t(
 				'files.uploading_n',
-				{ done: 0, total: files.length },
-				`Uploading 0/${files.length} files…`
+				{ done: 0, total: rawEntries.length },
+				`Uploading 0/${rawEntries.length} files…`
 			),
 			'cloud-upload-alt',
 			undefined,
@@ -954,41 +1042,169 @@
 		);
 		try {
 			// Filter out non-regular files (FIFOs/sockets/devices) up front so they
-			// can't hang a lane — progress then runs over only what's uploadable.
-			const { readable, skipped } = await partitionReadable(files, (f) => f);
-			const total = readable.length;
+			// neither create empty folders nor hang a worker lane on read.
+			const { readable, skipped } = await partitionReadable(rawEntries, (e) => e.file);
+			if (readable.length === 0) {
+				finishUpload(nid, 0, 0, 0, skipped.length);
+				return;
+			}
+
+			const analysis = await analyzeUploadCandidates(destination as string, readable, {
+				signal: ctl.signal,
+				onHashProgress: (done, hashTotal) => {
+					ui.updateProgress(
+						nid,
+						0,
+						t(
+							'files.comparing_n',
+							{ done, total: hashTotal },
+							`Comparing ${done}/${hashTotal} files…`
+						)
+					);
+				}
+			});
+			if (ctl.signal.aborted) {
+				ui.finishProgress(nid, t('files.upload_cancelled', 'Upload cancelled'), 'warning');
+				return;
+			}
+
+			// 100% unchanged: skip silently without modal or upload traffic.
+			if (
+				analysis.conflicts.length === 0 &&
+				analysis.newEntries.length === 0 &&
+				analysis.identicalEntries.length > 0
+			) {
+				if (skipped.length === 0) {
+					ui.finishProgress(
+						nid,
+						t(
+							'files.upload_up_to_date',
+							{ n: analysis.identicalEntries.length },
+							'Everything is already up to date — {{n}} unchanged file(s) skipped'
+						),
+						'info'
+					);
+				} else {
+					finishUpload(nid, 0, 0, 0, skipped.length, undefined, analysis.identicalEntries.length);
+				}
+				return;
+			}
+
+			let resolutions: Record<string, ConflictResolution> = {};
+			if (analysis.conflicts.length > 0) {
+				const chosen = await promptUploadConflicts(analysis, ctl.signal);
+				if (!chosen || ctl.signal.aborted) {
+					ui.finishProgress(nid, t('files.upload_cancelled', 'Upload cancelled'), 'warning');
+					return;
+				}
+				resolutions = chosen;
+			}
+
+			const plan = buildExecutionPlan(analysis, resolutions);
+			const skippedUserFacing = plan.skippedIdenticalCount + plan.skippedConflictCount;
+			if (plan.transfers.length === 0) {
+				if (skipped.length > 0) {
+					finishUpload(nid, 0, 0, 0, skipped.length, undefined, skippedUserFacing);
+				} else {
+					ui.finishProgress(
+						nid,
+						t(
+							'files.upload_up_to_date',
+							{ n: skippedUserFacing },
+							'Everything is already up to date — {{n}} unchanged file(s) skipped'
+						),
+						'info'
+					);
+				}
+				return;
+			}
+
+			// Reuse preflight-resolved existing folders and create only missing ones
+			// top-down so child creations never race their parent.
+			// eslint-disable-next-line svelte/prefer-svelte-reactivity
+			const dirIds = new Map<string, string | null>([
+				['', destination],
+				...analysis.existingFolders
+			]);
+			for (const dir of plan.foldersToCreate) {
+				if (ctl.signal.aborted) break;
+				const parentId = dirIds.get(dir.parentRelDir) ?? destination;
+				try {
+					const created = await createFolder(
+						dir.name,
+						parentId,
+						dir.onConflict === 'rename' ? { onConflict: 'rename' } : undefined
+					);
+					dirIds.set(dir.relativePath, created.id);
+				} catch (err) {
+					if (
+						dir.onConflict === 'fail' &&
+						parentId &&
+						(err as { status?: number } | null)?.status === 409
+					) {
+						const existingId = await findChildFolderId(parentId, dir.name);
+						if (existingId) {
+							dirIds.set(dir.relativePath, existingId);
+							continue;
+						}
+					}
+					throw err;
+				}
+			}
+
+			const resolvedTransfers: ResolvedTransferItem[] = plan.transfers.map((tr) =>
+				tr.mode === 'replace'
+					? {
+							mode: 'replace',
+							file: tr.file,
+							folderId: tr.folderId,
+							fileId: tr.fileId,
+							expectedHash: tr.expectedHash
+						}
+					: {
+							mode: 'create',
+							file: tr.file,
+							folderId: dirIds.get(tr.parentRelDir) ?? destination,
+							onConflict: tr.onConflict
+						}
+			);
+
+			const total = resolvedTransfers.length;
 			const label = (done: number) =>
 				total === 1
-					? t('files.uploading_file', { name: readable[0].name }, `Uploading ${readable[0].name}…`)
+					? t(
+							'files.uploading_file',
+							{ name: resolvedTransfers[0].file.name },
+							`Uploading ${resolvedTransfers[0].file.name}…`
+						)
 					: t('files.uploading_n', { done, total }, `Uploading ${done}/${total} files…`);
-			if (total > 0) {
-				const { savedBytes, failures, firstError, completed } = await uploadAll(
-					readable.map((file) => ({ file, folderId: destination })),
-					nid,
-					label,
-					ctl.signal
-				);
-				if (ctl.signal.aborted) {
-					ui.finishProgress(nid, uploadCancelledMessage(completed, total), 'warning');
-				} else {
-					finishUpload(nid, savedBytes, failures, total, skipped.length, firstError);
-				}
+
+			const { savedBytes, failures, firstError, completed } = await uploadAll(
+				resolvedTransfers,
+				nid,
+				label,
+				ctl.signal,
+				plan.precomputedHashes
+			);
+			if (ctl.signal.aborted) {
+				ui.finishProgress(nid, uploadCancelledMessage(completed, total), 'warning');
 			} else {
-				finishUpload(nid, 0, 0, 0, skipped.length);
+				finishUpload(
+					nid,
+					savedBytes,
+					failures,
+					total,
+					skipped.length,
+					firstError,
+					skippedUserFacing
+				);
 			}
 			await reloadAndTrackNew();
 			// Storage usage changed server-side — pull the fresh figure so the
-			// "Almacenamiento" bar moves off its login value instead of 0%.
+			// storage bar reflects the uploaded/replaced delta.
 			void session.refresh();
-			// Vanish-warning: if hide-dotfiles is on and any uploaded
-			// files start with `.`, the successfully-uploaded rows are
-			// invisible in the grid the moment they land. Fire a
-			// single grouped nudge so users don't think the upload
-			// failed. Only fires when the preference is on AND at
-			// least one uploaded file matched. Bell notification
-			// stays quiet (already covers success/failure counts).
 			if (preferences.hideDotfiles) {
-				const hidden = files.filter((f) => f.name.startsWith('.')).length;
+				const hidden = resolvedTransfers.filter((tr) => tr.file.name.startsWith('.')).length;
 				if (hidden > 0) {
 					ui.notify(
 						t(
@@ -1008,6 +1224,8 @@
 			}
 		} finally {
 			if (uploadAbort === ctl) uploadAbort = null;
+			conflictDialogOpen = false;
+			conflictResolver = null;
 			uploading = false;
 			markUploadFinished(batchHandle);
 			releaseUploadGuard();
@@ -1017,7 +1235,7 @@
 	async function onUpload(e: Event) {
 		const input = e.target as HTMLInputElement;
 		if (!input.files?.length) return;
-		await uploadBatch(Array.from(input.files));
+		await uploadEntries(Array.from(input.files).map((file) => ({ file, relativePath: file.name })));
 		input.value = '';
 	}
 
@@ -1034,11 +1252,11 @@
 		const dt = e.dataTransfer;
 		if (!dt) return;
 		// A dropped folder isn't expanded into `.files`, so the shared reader
-		// walks the dropped entry tree (webkitGetAsEntry) when one is present
-		// and we recreate it server-side; otherwise it hands back the flat list.
+		// walks the dropped entry tree (webkitGetAsEntry) when one is present;
+		// flat files simply become 1-segment relative paths in `uploadEntries`.
 		const { tree, files } = await readDroppedUpload(dt);
-		if (tree) await uploadTree(tree, targetId);
-		else if (files.length) await uploadBatch(files, targetId);
+		const entries = tree ?? files.map((file) => ({ file, relativePath: file.name }));
+		if (entries.length) await uploadEntries(entries, targetId);
 	}
 
 	/**
@@ -2002,118 +2220,15 @@
 	// ── Recursive folder upload ──────────────────────────────────────────────
 	let folderInput = $state<HTMLInputElement | null>(null);
 
-	/**
-	 * Upload files that carry a relative directory path, recreating the folder
-	 * tree under the current folder. Shared by the folder picker and folder drops.
-	 */
-	async function uploadTree(
-		entries: { file: File; relativePath: string }[],
-		targetId: string | null = null
-	) {
-		if (entries.length === 0) return;
-		// The dropped tree is recreated UNDER this folder — `destination` is the
-		// root the relative paths hang off, so aiming at a folder row puts the
-		// whole tree inside it rather than beside it.
-		const destination = targetId ?? currentId;
-		if (!guardUploadFolderReady(destination)) return;
-		uploading = true;
-		// Same reload-guard + interrupted-uploads breadcrumb as uploadBatch —
-		// the browser prompts on refresh, and if the user reloads anyway
-		// the layout picks up the marker on next mount and toasts.
-		acquireUploadGuard();
-		const treeHandle = markUploadStarted(
-			t('files.n_files_batch', { n: entries.length }, `${entries.length} files`),
-			destination
-		);
-		// Same bell progress notification as uploadBatch, so folder uploads show
-		// live progress + a final result instead of staying silent until the end.
-		const ctl = new AbortController();
-		uploadAbort = ctl;
-		const nid = ui.startProgress(
-			t(
-				'files.uploading_n',
-				{ done: 0, total: entries.length },
-				`Uploading 0/${entries.length} files…`
-			),
-			'cloud-upload-alt',
-			undefined,
-			() => ctl.abort()
-		);
-		try {
-			// Drop non-regular files (FIFOs/sockets/devices) before building the tree
-			// so they neither create empty folders nor hang a lane on read.
-			const { readable, skipped } = await partitionReadable(entries, (e) => e.file);
-			const total = readable.length;
-			const label = (done: number) =>
-				t('files.uploading_n', { done, total }, `Uploading ${done}/${total} files…`);
-			if (total === 0) {
-				finishUpload(nid, 0, 0, 0, skipped.length);
-				await reload();
-				return;
-			}
-
-			// Map each relative directory path to its created folder id; '' = current.
-			// Local computation scratch map (discarded after upload) — not reactive state.
-			// eslint-disable-next-line svelte/prefer-svelte-reactivity
-			const dirIds = new Map<string, string | null>([['', destination]]);
-
-			async function ensureDir(relDir: string): Promise<string | null> {
-				if (dirIds.has(relDir)) return dirIds.get(relDir) ?? null;
-				const parts = relDir.split('/');
-				const name = parts.pop() as string;
-				const parentId = await ensureDir(parts.join('/'));
-				const created = await createFolder(name, parentId);
-				dirIds.set(relDir, created.id);
-				return created.id;
-			}
-
-			// Create the folder tree first (sequentially — folders are few, and
-			// concurrent creation of the same dir would race), then upload the
-			// files into it with bounded concurrency.
-			const items: { file: File; folderId: string | null }[] = [];
-			for (const { file, relativePath } of readable) {
-				if (ctl.signal.aborted) break;
-				const segs = relativePath.split('/');
-				segs.pop(); // drop the filename, keep the directory trail
-				items.push({ file, folderId: await ensureDir(segs.join('/')) });
-			}
-
-			const { savedBytes, failures, firstError, completed } = await uploadAll(
-				items,
-				nid,
-				label,
-				ctl.signal
-			);
-			if (ctl.signal.aborted) {
-				ui.finishProgress(nid, uploadCancelledMessage(completed, total), 'warning');
-			} else {
-				finishUpload(nid, savedBytes, failures, total, skipped.length, firstError);
-			}
-			await reloadAndTrackNew();
-			void session.refresh();
-		} catch (err) {
-			if (ctl.signal.aborted) {
-				ui.finishProgress(nid, t('files.upload_cancelled', 'Upload cancelled'), 'warning');
-			} else {
-				ui.finishProgress(nid, errorMessage(err), 'error');
-			}
-		} finally {
-			if (uploadAbort === ctl) uploadAbort = null;
-			uploading = false;
-			markUploadFinished(treeHandle);
-			releaseUploadGuard();
-		}
-	}
-
 	async function onUploadFolder(e: Event) {
 		const input = e.target as HTMLInputElement;
 		const files = input.files ? Array.from(input.files) : [];
-		// webkitRelativePath: "chosenDir/sub/.../file.ext" — recreate the whole tree.
-		await uploadTree(
+		// webkitRelativePath: "chosenDir/sub/.../file.ext" — unified with preflight + conflict resolution.
+		await uploadEntries(
 			files.map((file) => ({
 				file,
 				relativePath:
-					(file as File & { webkitRelativePath?: string }).webkitRelativePath ?? file.name
+					(file as File & { webkitRelativePath?: string }).webkitRelativePath || file.name
 			}))
 		);
 		input.value = '';
@@ -2576,8 +2691,9 @@
 		untrack(() => {
 			const claimed = pendingUpload.claim(here);
 			if (!claimed) return;
-			if (claimed.tree) void uploadTree(claimed.tree, here);
-			else if (claimed.files.length) void uploadBatch(claimed.files, here);
+			const entries =
+				claimed.tree ?? claimed.files.map((file) => ({ file, relativePath: file.name }));
+			if (entries.length) void uploadEntries(entries, here);
 		});
 	});
 </script>
@@ -2945,6 +3061,17 @@
 		testid="files-context-menu"
 		scrimTestid="files-context-menu-scrim"
 		onclose={closeContext}
+	/>
+{/if}
+
+{#if conflictAnalysis}
+	<UploadConflictDialog
+		bind:open={conflictDialogOpen}
+		conflicts={conflictAnalysis.conflicts}
+		newCount={conflictAnalysis.newEntries.length}
+		identicalCount={conflictAnalysis.identicalEntries.length}
+		onresolve={(resolutions) => conflictResolver?.(resolutions)}
+		oncancel={() => conflictResolver?.(null)}
 	/>
 {/if}
 

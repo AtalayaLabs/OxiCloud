@@ -770,6 +770,15 @@ export type CompleteUploadResponse = {
     size: number;
 };
 
+/**
+ * How a create/upload endpoint handles a colliding sibling name in the target
+ * folder.
+ *
+ * Default is [`ConflictPolicy::Fail`] (`409 AlreadyExists`, preserving the
+ * existing idempotent-upload semantics for identical content).
+ */
+export type ConflictPolicy = 'fail' | 'rename';
+
 export type ContactDto = {
     address: Array<AddressDto>;
     address_book_id: string;
@@ -882,33 +891,39 @@ export type CreateContactRequest = {
 };
 
 /**
- * Request body for the instant-upload endpoint.
+ * Request body for the instant-upload / instant-replace endpoint (`POST /api/files/by-hash`).
+ *
+ * Provide either `(name, folder_id)` to create a new file (`201 Created`) or
+ * `file_id` to replace an existing file's content (`200 OK`).
  */
 export type CreateFileByHashRequest = {
     /**
-     * Target folder ID (the caller needs Create permission on it).
+     * Update mode optional compare-and-swap guard: current expected whole-file
+     * BLAKE3 hash (64 hex chars). Mismatch returns `412 PreconditionFailed`.
      */
-    folder_id: string;
+    expected_hash?: string | null;
+    /**
+     * Update mode: existing file ID whose content is replaced (the caller needs Update permission on it).
+     */
+    file_id?: string | null;
+    /**
+     * Create mode: target folder ID (the caller needs Create permission on it).
+     */
+    folder_id?: string | null;
     /**
      * BLAKE3 hash (64 hex chars) of content the caller already owns.
      */
     hash: string;
     /**
-     * File name to create (path components are stripped).
+     * Create mode: file name to create (path components are stripped).
      */
-    name: string;
+    name?: string | null;
+    /**
+     * Create mode conflict policy (`fail` by default, `rename` to elect `stem (2).ext`).
+     */
+    on_conflict?: ConflictPolicy;
     /**
      * §9 — the browser's `File.lastModified`, epoch **milliseconds**.
-     *
-     * Optional, and absent means "stamp `NOW()`". Same unit and same
-     * trust bounds as the multipart `source_modified_at` field on
-     * `/api/files/upload`; the server rounds half-up and rejects
-     * implausible values with a 400 rather than clamping.
-     *
-     * This endpoint needs its own slot because it is `uploadOneFile`'s
-     * FIRST short-circuit: re-uploading content the caller already owns
-     * never reaches the multipart path, so without this a duplicate
-     * upload silently lost its source mtime even for a small file.
      */
     source_modified_at?: number | null;
 };
@@ -935,6 +950,11 @@ export type CreateFolderDto = {
      * Name of the folder to create
      */
     name: string;
+    /**
+     * Conflict handling policy when a sibling already exists (`fail` by default,
+     * `rename` to atomically elect `name (2)`, `name (3)`, …).
+     */
+    on_conflict?: ConflictPolicy;
     /**
      * Parent folder ID (None for root level)
      */
@@ -1712,6 +1732,11 @@ export type DeltaCommitRequest = {
      */
     chunks: Array<DeltaChunkRef>;
     /**
+     * Update mode optional compare-and-swap guard: current expected whole-file
+     * BLAKE3 hash (64 hex chars). Mismatch returns `412 PreconditionFailed`.
+     */
+    expected_hash?: string | null;
+    /**
      * BLAKE3 of the complete file (verified server-side, never trusted).
      */
     file_hash: string;
@@ -1727,6 +1752,10 @@ export type DeltaCommitRequest = {
      * Create mode: file name (basename).
      */
     name?: string | null;
+    /**
+     * Create mode conflict policy (`fail` by default; `rename` to elect `stem (2).ext`).
+     */
+    on_conflict?: ConflictPolicy;
     /**
      * §9 — the browser's `File.lastModified`, epoch **milliseconds**.
      *
@@ -4553,6 +4582,79 @@ export type PolicyKnobImpactDto = {
 };
 
 /**
+ * Metadata for an existing live file colliding with an incoming upload path.
+ */
+export type PreflightExistingFileDto = {
+    /**
+     * Whether the caller holds `Permission::Update` on this file (false for
+     * e.g. `Contributor` roles or read-only drives).
+     */
+    can_update: boolean;
+    /**
+     * BLAKE3 whole-file content hash (64 hex chars).
+     */
+    content_hash: string;
+    /**
+     * Parent folder ID holding the existing file.
+     */
+    folder_id: string;
+    /**
+     * Existing file ID (used as the target for `Replace` / `PUT /api/files/{id}/content`).
+     */
+    id: string;
+    /**
+     * Content modification timestamp (`content_modified_at`, RFC 3339 UTC).
+     */
+    modified_at: string;
+    /**
+     * Basename of the existing file (NFC-normalized).
+     */
+    name: string;
+    /**
+     * Relative path of the incoming file (NFC-normalized).
+     */
+    relative_path: string;
+    /**
+     * Stored content size in bytes.
+     */
+    size: number;
+};
+
+/**
+ * An existing folder already present under the target directory.
+ */
+export type PreflightExistingFolderDto = {
+    /**
+     * Existing folder ID — reused directly instead of calling `POST /api/folders`.
+     */
+    id: string;
+    /**
+     * Relative path matching the incoming directory prefix (NFC-normalized).
+     */
+    relative_path: string;
+};
+
+/**
+ * A cross-kind collision at an incoming path: either an incoming file wants
+ * the name of an existing folder, or an incoming directory segment wants the
+ * name of an existing file.
+ */
+export type PreflightKindConflictDto = {
+    /**
+     * ID of the existing server item.
+     */
+    existing_id: string;
+    /**
+     * Kind of the existing server item blocking that path (`file` or `folder`).
+     */
+    existing_kind: ItemKind;
+    /**
+     * Relative path where the kind mismatch occurs (NFC-normalized).
+     */
+    relative_path: string;
+};
+
+/**
  * Shared progress shape used by both `migration` and `rotation`
  * header fields — same struct name, same JSON field names. Frontend
  * treats them identically at the render layer.
@@ -6521,6 +6623,41 @@ export type UpdateUserRoleDto = {
  */
 export type UpgradeToInternalDto = {
     password?: string | null;
+};
+
+/**
+ * Request body of `POST /api/folders/{id}/upload-preflight`.
+ */
+export type UploadPreflightRequest = {
+    /**
+     * Relative paths of files to upload (e.g. `"report.pdf"`, `"Photos/2026/img.jpg"`).
+     * Leading/trailing slashes, backslashes, `.` / `..` segments and null bytes are rejected.
+     */
+    paths: Array<string>;
+};
+
+/**
+ * Response body of `POST /api/folders/{id}/upload-preflight`.
+ */
+export type UploadPreflightResponse = {
+    /**
+     * Existing live files colliding with incoming file paths.
+     */
+    existing_files: Array<PreflightExistingFileDto>;
+    /**
+     * Existing subfolders matching directory prefixes of `paths`.
+     */
+    existing_folders: Array<PreflightExistingFolderDto>;
+    /**
+     * File↔folder kind mismatches preventing direct creation or overwrite.
+     */
+    kind_conflicts: Array<PreflightKindConflictDto>;
+    /**
+     * `true` for native PostgreSQL folders; `false` for external mounts
+     * (`ext:` / mount root) where subtree preflight is unsupported and the
+     * client falls back gracefully.
+     */
+    supported: boolean;
 };
 
 /**
@@ -11857,17 +11994,21 @@ export type CreateFileByHashData = {
 
 export type CreateFileByHashErrors = {
     /**
-     * Invalid hash format or empty name
+     * Invalid hash format, empty name, or invalid mode combination
      */
     400: ApiErrorBody;
     /**
-     * No owned blob with this hash (anti-enumeration: same shape as unknown hash)
+     * No owned blob with this hash, or target file/folder inaccessible
      */
     404: ApiErrorBody;
     /**
      * A file with this name already exists in the folder
      */
     409: ApiErrorBody;
+    /**
+     * Concurrent modification: expected_hash no longer matches
+     */
+    412: ApiErrorBody;
     /**
      * Storage quota exceeded
      */
@@ -11877,6 +12018,10 @@ export type CreateFileByHashErrors = {
 export type CreateFileByHashError = CreateFileByHashErrors[keyof CreateFileByHashErrors];
 
 export type CreateFileByHashResponses = {
+    /**
+     * Existing file's content replaced from an already-owned blob — zero bytes transferred
+     */
+    200: FileDto;
     /**
      * File created from an already-owned blob — zero bytes transferred
      */
@@ -11937,6 +12082,10 @@ export type DeltaCommitErrors = {
      * Chunks not claimable — upload them and retry
      */
     409: DeltaStillMissingResponse;
+    /**
+     * Concurrent modification: expected_hash no longer matches
+     */
+    412: ApiErrorBody;
     /**
      * Rate limited
      */
@@ -12110,7 +12259,7 @@ export type ListRecentChangesResponse = ListRecentChangesResponses[keyof ListRec
 
 export type UploadFileWithThumbnailsData = {
     /**
-     * File data + folder_id (required: it determines the file's owner and drive)
+     * File data + folder_id (required: it determines the file's owner and drive), optional source_modified_at (epoch ms) and on_conflict (fail | rename)
      */
     body?: unknown;
     path?: never;
@@ -12123,6 +12272,10 @@ export type UploadFileWithThumbnailsErrors = {
      * Invalid request
      */
     400: ApiErrorBody;
+    /**
+     * A file with this name and different content already exists in the folder
+     */
+    409: ApiErrorBody;
     /**
      * Storage quota exceeded
      */
@@ -12216,6 +12369,51 @@ export type DownloadFileResponses = {
 };
 
 export type DownloadFileResponse = DownloadFileResponses[keyof DownloadFileResponses];
+
+export type ReplaceFileContentData = {
+    /**
+     * Replacement file stream + optional source_modified_at (epoch ms) and optional expected_hash (64 hex BLAKE3 CAS guard, also accepted via If-Match)
+     */
+    body?: unknown;
+    path: {
+        /**
+         * Existing file ID to overwrite
+         */
+        id: string;
+    };
+    query?: never;
+    url: '/api/files/{id}/content';
+};
+
+export type ReplaceFileContentErrors = {
+    /**
+     * Invalid request or malformed hash/mtime
+     */
+    400: ApiErrorBody;
+    /**
+     * File not found or caller lacks Update permission
+     */
+    404: ApiErrorBody;
+    /**
+     * Concurrent modification: expected_hash / If-Match no longer matches
+     */
+    412: ApiErrorBody;
+    /**
+     * Storage quota exceeded
+     */
+    507: ApiErrorBody;
+};
+
+export type ReplaceFileContentError = ReplaceFileContentErrors[keyof ReplaceFileContentErrors];
+
+export type ReplaceFileContentResponses = {
+    /**
+     * File content replaced (preserves file ID, shares, and favorites)
+     */
+    200: FileDto;
+};
+
+export type ReplaceFileContentResponse = ReplaceFileContentResponses[keyof ReplaceFileContentResponses];
 
 export type DeltaFileManifestData = {
     body?: never;
@@ -12738,6 +12936,40 @@ export type ListFolderResourcesResponses = {
 };
 
 export type ListFolderResourcesResponse = ListFolderResourcesResponses[keyof ListFolderResourcesResponses];
+
+export type UploadPreflightData = {
+    body: UploadPreflightRequest;
+    path: {
+        /**
+         * Destination folder ID
+         */
+        id: string;
+    };
+    query?: never;
+    url: '/api/folders/{id}/upload-preflight';
+};
+
+export type UploadPreflightErrors = {
+    /**
+     * Invalid relative path or path limit exceeded
+     */
+    400: ApiErrorBody;
+    /**
+     * Folder not found or caller lacks Create permission
+     */
+    404: ApiErrorBody;
+};
+
+export type UploadPreflightError = UploadPreflightErrors[keyof UploadPreflightErrors];
+
+export type UploadPreflightResponses = {
+    /**
+     * Subtree comparison result (existing folders, existing files with content hashes, and kind mismatches)
+     */
+    200: UploadPreflightResponse;
+};
+
+export type UploadPreflightResponse2 = UploadPreflightResponses[keyof UploadPreflightResponses];
 
 export type ListOnResourceData = {
     body?: never;

@@ -10,7 +10,10 @@ export function uploadTransport(
 			init
 		);
 		// A token refresh uses the regular wire transport, never the upload body.
-		if (appPath(new URL(request.url).pathname) !== '/api/files/upload') return fetch(request);
+		const path = appPath(new URL(request.url).pathname);
+		if (path !== '/api/files/upload' && !/^\/api\/files\/[^/]+\/content$/.test(path)) {
+			return fetch(request);
+		}
 		return new Promise<Response>((resolve, reject) => {
 			const xhr = new XMLHttpRequest();
 			xhr.open(request.method, request.url);

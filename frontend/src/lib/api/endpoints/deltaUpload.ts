@@ -11,7 +11,12 @@ import { base } from '$app/paths';
 import log from 'loglevel';
 import { ApiError } from '$lib/api/client';
 import { getCsrfToken } from '$lib/api/csrf';
-import { createFileByHash, dedupCheckBatch } from '$lib/api/endpoints/files';
+import {
+	createFileByHash,
+	dedupCheckBatch,
+	replaceFileByHash,
+	type UploadConflictPolicy
+} from '$lib/api/endpoints/files';
 import { blake3HexOfFile } from '$lib/vendor/hashWasm';
 
 // Namespaced logger — level configurable at runtime from the browser
@@ -107,6 +112,12 @@ interface HeartbeatMsg {
 }
 type WorkerMsg = ProgressMsg | FallbackMsg | DoneMsg | LogMsg | HeartbeatMsg;
 
+export interface DeltaUploadOptions {
+	fileId?: string;
+	expectedHash?: string;
+	onConflict?: UploadConflictPolicy;
+}
+
 /**
  * Try to upload `file` through the delta protocol. Resolves `null` whenever
  * the plain byte upload should proceed (too small, environment unusable, any
@@ -116,12 +127,14 @@ export function tryDeltaUpload(
 	file: File,
 	folderId: string | null | undefined,
 	onProgress?: (pct: number) => void,
-	signal?: AbortSignal
+	signal?: AbortSignal,
+	opts?: DeltaUploadOptions
 ): Promise<DeltaUploadAnswer | null> {
 	const id = newUploadId();
+	const missingTarget = !folderId && !opts?.fileId;
 	if (
 		signal?.aborted ||
-		!folderId ||
+		missingTarget ||
 		file.size < DELTA_UPLOAD_MIN_SIZE ||
 		usable === false ||
 		typeof Worker === 'undefined'
@@ -129,8 +142,8 @@ export function tryDeltaUpload(
 		// Not a bug — these are the documented skip conditions. Log at
 		// debug so verbose-flag users see why delta was skipped; silent
 		// in the default path (would be noise on every small file).
-		const reason = !folderId
-			? 'no folder id'
+		const reason = missingTarget
+			? 'no target folder or file id'
 			: file.size < DELTA_UPLOAD_MIN_SIZE
 				? `file below ${DELTA_UPLOAD_MIN_SIZE} B threshold`
 				: usable === false
@@ -307,6 +320,19 @@ export function tryDeltaUpload(
 					settle({ ok: false, errorMsg, errorType, status: msg.status });
 					return;
 				}
+				if (msg.status === 412) {
+					uploadLog.warn(`[${id}] delta precondition failed (HTTP 412)`, {
+						file: file.name,
+						errorMsg
+					});
+					settle({
+						ok: false,
+						errorMsg,
+						errorType: errorType ?? 'PreconditionFailed',
+						status: 412
+					});
+					return;
+				}
 				uploadLog.warn(
 					`[${id}] delta done with non-2xx (HTTP ${msg.status}) — falling back to direct upload`,
 					{ file: file.name, errorMsg }
@@ -337,7 +363,10 @@ export function tryDeltaUpload(
 		const uploadBatchBytes = window.oxi?.UPLOAD_BATCH_BYTES;
 		worker.postMessage({
 			file,
-			folderId,
+			folderId: opts?.fileId ? undefined : (folderId ?? undefined),
+			fileId: opts?.fileId,
+			expectedHash: opts?.expectedHash,
+			onConflict: opts?.onConflict,
 			name: file.name,
 			csrfToken: getCsrfToken() || '',
 			uploadBatchBytes
@@ -391,39 +420,65 @@ export function throwFromDedupAnswer(answer: DeltaUploadAnswer, resource: string
 	throw err;
 }
 
+function parseOwnedBlobErrorAnswer(
+	res: { status: number; errorBody?: unknown },
+	fallbackMessage: string
+): DeltaUploadAnswer {
+	const body = res.errorBody as
+		| { message?: unknown; error?: unknown; error_type?: unknown }
+		| undefined;
+	const serverMessage =
+		typeof body?.message === 'string'
+			? body.message
+			: typeof body?.error === 'string'
+				? body.error
+				: fallbackMessage;
+	const errorType = typeof body?.error_type === 'string' ? body.error_type : undefined;
+	return {
+		ok: false,
+		isQuotaError: res.status === 507,
+		errorMsg: serverMessage,
+		errorType,
+		status: res.status
+	};
+}
+
 export async function instantUploadOwned(
 	folderId: string,
 	file: File,
-	hash: string
+	hash: string,
+	opts?: { onConflict?: UploadConflictPolicy }
 ): Promise<DeltaUploadAnswer | null> {
-	const res = await createFileByHash(folderId, file.name, hash, file.lastModified);
+	const res = opts
+		? await createFileByHash(folderId, file.name, hash, file.lastModified, opts)
+		: await createFileByHash(folderId, file.name, hash, file.lastModified);
 	if (res.ok) return { ok: true, data: res.data, savedBytes: file.size };
 	if (res.status === 507) {
-		// Parse the server's normalized `ApiErrorBody` so the thrown error
-		// carries `error_type: "QuotaExceeded"` and the orchestrator's
-		// `errorMessage()` lands the friendly i18n copy ("Espace
-		// insuffisant…") instead of a hardcoded string. Pre-fix this
-		// branch returned `errorMsg: 'Storage quota exceeded'` which the
-		// orchestrator surfaced verbatim — the toast on 2026-11-01
-		// post-sandbox-test showed exactly that English string even though
-		// the server shipped the full normalized body.
-		const body = res.errorBody as
-			| { message?: unknown; error?: unknown; error_type?: unknown }
-			| undefined;
-		const serverMessage =
-			typeof body?.message === 'string'
-				? body.message
-				: typeof body?.error === 'string'
-					? body.error
-					: 'Storage quota exceeded';
-		const errorType = typeof body?.error_type === 'string' ? body.error_type : undefined;
-		return {
-			ok: false,
-			isQuotaError: true,
-			errorMsg: serverMessage,
-			errorType,
-			status: res.status
-		};
+		return parseOwnedBlobErrorAnswer(res, 'Storage quota exceeded');
+	}
+	return null;
+}
+
+/**
+ * Overwrite an existing file's content from an already-owned blob
+ * (`POST /api/files/by-hash` with `file_id`) — zero bytes transferred.
+ * Returns a conclusive `ok: false` answer on `412` (CAS mismatch) and `507`
+ * (quota exceeded), or `null` when the blob is not owned/missing so the
+ * caller can fall back to delta or streaming upload.
+ */
+export async function instantReplaceOwned(
+	fileId: string,
+	file: File,
+	hash: string,
+	expectedHash?: string
+): Promise<DeltaUploadAnswer | null> {
+	const res = await replaceFileByHash(fileId, hash, file.lastModified, expectedHash);
+	if (res.ok) return { ok: true, data: res.data, savedBytes: file.size };
+	if (res.status === 507 || res.status === 412) {
+		return parseOwnedBlobErrorAnswer(
+			res,
+			res.status === 412 ? 'Concurrent modification detected' : 'Storage quota exceeded'
+		);
 	}
 	return null;
 }
@@ -433,49 +488,97 @@ const HASH_WORKER_URL = `${base}/workers/hashWorker.js`;
  *  starving the upload workers of cores. */
 const HASH_POOL_SIZE = Math.min(4, Math.max(1, (navigator.hardwareConcurrency ?? 2) - 1));
 
+export interface HashPoolOptions {
+	signal?: AbortSignal;
+	onProgress?: (done: number, total: number) => void;
+}
+
 /**
  * BLAKE3-hash `files` on a bounded pool of dedicated workers (main thread
  * stays free). A file whose worker errors is simply absent from the result —
- * the caller uploads it the normal way. Falls back to the sequential inline
- * hasher when `Worker` is unavailable.
+ * the caller handles fallback or conflict evaluation safely. Falls back to the
+ * sequential inline hasher when `Worker` is unavailable.
  */
-async function hashFilesPooled(files: File[]): Promise<Map<File, string>> {
+export async function hashFilesPooled(
+	files: File[],
+	opts?: HashPoolOptions
+): Promise<Map<File, string>> {
+	const out = new Map<File, string>();
+	if (files.length === 0) return out;
+	if (opts?.signal?.aborted) {
+		throw opts.signal.reason ?? new DOMException('Hashing aborted', 'AbortError');
+	}
+
+	let done = 0;
+	const markDone = () => {
+		done += 1;
+		opts?.onProgress?.(done, files.length);
+	};
+
 	if (typeof Worker === 'undefined') {
-		const out = new Map<File, string>();
-		for (const f of files) out.set(f, await blake3HexOfFile(f));
+		for (const f of files) {
+			if (opts?.signal?.aborted) {
+				throw opts.signal.reason ?? new DOMException('Hashing aborted', 'AbortError');
+			}
+			out.set(f, await blake3HexOfFile(f));
+			markDone();
+		}
 		return out;
 	}
+
 	const lanes = Math.min(HASH_POOL_SIZE, files.length);
 	const workers = Array.from(
 		{ length: lanes },
 		() => new Worker(HASH_WORKER_URL, { type: 'module' })
 	);
-	const out = new Map<File, string>();
 	let next = 0;
+	let abortListener: (() => void) | null = null;
 	try {
-		await Promise.all(
-			workers.map(
-				(w) =>
-					new Promise<void>((resolve, reject) => {
-						const feed = () => {
-							if (next >= files.length) {
-								resolve();
-								return;
-							}
-							const i = next++;
-							const file = files[i];
-							w.onmessage = (ev: MessageEvent<{ id: number; hex?: string; error?: string }>) => {
-								if (ev.data.hex) out.set(file, ev.data.hex);
-								feed(); // per-file errors: skip the file, keep the lane
-							};
-							w.onerror = (e) => reject(e);
-							w.postMessage({ id: i, file });
-						};
-						feed();
-					})
-			)
-		);
+		await new Promise<void>((resolve, reject) => {
+			let finished = 0;
+			let settled = false;
+			const abortNow = () => {
+				if (settled) return;
+				settled = true;
+				for (const w of workers) w.terminate();
+				reject(opts?.signal?.reason ?? new DOMException('Hashing aborted', 'AbortError'));
+			};
+			if (opts?.signal) {
+				abortListener = abortNow;
+				opts.signal.addEventListener('abort', abortListener, { once: true });
+			}
+			for (const w of workers) {
+				const feed = () => {
+					if (settled) return;
+					if (next >= files.length) {
+						finished += 1;
+						if (finished === workers.length) {
+							settled = true;
+							resolve();
+						}
+						return;
+					}
+					const i = next++;
+					const file = files[i];
+					w.onmessage = (ev: MessageEvent<{ id: number; hex?: string; error?: string }>) => {
+						if (ev.data.hex) out.set(file, ev.data.hex);
+						markDone();
+						feed(); // per-file errors: skip the file, keep the lane
+					};
+					w.onerror = (e) => {
+						if (settled) return;
+						settled = true;
+						reject(e);
+					};
+					w.postMessage({ id: i, file });
+				};
+				feed();
+			}
+		});
 	} finally {
+		if (abortListener && opts?.signal) {
+			opts.signal.removeEventListener('abort', abortListener);
+		}
 		for (const w of workers) w.terminate();
 	}
 	return out;
@@ -488,26 +591,35 @@ async function hashFilesPooled(files: File[]): Promise<Map<File, string>> {
  * `/api/dedup/check-batch`, and the owned subset is mapped back to `file → hash`
  * so callers can instant-upload those (zero bytes) and upload the rest normally.
  *
- * Excludes empty files and files `>= DELTA_UPLOAD_MIN_SIZE` (the delta protocol
- * dedups those itself). Resolves an empty map on any failure — hashing
- * unavailable, request error — so uploads always proceed.
+ * When `precomputed` already contains hashes (e.g. from upload preflight
+ * comparison), those files are reused directly without hashing them twice.
  */
-export async function resolveOwnedHashes(files: File[]): Promise<Map<File, string>> {
+export async function resolveOwnedHashes(
+	files: File[],
+	precomputed?: ReadonlyMap<File, string>
+): Promise<Map<File, string>> {
 	const inBand = files.filter((f) => f.size > 0 && f.size < DELTA_UPLOAD_MIN_SIZE);
 	if (inBand.length === 0) return new Map();
 
 	const hashByFile = new Map<File, string>();
-	try {
-		// Hash off the main thread on a small worker pool — the sequential
-		// main-thread WASM loop blocked the UI for the whole batch and
-		// delayed every upload lane behind the full hashing phase (measured
-		// in deltaUpload.hash.test.ts). Falls back to the inline loop when
-		// Workers are unavailable (some test environments).
-		const hashed = await hashFilesPooled(inBand);
-		for (const [f, h] of hashed) hashByFile.set(f, h);
-	} catch {
-		return new Map(); // WASM/hashing unavailable → skip instant uploads
+	const toHash: File[] = [];
+	for (const f of inBand) {
+		const cached = precomputed?.get(f);
+		if (cached) hashByFile.set(f, cached);
+		else toHash.push(f);
 	}
+
+	if (toHash.length > 0) {
+		try {
+			const hashed = await hashFilesPooled(toHash);
+			for (const [f, h] of hashed) hashByFile.set(f, h);
+		} catch {
+			// If precomputed hashes exist for some files, still check those.
+			if (hashByFile.size === 0) return new Map();
+		}
+	}
+
+	if (hashByFile.size === 0) return new Map();
 
 	let owned: Set<string>;
 	try {

@@ -714,7 +714,36 @@
     "new_text_file_prompt": "Filename (e.g. notes.md)",
     "new_text_file_hint": "Include the extension in the filename (e.g. .md, .txt, .c, .py, .rs).",
     "new_text_file_binary_ext_title": "Non-text extension",
-    "new_text_file_binary_ext_message": "\"{{name}}\" doesn't look like a text file. The editor will open it as text — that usually breaks binary formats. Continue anyway?"
+    "new_text_file_binary_ext_message": "\"{{name}}\" doesn't look like a text file. The editor will open it as text — that usually breaks binary formats. Continue anyway?",
+    "comparing_n": "Comparing {{done}}/{{total}} files…",
+    "upload_up_to_date": "Everything is already up to date — {{n}} unchanged file(s) skipped",
+    "uploaded_with_skipped": "{{ok}} uploaded · {{skipped}} unchanged skipped",
+    "upload_conflict": {
+      "title": "Upload conflicts ({{n}})",
+      "intro": "Some items already exist in this folder with different content.",
+      "summary_new": "{{n}} new",
+      "summary_identical": "{{n}} unchanged (auto-skipped)",
+      "summary_conflicts": "{{n}} conflict(s)",
+      "skip_all": "Skip all",
+      "replace_if_newer": "Replace if newer",
+      "replace_all": "Replace all",
+      "keep_both_all": "Keep both",
+      "action_skip": "Skip",
+      "action_replace": "Replace",
+      "action_keep_both": "Keep both",
+      "badge_local_newer": "Local newer",
+      "badge_remote_newer": "Server newer",
+      "badge_same_mtime": "Same modified time",
+      "badge_readonly": "Read-only",
+      "badge_kind_mismatch": "Folder/file conflict",
+      "local_label": "This device: {{size}} · {{date}}",
+      "local_label_nodate": "This device: {{size}}",
+      "remote_label": "Server: {{size}} · {{date}}",
+      "kind_mismatch_hint": "Cannot overwrite \"{{path}}\" because the server already has a different item type there. Choose Skip or Keep both.",
+      "keep_both_hint": "Saved alongside as e.g. {{name}}",
+      "confirm_continue": "Continue ({{n}} to upload)",
+      "confirm_skip_all": "Skip all conflicts"
+    }
   },
   "dialogs": {
     "rename_folder": "Rename folder",
@@ -787,7 +816,8 @@
     "group_virtual_immutable": "The 'Internal' group is system-managed and cannot be modified.",
     "group_not_found": "Group not found.",
     "group_name_taken": "A group with this name already exists.",
-    "forbidden": "Could not load files"
+    "forbidden": "Could not load files",
+    "precondition_failed": "This file was modified by someone else. Refresh and try again."
   },
   "breadcrumb": {
     "home": "Home",
