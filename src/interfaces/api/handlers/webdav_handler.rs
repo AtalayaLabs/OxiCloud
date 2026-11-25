@@ -2931,6 +2931,7 @@ async fn handle_move(
 
             let move_dto = crate::application::dtos::folder_dto::MoveFolderDto {
                 parent_id: target_parent_id,
+                on_conflict: Default::default(),
             };
 
             folder_service

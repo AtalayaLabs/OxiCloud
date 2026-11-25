@@ -41,6 +41,11 @@ pub struct RenameFolderDto {
 pub struct MoveFolderDto {
     /// New parent folder ID (None for root level)
     pub parent_id: Option<String>,
+
+    /// Conflict handling policy when a sibling already exists (`fail` by default,
+    /// `rename` to atomically pick `name (2)`, `name (3)`, …).
+    #[serde(default)]
+    pub on_conflict: ConflictPolicy,
 }
 
 /// DTO for folder responses

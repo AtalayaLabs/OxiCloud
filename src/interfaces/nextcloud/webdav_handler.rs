@@ -1718,6 +1718,7 @@ async fn handle_move(
                     &folder.id,
                     MoveFolderDto {
                         parent_id: Some(dest_parent.id.clone()),
+                        on_conflict: Default::default(),
                     },
                     user.id,
                 )

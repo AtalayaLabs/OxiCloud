@@ -156,6 +156,19 @@ pub trait FolderRepository: Send + Sync + 'static {
         caller_id: Uuid,
     ) -> Result<Folder, DomainError>;
 
+    /// Variant of [`Self::move_folder`] that honours [`ConflictPolicy`] and
+    /// rejects descendant cycles via `ltree`.
+    async fn move_folder_on_conflict(
+        &self,
+        id: &str,
+        new_parent_id: Option<&str>,
+        caller_id: Uuid,
+        on_conflict: ConflictPolicy,
+    ) -> Result<Folder, DomainError> {
+        let _ = on_conflict;
+        self.move_folder(id, new_parent_id, caller_id).await
+    }
+
     /// Deletes a folder
     async fn delete_folder(&self, id: &str) -> Result<(), DomainError>;
 

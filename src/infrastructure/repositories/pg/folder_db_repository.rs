@@ -14,12 +14,12 @@ use sqlx::PgPool;
 use std::sync::Arc;
 use uuid::Uuid;
 
-use super::name_conflict_pg::elect_and_insert_in_tx;
+use super::name_conflict_pg::{elect_and_insert_in_tx, sibling_name_exists_in_other_table};
 use super::transaction_utils::retry_on_deadlock;
 use crate::application::dtos::folder_dto::{
     FolderOrderBy, FolderResourceCursor, FolderResourceRow,
 };
-use crate::common::errors::DomainError;
+use crate::common::errors::{DomainError, ErrorKind};
 use crate::domain::entities::folder::Folder;
 use crate::domain::repositories::folder_repository::FolderRepository;
 use crate::domain::services::authorization::ResourceKind;
@@ -245,6 +245,43 @@ pub struct PreflightSubtreeRows {
     pub root_path: String,
     pub folders: Vec<PreflightFolderRow>,
     pub files: Vec<PreflightFileRow>,
+}
+
+/// Descendant folder row captured for transfer preflight/merge.
+#[derive(Debug, Clone)]
+pub struct TransferSubtreeFolderRow {
+    pub id: Uuid,
+    pub parent_id: Option<Uuid>,
+    pub name: String,
+    pub path: String,
+}
+
+/// Live file row captured for transfer preflight/merge.
+#[derive(Debug, Clone)]
+pub struct TransferSubtreeFileRow {
+    pub id: Uuid,
+    pub folder_id: Uuid,
+    pub name: String,
+    pub size: i64,
+    pub modified_at: i64,
+    pub blob_hash: String,
+}
+
+/// Full non-trashed subtree snapshot rooted at one folder.
+#[derive(Debug, Clone)]
+pub struct TransferSubtreeSnapshot {
+    pub root_id: Uuid,
+    pub root_name: String,
+    pub root_path: String,
+    pub folders: Vec<TransferSubtreeFolderRow>,
+    pub files: Vec<TransferSubtreeFileRow>,
+}
+
+/// Direct live children of one folder for fast top-level transfer conflict matching.
+#[derive(Debug, Clone)]
+pub struct TransferDirectChildren {
+    pub folders: Vec<(Uuid, String)>,
+    pub files: Vec<TransferSubtreeFileRow>,
 }
 
 fn join_preflight_storage_path(root: &str, rel: &str) -> String {
@@ -491,6 +528,324 @@ impl FolderDbRepository {
             folders,
             files,
         })
+    }
+
+    /// True when `candidate_id` is `ancestor_id` itself or any live descendant
+    /// of `ancestor_id` (`cand.lpath <@ anc.lpath`).
+    pub async fn is_descendant_or_same(
+        &self,
+        ancestor_id: Uuid,
+        candidate_id: Uuid,
+    ) -> Result<bool, DomainError> {
+        sqlx::query_scalar(
+            "SELECT EXISTS (
+                SELECT 1
+                  FROM storage.folders anc
+                  JOIN storage.folders cand ON cand.id = $2 AND NOT cand.is_trashed
+                 WHERE anc.id = $1 AND NOT anc.is_trashed
+                   AND cand.lpath <@ anc.lpath
+             )",
+        )
+        .bind(ancestor_id)
+        .bind(candidate_id)
+        .fetch_one(self.pool())
+        .await
+        .map_err(|e| DomainError::internal_error("FolderDb", format!("cycle check: {e}")))
+    }
+
+    /// Snapshots a non-trashed folder subtree (root + descendant folders +
+    /// descendant live files) in O(subtree) for transfer preflight analysis.
+    pub async fn list_subtree_for_transfer(
+        &self,
+        root_folder_id: Uuid,
+    ) -> Result<TransferSubtreeSnapshot, DomainError> {
+        let root: Option<(Uuid, String, String, String)> = sqlx::query_as(
+            "SELECT id, name, path, lpath::text
+               FROM storage.folders
+              WHERE id = $1 AND NOT is_trashed",
+        )
+        .bind(root_folder_id)
+        .fetch_optional(self.pool())
+        .await
+        .map_err(|e| DomainError::internal_error("FolderDb", format!("transfer root: {e}")))?;
+
+        let Some((root_id, root_name, root_path, root_lpath)) = root else {
+            return Err(DomainError::not_found("Folder", root_folder_id.to_string()));
+        };
+
+        let folders: Vec<TransferSubtreeFolderRow> =
+            sqlx::query_as::<_, (Uuid, Option<Uuid>, String, String)>(
+                "SELECT id, parent_id, name, path
+               FROM storage.folders
+              WHERE NOT is_trashed AND lpath <@ $1::ltree AND id <> $2
+              ORDER BY nlevel(lpath) ASC, name ASC",
+            )
+            .bind(&root_lpath)
+            .bind(root_id)
+            .fetch_all(self.pool())
+            .await
+            .map_err(|e| DomainError::internal_error("FolderDb", format!("transfer folders: {e}")))?
+            .into_iter()
+            .map(|(id, parent_id, name, path)| TransferSubtreeFolderRow {
+                id,
+                parent_id,
+                name,
+                path,
+            })
+            .collect();
+
+        let mut folder_ids = Vec::with_capacity(folders.len() + 1);
+        folder_ids.push(root_id);
+        folder_ids.extend(folders.iter().map(|f| f.id));
+
+        let files: Vec<TransferSubtreeFileRow> =
+            sqlx::query_as::<_, (Uuid, Uuid, String, i64, i64, String)>(
+                "SELECT id, folder_id, name, size,
+                    EXTRACT(EPOCH FROM content_modified_at)::bigint,
+                    blob_hash
+               FROM storage.files
+              WHERE NOT is_trashed AND folder_id = ANY($1)
+              ORDER BY name ASC",
+            )
+            .bind(&folder_ids)
+            .fetch_all(self.pool())
+            .await
+            .map_err(|e| DomainError::internal_error("FolderDb", format!("transfer files: {e}")))?
+            .into_iter()
+            .map(
+                |(id, folder_id, name, size, modified_at, blob_hash)| TransferSubtreeFileRow {
+                    id,
+                    folder_id,
+                    name,
+                    size,
+                    modified_at,
+                    blob_hash,
+                },
+            )
+            .collect();
+
+        Ok(TransferSubtreeSnapshot {
+            root_id,
+            root_name,
+            root_path,
+            folders,
+            files,
+        })
+    }
+
+    /// Lists direct live subfolders and files of `folder_id`.
+    pub async fn list_direct_children_for_transfer(
+        &self,
+        folder_id: Uuid,
+    ) -> Result<TransferDirectChildren, DomainError> {
+        let folders: Vec<(Uuid, String)> = sqlx::query_as(
+            "SELECT id, name
+               FROM storage.folders
+              WHERE parent_id = $1 AND NOT is_trashed
+              ORDER BY name ASC",
+        )
+        .bind(folder_id)
+        .fetch_all(self.pool())
+        .await
+        .map_err(|e| DomainError::internal_error("FolderDb", format!("direct folders: {e}")))?;
+
+        let files: Vec<TransferSubtreeFileRow> =
+            sqlx::query_as::<_, (Uuid, Uuid, String, i64, i64, String)>(
+                "SELECT id, folder_id, name, size,
+                    EXTRACT(EPOCH FROM content_modified_at)::bigint,
+                    blob_hash
+               FROM storage.files
+              WHERE folder_id = $1 AND NOT is_trashed
+              ORDER BY name ASC",
+            )
+            .bind(folder_id)
+            .fetch_all(self.pool())
+            .await
+            .map_err(|e| DomainError::internal_error("FolderDb", format!("direct files: {e}")))?
+            .into_iter()
+            .map(
+                |(id, folder_id, name, size, modified_at, blob_hash)| TransferSubtreeFileRow {
+                    id,
+                    folder_id,
+                    name,
+                    size,
+                    modified_at,
+                    blob_hash,
+                },
+            )
+            .collect();
+
+        Ok(TransferDirectChildren { folders, files })
+    }
+
+    /// True if `folder_id` carries active public share links or explicit folder role grants.
+    pub async fn folder_has_shares_or_grants(&self, folder_id: Uuid) -> Result<bool, DomainError> {
+        sqlx::query_scalar(
+            "SELECT (
+                EXISTS (
+                    SELECT 1 FROM storage.shares s
+                     WHERE s.item_id = $1::text AND s.item_type = 'folder'
+                )
+                OR EXISTS (
+                    SELECT 1 FROM storage.role_grants g
+                     WHERE g.resource_id = $1 AND g.resource_type = 'folder'
+                       AND (g.expires_at IS NULL OR g.expires_at > NOW())
+                )
+            )",
+        )
+        .bind(folder_id)
+        .fetch_one(self.pool())
+        .await
+        .map_err(|e| DomainError::internal_error("FolderDb", format!("share check: {e}")))
+    }
+
+    /// True if `folder_id` contains zero non-trashed child folders and zero non-trashed files.
+    pub async fn is_folder_empty(&self, folder_id: Uuid) -> Result<bool, DomainError> {
+        sqlx::query_scalar(
+            "SELECT NOT EXISTS (
+                SELECT 1 FROM storage.folders WHERE parent_id = $1 AND NOT is_trashed
+             ) AND NOT EXISTS (
+                SELECT 1 FROM storage.files WHERE folder_id = $1 AND NOT is_trashed
+             )",
+        )
+        .bind(folder_id)
+        .fetch_one(self.pool())
+        .await
+        .map_err(|e| DomainError::internal_error("FolderDb", format!("empty check: {e}")))
+    }
+
+    async fn move_folder_on_conflict_impl(
+        &self,
+        id: &str,
+        new_parent_id: Option<&str>,
+        caller_id: Uuid,
+        on_conflict: ConflictPolicy,
+    ) -> Result<Folder, DomainError> {
+        let src_uuid = Uuid::parse_str(id).map_err(|_| DomainError::not_found("Folder", id))?;
+        let (src_name, src_parent_id): (String, Option<Uuid>) = sqlx::query_as(
+            "SELECT name, parent_id FROM storage.folders WHERE id = $1 AND NOT is_trashed",
+        )
+        .bind(src_uuid)
+        .fetch_optional(self.pool())
+        .await
+        .map_err(|e| DomainError::internal_error("FolderDb", format!("move source lookup: {e}")))?
+        .ok_or_else(|| DomainError::not_found("Folder", id))?;
+
+        let Some(parent_str) = new_parent_id else {
+            return self.move_folder(id, None, caller_id).await;
+        };
+
+        let dst_uuid = Uuid::parse_str(parent_str)
+            .map_err(|_| DomainError::not_found("Folder", parent_str))?;
+        let dst_exists: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM storage.folders WHERE id = $1 AND NOT is_trashed)",
+        )
+        .bind(dst_uuid)
+        .fetch_one(self.pool())
+        .await
+        .map_err(|e| DomainError::internal_error("FolderDb", format!("move dest check: {e}")))?;
+        if !dst_exists {
+            return Err(DomainError::not_found("Folder", parent_str));
+        }
+
+        if self.is_descendant_or_same(src_uuid, dst_uuid).await? {
+            return Err(DomainError::new(
+                ErrorKind::InvalidInput,
+                "Folder",
+                "Cannot move a folder into itself or one of its subfolders",
+            ));
+        }
+
+        if src_parent_id == Some(dst_uuid) {
+            return self.get_folder(id).await;
+        }
+
+        match on_conflict {
+            ConflictPolicy::Fail => {
+                let mut conn = self.pool().acquire().await.map_err(|e| {
+                    DomainError::internal_error("FolderDb", format!("acquire conn: {e}"))
+                })?;
+                if sibling_name_exists_in_other_table(
+                    &mut conn,
+                    dst_uuid,
+                    &src_name,
+                    NameKind::Folder,
+                )
+                .await
+                .map_err(|e| DomainError::internal_error("FolderDb", format!("cross-table: {e}")))?
+                {
+                    return Err(DomainError::already_exists(
+                        "Folder",
+                        "destination already contains a file with the same name".to_string(),
+                    ));
+                }
+                drop(conn);
+                self.move_folder(id, new_parent_id, caller_id).await
+            }
+            ConflictPolicy::Rename => {
+                let (row, actual_name) = elect_and_insert_in_tx(
+                    self.pool(),
+                    "folders.move_on_conflict",
+                    "Folder",
+                    dst_uuid,
+                    &src_name,
+                    NameKind::Folder,
+                    |conn, candidate| {
+                        Box::pin(async move {
+                            let row = sqlx::query_as::<_, FolderRow>(
+                                r#"
+                                WITH dest AS (
+                                    SELECT id, drive_id
+                                      FROM storage.folders
+                                     WHERE id = $1 AND NOT is_trashed
+                                )
+                                UPDATE storage.folders f
+                                   SET parent_id = dest.id,
+                                       name = $4,
+                                       drive_id = dest.drive_id,
+                                       updated_at = NOW(),
+                                       updated_by = $3
+                                  FROM dest
+                                 WHERE f.id = $2 AND NOT f.is_trashed
+                                RETURNING f.id, f.name, f.path, f.parent_id, f.drive_id,
+                                          EXTRACT(EPOCH FROM f.created_at)::bigint,
+                                          EXTRACT(EPOCH FROM f.content_modified_at)::bigint,
+                                          EXTRACT(EPOCH FROM f.tree_modified_at)::bigint,
+                                          f.created_by, f.updated_by
+                                "#,
+                            )
+                            .bind(dst_uuid)
+                            .bind(src_uuid)
+                            .bind(caller_id)
+                            .bind(&candidate)
+                            .fetch_optional(&mut *conn)
+                            .await?;
+
+                            match row {
+                                Some(r) => Ok((r, candidate)),
+                                None => Err(
+                                    super::name_conflict_pg::CandidateInsertError::ParentNotFound,
+                                ),
+                            }
+                        })
+                    },
+                )
+                .await?;
+
+                Self::row_to_folder(
+                    row.0,
+                    actual_name,
+                    row.2,
+                    row.3,
+                    row.4,
+                    row.5,
+                    row.6,
+                    row.7,
+                    row.8,
+                    row.9,
+                )
+            }
+        }
     }
 }
 
@@ -1087,6 +1442,17 @@ impl FolderRepository for FolderDbRepository {
         Self::row_to_folder(
             row.0, row.1, row.2, row.3, row.4, row.5, row.6, row.7, row.8, row.9,
         )
+    }
+
+    async fn move_folder_on_conflict(
+        &self,
+        id: &str,
+        new_parent_id: Option<&str>,
+        caller_id: Uuid,
+        on_conflict: ConflictPolicy,
+    ) -> Result<Folder, DomainError> {
+        self.move_folder_on_conflict_impl(id, new_parent_id, caller_id, on_conflict)
+            .await
     }
 
     async fn move_folder(
@@ -2690,6 +3056,72 @@ mod tree_etag_immediate_bump_tests {
         assert_eq!(rows.files.len(), 1);
         assert_eq!(rows.files[0].name, "a.txt");
         assert_eq!(rows.files[0].size, 42);
+
+        sqlx::query("DELETE FROM storage.folders WHERE id = $1")
+            .bind(top)
+            .execute(&pool)
+            .await
+            .expect("cleanup");
+    }
+
+    #[tokio::test]
+    async fn move_folder_on_conflict_rename_skips_files_and_rejects_descendant_cycle() {
+        let pool = test_pool().await;
+        let repo = FolderDbRepository::new(std::sync::Arc::new(pool.clone()));
+        let (user, drive, root) = seed_user(&pool).await;
+        let scope = format!("rust-test-f-mv-{}", &Uuid::new_v4().to_string()[..8]);
+        let top = create(&pool, &scope, root, drive, user).await;
+        let src_box = create(&pool, "SrcBox", top, drive, user).await;
+        let dst_box = create(&pool, "DstBox", top, drive, user).await;
+        let moving = create(&pool, "Docs", src_box, drive, user).await;
+        let child = create(&pool, "Child", moving, drive, user).await;
+        let _dst_docs = create(&pool, "Docs", dst_box, drive, user).await;
+
+        // Cross-table collision on `Docs (2)` occupied by a live file in dst_box.
+        sqlx::query(
+            "INSERT INTO storage.files (name, folder_id, drive_id, blob_hash, size, mime_type, created_by, updated_by, content_modified_by)
+             VALUES ('Docs (2)', $1, $2, 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 1, 'text/plain', $3, $3, $3)",
+        )
+        .bind(dst_box)
+        .bind(drive)
+        .bind(user)
+        .execute(&pool)
+        .await
+        .expect("seed file clash");
+
+        // 1. Descendant cycle must be rejected even when Rename policy is passed.
+        let cycle_err = repo
+            .move_folder_on_conflict(
+                &moving.to_string(),
+                Some(&child.to_string()),
+                user,
+                crate::domain::services::name_conflict::ConflictPolicy::Rename,
+            )
+            .await
+            .expect_err("descendant cycle must fail");
+        assert_eq!(
+            cycle_err.kind,
+            crate::common::errors::ErrorKind::InvalidInput
+        );
+
+        // 2. Rename move skips `Docs` (folder) and `Docs (2)` (file) -> `Docs (3)`.
+        let moved = repo
+            .move_folder_on_conflict(
+                &moving.to_string(),
+                Some(&dst_box.to_string()),
+                user,
+                crate::domain::services::name_conflict::ConflictPolicy::Rename,
+            )
+            .await
+            .expect("rename move must succeed");
+        assert_eq!(moved.name(), "Docs (3)");
+
+        // Verify descendant subtree moved cleanly under `Docs (3)`.
+        let moved_child = repo
+            .get_folder(&child.to_string())
+            .await
+            .expect("child still reachable");
+        assert!(moved_child.path_string().contains("Docs (3)/Child"));
 
         sqlx::query("DELETE FROM storage.folders WHERE id = $1")
             .bind(top)

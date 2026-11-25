@@ -85,7 +85,8 @@ use crate::interfaces::api::handlers::file_handler::{
 };
 use crate::interfaces::api::handlers::folder_handler::{
     create_folder, delete_folder_with_trash, download_folder_zip, get_folder, get_folder_ancestors,
-    list_folder_resources, list_root_folders, move_folder, rename_folder, upload_preflight,
+    list_folder_resources, list_root_folders, move_folder, rename_folder, transfer_execute,
+    transfer_preflight, upload_preflight,
 };
 use crate::interfaces::api::handlers::i18n_handler::{
     get_locales, get_translations_by_locale, translate,
@@ -238,6 +239,8 @@ pub fn create_api_routes(app_state: &Arc<AppState>) -> Router<Arc<AppState>> {
         // stops at share/drive-membership boundary) + access_source.
         .route("/{id}/ancestors", get(get_folder_ancestors))
         .route("/{id}/upload-preflight", post(upload_preflight))
+        .route("/{id}/transfer-preflight", post(transfer_preflight))
+        .route("/{id}/transfer", post(transfer_execute))
         .route("/{id}/rename", put(rename_folder))
         .route("/{id}/move", put(move_folder))
         .with_state(app_state.clone());

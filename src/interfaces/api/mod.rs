@@ -48,6 +48,12 @@ use crate::application::dtos::search_dto::{
     SearchSuggestionsDto, SearchTypeFilter,
 };
 use crate::application::dtos::share_dto::{CreateShareDto, ShareDto, UpdateShareDto};
+use crate::application::dtos::transfer_dto::{
+    TransferDecisionAction, TransferExecuteRequest, TransferExecuteResponse,
+    TransferFileConflictDto, TransferFolderConflictDto, TransferItemDecision, TransferItemOutcome,
+    TransferKindConflictDto, TransferOperation, TransferOutcomeStatus, TransferPreflightRequest,
+    TransferPreflightResponse,
+};
 use crate::application::dtos::trash_dto::{
     DeletePermanentlyRequest, MoveToTrashRequest, RestoreFromTrashRequest, TrashOrderBy,
     TrashResourceItemDto, TrashResourcesDto, TrashedItemDto,
@@ -138,6 +144,8 @@ use crate::interfaces::middleware::server_status::{HeaderPayload, ProgressHeader
         handlers::folder_handler::get_folder,
         handlers::folder_handler::get_folder_ancestors,
         handlers::folder_handler::upload_preflight,
+        handlers::folder_handler::transfer_preflight,
+        handlers::folder_handler::transfer_execute,
         handlers::folder_handler::list_root_folders,
         handlers::folder_handler::list_folder_resources,
         handlers::folder_handler::rename_folder,
@@ -477,6 +485,18 @@ use crate::interfaces::middleware::server_status::{HeaderPayload, ProgressHeader
             PreflightExistingFolderDto,
             PreflightExistingFileDto,
             PreflightKindConflictDto,
+            TransferOperation,
+            TransferPreflightRequest,
+            TransferPreflightResponse,
+            TransferFileConflictDto,
+            TransferFolderConflictDto,
+            TransferKindConflictDto,
+            TransferDecisionAction,
+            TransferItemDecision,
+            TransferExecuteRequest,
+            TransferOutcomeStatus,
+            TransferItemOutcome,
+            TransferExecuteResponse,
             RenameFolderDto,
             MoveFolderDto,
             FolderListingDto,

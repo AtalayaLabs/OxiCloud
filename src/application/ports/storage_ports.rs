@@ -318,6 +318,23 @@ pub trait FileWritePort: Send + Sync + 'static {
         .await
     }
 
+    /// Variant of [`Self::move_file`] that honours [`ConflictPolicy`].
+    ///
+    /// - [`ConflictPolicy::Fail`] checks cross-table sibling collisions against
+    ///   `storage.folders` and maps unique violations to `AlreadyExists`.
+    /// - [`ConflictPolicy::Rename`] atomically relocates and renames to the
+    ///   first free `stem (2).ext` / `name (2)` sibling via savepoint retries.
+    async fn move_file_on_conflict(
+        &self,
+        file_id: &str,
+        target_folder_id: Option<String>,
+        caller_id: Uuid,
+        on_conflict: ConflictPolicy,
+    ) -> Result<File, DomainError> {
+        let _ = on_conflict;
+        self.move_file(file_id, target_folder_id, caller_id).await
+    }
+
     /// Moves a file to another folder. `caller_id` is stamped into
     /// `updated_by` alongside the `updated_at = NOW()` bump
     /// (§14 provenance — authorship belongs to the caller, not to
@@ -409,6 +426,21 @@ pub trait FileWritePort: Send + Sync + 'static {
         caller_id: Uuid,
     ) -> Result<File, DomainError>;
 
+    /// Variant of [`Self::copy_file`] that honours [`ConflictPolicy`] and
+    /// enforces cross-table sibling checks against `storage.folders`.
+    async fn copy_file_on_conflict(
+        &self,
+        file_id: &str,
+        target_folder_id: Option<String>,
+        new_name: Option<&str>,
+        caller_id: Uuid,
+        on_conflict: ConflictPolicy,
+    ) -> Result<File, DomainError> {
+        let _ = on_conflict;
+        self.copy_file(file_id, target_folder_id, new_name, caller_id)
+            .await
+    }
+
     /// Copies an entire folder subtree atomically using ltree.
     ///
     /// Creates a copy of `source_folder_id` (with optional `dest_name`)
@@ -428,6 +460,38 @@ pub trait FileWritePort: Send + Sync + 'static {
         Err(DomainError::internal_error(
             "FileWritePort",
             "copy_folder_tree not implemented for this storage backend",
+        ))
+    }
+
+    /// Variant of [`Self::copy_folder_tree`] that honours [`ConflictPolicy`],
+    /// checks descendant cycles, and enforces cross-table sibling checks
+    /// against `storage.files`.
+    async fn copy_folder_tree_on_conflict(
+        &self,
+        source_folder_id: &str,
+        target_parent_id: Option<String>,
+        dest_name: Option<String>,
+        on_conflict: ConflictPolicy,
+    ) -> Result<CopyFolderTreeResult, DomainError> {
+        let _ = on_conflict;
+        self.copy_folder_tree(source_folder_id, target_parent_id, dest_name)
+            .await
+    }
+
+    /// Atomically overwrite `target_file_id`'s blob content and content clock
+    /// with `source_file_id`'s blob while preserving `target_file_id` (and all
+    /// shares/grants/attachments keyed on it) and enforcing optional CAS
+    /// `expected_hash`.
+    async fn replace_file_from_source(
+        &self,
+        _source_file_id: &str,
+        _target_file_id: &str,
+        _caller_id: Uuid,
+        _expected_hash: Option<&str>,
+    ) -> Result<File, DomainError> {
+        Err(DomainError::internal_error(
+            "FileWritePort",
+            "replace_file_from_source not implemented for this storage backend",
         ))
     }
 

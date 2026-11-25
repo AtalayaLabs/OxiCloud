@@ -457,7 +457,10 @@ impl FolderUseCase for FolderService {
     /// Gets a folder by its ID
     async fn get_folder(&self, id: &str) -> Result<FolderDto, DomainError> {
         let folder = self.folder_storage.get_folder(id).await.map_err(|e| {
-            DomainError::internal_error(
+            // Preserve `e.kind` (e.g. `NotFound` when the folder was just
+            // deleted during merge) so callers receive 404 rather than 500.
+            DomainError::new(
+                e.kind,
                 "FolderStorage",
                 format!("Failed to get folder with ID: {}: {}", id, e),
             )
@@ -950,6 +953,12 @@ impl FolderUseCase for FolderService {
                 ));
             }
             ResolvedId::MountChild { cfg, node_id } => {
+                if dto.on_conflict == ConflictPolicy::Rename {
+                    return Err(DomainError::operation_not_supported(
+                        "Folder",
+                        "automatic conflict renaming is not supported on external mounts",
+                    ));
+                }
                 let dest = self.mount_dest_node(&cfg, dto.parent_id.as_deref())?;
                 self.require_mount_perm(&cfg, Permission::Update, caller_id)
                     .await?;
@@ -988,7 +997,6 @@ impl FolderUseCase for FolderService {
                     parent_resource,
                 )
                 .await?;
-            // TODO: full descendant-cycle check (moving a folder into one of its own descendants)
         }
 
         // D5 `forbid_cross_drive_move` + D6 `resource.moved_between_drives`
@@ -1060,7 +1068,7 @@ impl FolderUseCase for FolderService {
         let parent_ref = dto.parent_id.as_deref();
         let folder = self
             .folder_storage
-            .move_folder(id, parent_ref, caller_id)
+            .move_folder_on_conflict(id, parent_ref, caller_id, dto.on_conflict)
             .await
             .map_err(|e| {
                 // Same preservation as `rename_folder` above — a
@@ -1187,11 +1195,18 @@ impl FolderUseCase for FolderService {
             });
 
         self.folder_storage.delete_folder(id).await.map_err(|e| {
-            DomainError::internal_error(
+            DomainError::new(
+                e.kind,
                 "FolderStorage",
                 format!("Failed to delete folder with ID: {}: {}", id, e),
             )
         })?;
+
+        if let Ok(folder_uuid) = Uuid::parse_str(id) {
+            self.authz
+                .invalidate_owner_cache_for_resource(Resource::Folder(folder_uuid))
+                .await;
+        }
 
         for file_id in &cascaded_file_ids {
             self.file_lifecycle.on_file_deleted(file_id);
@@ -2810,7 +2825,14 @@ mod mount_authz_integration {
         // Moving a mount child to the user's native root (parent_id = None) is
         // a cross-backend move → UnsupportedOperation.
         let err = fs
-            .move_folder_with_perms(&child_id, MoveFolderDto { parent_id: None }, owner)
+            .move_folder_with_perms(
+                &child_id,
+                MoveFolderDto {
+                    parent_id: None,
+                    on_conflict: Default::default(),
+                },
+                owner,
+            )
             .await
             .expect_err("cross-boundary move must be forbidden");
         assert_eq!(

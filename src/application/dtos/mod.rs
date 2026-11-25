@@ -27,6 +27,7 @@ pub mod session_dto;
 pub mod settings_dto;
 pub mod share_dto;
 pub mod timestamp_helpers;
+pub mod transfer_dto;
 pub mod trash_dto;
 pub mod upload_preflight_dto;
 pub mod user_dto;

@@ -10915,6 +10915,148 @@
         "x-oxicloud-scope": "share:read"
       }
     },
+    "/api/folders/{id}/transfer": {
+      "post": {
+        "tags": [
+          "folders"
+        ],
+        "operationId": "transfer_execute",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Destination folder ID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TransferExecuteRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Conflict-resolved transfer execution summary with per-item outcomes",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TransferExecuteResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Transfer item limit exceeded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Destination folder not found or caller lacks Create permission",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "501": {
+            "description": "Not supported on external mounts",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
+    },
+    "/api/folders/{id}/transfer-preflight": {
+      "post": {
+        "tags": [
+          "folders"
+        ],
+        "operationId": "transfer_preflight",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Destination folder ID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TransferPreflightRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Move/copy conflict comparison result (same-parent, cycles, file/folder conflicts, kind mismatches)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TransferPreflightResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Transfer item limit exceeded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Folder/item not found or caller lacks permission",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
+    },
     "/api/folders/{id}/upload-preflight": {
       "post": {
         "tags": [
@@ -16823,6 +16965,10 @@
             },
             "description": "IDs of the files to process"
           },
+          "on_conflict": {
+            "$ref": "#/components/schemas/ConflictPolicy",
+            "description": "Conflict handling policy (`fail` by default, `rename` for `name (2)`)."
+          },
           "target_folder_id": {
             "type": [
               "string",
@@ -16845,6 +16991,10 @@
               "type": "string"
             },
             "description": "IDs of the folders to process"
+          },
+          "on_conflict": {
+            "$ref": "#/components/schemas/ConflictPolicy",
+            "description": "Conflict handling policy (`fail` by default, `rename` for `name (2)`)."
           },
           "recursive": {
             "type": "boolean",
@@ -20748,6 +20898,10 @@
               "null"
             ],
             "description": "Target folder ID (None means root)"
+          },
+          "on_conflict": {
+            "$ref": "#/components/schemas/ConflictPolicy",
+            "description": "Conflict handling policy (`fail` by default, `rename` for `stem (2).ext`)."
           }
         }
       },
@@ -20755,6 +20909,10 @@
         "type": "object",
         "description": "DTO for folder move requests",
         "properties": {
+          "on_conflict": {
+            "$ref": "#/components/schemas/ConflictPolicy",
+            "description": "Conflict handling policy when a sibling already exists (`fail` by default,\n`rename` to atomically pick `name (2)`, `name (3)`, …)."
+          },
           "parent_id": {
             "type": [
               "string",
@@ -24005,6 +24163,364 @@
           }
         }
       },
+      "TransferDecisionAction": {
+        "type": "string",
+        "description": "Per-item resolution selected by the user for a conflicting transfer item.",
+        "enum": [
+          "skip",
+          "replace",
+          "keep_both",
+          "merge"
+        ]
+      },
+      "TransferExecuteRequest": {
+        "type": "object",
+        "description": "Request body of `POST /api/folders/{id}/transfer`.",
+        "required": [
+          "operation"
+        ],
+        "properties": {
+          "decisions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TransferItemDecision"
+            }
+          },
+          "file_ids": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "folder_ids": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "operation": {
+            "$ref": "#/components/schemas/TransferOperation"
+          }
+        }
+      },
+      "TransferExecuteResponse": {
+        "type": "object",
+        "description": "Response body of `POST /api/folders/{id}/transfer`.",
+        "required": [
+          "outcomes",
+          "moved_count",
+          "copied_count",
+          "replaced_count",
+          "renamed_count",
+          "merged_count",
+          "skipped_count",
+          "failed_count"
+        ],
+        "properties": {
+          "copied_count": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "failed_count": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "merged_count": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "moved_count": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "outcomes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TransferItemOutcome"
+            }
+          },
+          "renamed_count": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "replaced_count": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "skipped_count": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          }
+        }
+      },
+      "TransferFileConflictDto": {
+        "type": "object",
+        "description": "File↔file collision found during transfer preflight (top-level or inside a merged folder).",
+        "required": [
+          "source_id",
+          "source_name",
+          "relative_path",
+          "source_size",
+          "source_modified_at",
+          "source_hash",
+          "target_id",
+          "target_folder_id",
+          "target_size",
+          "target_modified_at",
+          "target_hash",
+          "identical",
+          "can_update_target",
+          "can_delete_source"
+        ],
+        "properties": {
+          "can_delete_source": {
+            "type": "boolean"
+          },
+          "can_update_target": {
+            "type": "boolean"
+          },
+          "identical": {
+            "type": "boolean"
+          },
+          "parent_folder_conflict_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "relative_path": {
+            "type": "string"
+          },
+          "source_hash": {
+            "type": "string"
+          },
+          "source_id": {
+            "type": "string"
+          },
+          "source_modified_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "source_name": {
+            "type": "string"
+          },
+          "source_size": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "target_folder_id": {
+            "type": "string"
+          },
+          "target_hash": {
+            "type": "string"
+          },
+          "target_id": {
+            "type": "string"
+          },
+          "target_modified_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "target_size": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          }
+        }
+      },
+      "TransferFolderConflictDto": {
+        "type": "object",
+        "description": "Folder↔folder collision found during transfer preflight.",
+        "required": [
+          "source_id",
+          "source_name",
+          "relative_path",
+          "target_id",
+          "source_file_count",
+          "target_file_count",
+          "nested_conflict_count",
+          "nested_identical_count",
+          "source_has_shares",
+          "can_delete_source"
+        ],
+        "properties": {
+          "can_delete_source": {
+            "type": "boolean"
+          },
+          "nested_conflict_count": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "nested_identical_count": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "relative_path": {
+            "type": "string"
+          },
+          "source_file_count": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "source_has_shares": {
+            "type": "boolean"
+          },
+          "source_id": {
+            "type": "string"
+          },
+          "source_name": {
+            "type": "string"
+          },
+          "target_file_count": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "target_id": {
+            "type": "string"
+          }
+        }
+      },
+      "TransferItemDecision": {
+        "type": "object",
+        "description": "Single user decision keyed by `(kind, source_id)`.",
+        "required": [
+          "source_id",
+          "kind",
+          "action"
+        ],
+        "properties": {
+          "action": {
+            "$ref": "#/components/schemas/TransferDecisionAction"
+          },
+          "expected_hash": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "kind": {
+            "$ref": "#/components/schemas/ItemKind"
+          },
+          "source_id": {
+            "type": "string"
+          }
+        }
+      },
+      "TransferItemOutcome": {
+        "type": "object",
+        "description": "Per-item execution report.",
+        "required": [
+          "source_id",
+          "kind",
+          "status"
+        ],
+        "properties": {
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "error_type": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "final_name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "kind": {
+            "$ref": "#/components/schemas/ItemKind"
+          },
+          "source_id": {
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/TransferOutcomeStatus"
+          },
+          "target_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "TransferKindConflictDto": {
+        "type": "object",
+        "description": "File↔folder or folder↔file kind mismatch preventing merge or replacement.",
+        "required": [
+          "source_id",
+          "source_name",
+          "source_kind",
+          "relative_path",
+          "existing_id",
+          "existing_kind"
+        ],
+        "properties": {
+          "existing_id": {
+            "type": "string"
+          },
+          "existing_kind": {
+            "$ref": "#/components/schemas/ItemKind"
+          },
+          "parent_folder_conflict_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "relative_path": {
+            "type": "string"
+          },
+          "source_id": {
+            "type": "string"
+          },
+          "source_kind": {
+            "$ref": "#/components/schemas/ItemKind"
+          },
+          "source_name": {
+            "type": "string"
+          }
+        }
+      },
+      "TransferOperation": {
+        "type": "string",
+        "description": "Kind of internal transfer operation.",
+        "enum": [
+          "move",
+          "copy"
+        ]
+      },
+      "TransferOutcomeStatus": {
+        "type": "string",
+        "description": "Outcome status of one processed item during `POST /api/folders/{id}/transfer`.",
+        "enum": [
+          "moved",
+          "copied",
+          "replaced",
+          "renamed",
+          "merged",
+          "skipped",
+          "failed"
+        ]
+      },
       "TransferOwnershipDto": {
         "type": "object",
         "description": "Request body for transferring server ownership.\n\nSeparate from [`UpdateUserRoleDto`] on purpose: ownership is not an\nassignable role. The generic role endpoint refuses `\"owner\"`, because\nconferring it there would create a second owner rather than move the\none that exists.",
@@ -24015,6 +24531,92 @@
           "new_owner_id": {
             "type": "string",
             "description": "The user who becomes the new owner. The caller — who must be the\ncurrent owner — is demoted to admin in the same transaction."
+          }
+        }
+      },
+      "TransferPreflightRequest": {
+        "type": "object",
+        "description": "Request body of `POST /api/folders/{id}/transfer-preflight`.",
+        "required": [
+          "operation"
+        ],
+        "properties": {
+          "expand_folder_conflicts": {
+            "type": "boolean",
+            "description": "When `true` (default), recursive folder↔folder collisions expand\nnested file and kind conflicts across both subtrees."
+          },
+          "file_ids": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "folder_ids": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "operation": {
+            "$ref": "#/components/schemas/TransferOperation"
+          }
+        }
+      },
+      "TransferPreflightResponse": {
+        "type": "object",
+        "description": "Response body of `POST /api/folders/{id}/transfer-preflight`.",
+        "required": [
+          "supported",
+          "cycle_folder_ids",
+          "same_parent_file_ids",
+          "same_parent_folder_ids",
+          "file_conflicts",
+          "folder_conflicts",
+          "kind_conflicts"
+        ],
+        "properties": {
+          "cycle_folder_ids": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Folder IDs that would move/copy into themselves or one of their descendants."
+          },
+          "file_conflicts": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TransferFileConflictDto"
+            }
+          },
+          "folder_conflicts": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TransferFolderConflictDto"
+            }
+          },
+          "kind_conflicts": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TransferKindConflictDto"
+            }
+          },
+          "same_parent_file_ids": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "File IDs already directly inside the destination folder."
+          },
+          "same_parent_folder_ids": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Folder IDs already directly inside the destination folder."
+          },
+          "supported": {
+            "type": "boolean",
+            "description": "`true` when all sources and destination are native PostgreSQL items;\n`false` for external mounts (`ext:` / mount root) where the client falls\nback to sequential move/copy endpoints."
           }
         }
       },

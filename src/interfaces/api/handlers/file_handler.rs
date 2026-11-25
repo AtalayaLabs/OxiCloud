@@ -1833,7 +1833,12 @@ impl FileHandler {
         let mgmt = &state.applications.file_management_service;
 
         match mgmt
-            .move_file_with_perms(&id, auth_user.id, payload.folder_id)
+            .move_file_with_perms_on_conflict(
+                &id,
+                auth_user.id,
+                payload.folder_id,
+                payload.on_conflict,
+            )
             .await
         {
             Ok(mut file) => {
@@ -1860,10 +1865,22 @@ impl FileHandler {
             .get("folder_id")
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
+        let on_conflict = match payload.get("on_conflict") {
+            None | Some(serde_json::Value::Null) => ConflictPolicy::Fail,
+            Some(v) => match serde_json::from_value::<ConflictPolicy>(v.clone()) {
+                Ok(p) => p,
+                Err(_) => {
+                    return AppError::bad_request(
+                        "Invalid 'on_conflict': expected 'fail' or 'rename'",
+                    )
+                    .into_response();
+                }
+            },
+        };
 
         let mgmt = &state.applications.file_management_service;
         match mgmt
-            .move_file_with_perms(&id, auth_user.id, folder_id)
+            .move_file_with_perms_on_conflict(&id, auth_user.id, folder_id, on_conflict)
             .await
         {
             Ok(file_dto) => (StatusCode::OK, Json(file_dto)).into_response(),
@@ -1957,6 +1974,9 @@ impl FileHandler {
 pub struct MoveFilePayload {
     /// Target folder ID (None means root)
     pub folder_id: Option<String>,
+    /// Conflict handling policy (`fail` by default, `rename` for `stem (2).ext`).
+    #[serde(default)]
+    pub on_conflict: ConflictPolicy,
 }
 
 /// RFC 5987-compliant `Content-Disposition` with both ASCII fallback and

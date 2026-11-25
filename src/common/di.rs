@@ -934,6 +934,17 @@ impl AppServiceFactory {
             None
         };
 
+        let transfer_service = Arc::new(
+            crate::application::services::transfer_service::TransferService::new(
+                repos.folder_repository.clone(),
+                repos.file_read_repository.clone(),
+                file_management_service.clone(),
+                folder_service.clone(),
+                authz.clone(),
+                mount_router.clone(),
+            ),
+        );
+
         tracing::info!("Application services initialized");
 
         ApplicationServices {
@@ -941,6 +952,7 @@ impl AppServiceFactory {
             folder_service_concrete: folder_service.clone(),
             // Traits for abstraction
             folder_service,
+            transfer_service,
             file_upload_service,
             delta_upload_service,
             file_retrieval_service,
@@ -4122,6 +4134,7 @@ pub struct ApplicationServices {
     pub folder_service_concrete: Arc<FolderService>,
     // Traits for abstraction
     pub folder_service: Arc<FolderService>,
+    pub transfer_service: Arc<crate::application::services::transfer_service::TransferService>,
     pub file_upload_service: Arc<FileUploadService>,
     pub delta_upload_service:
         Arc<crate::application::services::delta_upload_service::DeltaUploadService>,

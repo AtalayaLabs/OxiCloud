@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use crate::application::dtos::file_dto::FileDto;
 use crate::application::ports::authorization_ports::AuthorizationEngine;
-use crate::application::ports::file_lifecycle::FileLifecycleHook;
+use crate::application::ports::file_lifecycle::{FileLifecycleHook, WriteSource};
 use crate::application::ports::file_ports::FileManagementUseCase;
 use crate::application::ports::resource_access_hook::ResourceAccessHook;
 use crate::application::ports::storage_ports::{CopyFolderTreeResult, FileReadPort, FileWritePort};
@@ -14,6 +14,7 @@ use crate::application::services::trash_service::TrashService;
 use crate::common::errors::DomainError;
 use crate::domain::services::authorization::{Permission, Resource, Subject};
 use crate::domain::services::external_mount_id::NodeId;
+use crate::domain::services::name_conflict::ConflictPolicy;
 use crate::domain::services::path_service::validate_storage_name;
 use crate::infrastructure::repositories::pg::file_blob_read_repository::FileBlobReadRepository;
 use crate::infrastructure::repositories::pg::file_blob_write_repository::FileBlobWriteRepository;
@@ -311,75 +312,6 @@ impl FileManagementService {
             .await
     }
 
-    //impl FileManagementPrivateUseCase for FileManagementService {
-    async fn move_file(
-        &self,
-        file_id: &str,
-        folder_id: Option<String>,
-        caller_id: Uuid,
-    ) -> Result<FileDto, DomainError> {
-        info!(
-            "Moving file with ID: {} to folder: {:?}",
-            file_id, folder_id
-        );
-
-        let moved_file = self
-            .file_repository
-            .move_file(file_id, folder_id, caller_id)
-            .await
-            .map_err(|e| {
-                error!("Error moving file (ID: {}): {}", file_id, e);
-                e
-            })?;
-
-        info!(
-            "File moved successfully: {} (ID: {}) to folder: {:?}",
-            moved_file.name(),
-            moved_file.id(),
-            moved_file.folder_id()
-        );
-
-        Ok(FileDto::from(moved_file))
-    }
-
-    async fn copy_file(
-        &self,
-        file_id: &str,
-        target_folder_id: Option<String>,
-        new_name: Option<&str>,
-        caller_id: Uuid,
-    ) -> Result<FileDto, DomainError> {
-        info!(
-            "Copying file with ID: {} to folder: {:?} as {:?}",
-            file_id, target_folder_id, new_name
-        );
-
-        let copied_file = self
-            .file_repository
-            .copy_file(file_id, target_folder_id, new_name, caller_id)
-            .await
-            .map_err(|e| {
-                error!("Error copying file (ID: {}): {}", file_id, e);
-                e
-            })?;
-
-        info!(
-            "File copied successfully: {} (ID: {}) to folder: {:?}",
-            copied_file.name(),
-            copied_file.id(),
-            copied_file.folder_id()
-        );
-
-        let dto = FileDto::from(copied_file);
-        if let Some(hook) = &self.file_lifecycle_hook {
-            hook.on_file_copied(&dto.id, &dto.content_hash, &dto.mime_type, file_id);
-        }
-        // The caller just spawned a fresh file — show it in their Recent
-        // list. The source file isn't recorded; only the visible target.
-        self.notify_file_accessed(caller_id, &dto.id);
-        Ok(dto)
-    }
-
     async fn rename_file(
         &self,
         file_id: &str,
@@ -424,37 +356,6 @@ impl FileManagementService {
         info!("File permanently deleted: {}", id);
         Ok(())
     }
-
-    async fn copy_folder_tree(
-        &self,
-        source_folder_id: &str,
-        target_parent_id: Option<String>,
-        dest_name: Option<String>,
-    ) -> Result<CopyFolderTreeResult, DomainError> {
-        info!(
-            "Copying folder tree: source={}, target_parent={:?}, dest_name={:?}",
-            source_folder_id, target_parent_id, dest_name
-        );
-
-        let result = self
-            .file_repository
-            .copy_folder_tree(source_folder_id, target_parent_id, dest_name)
-            .await
-            .map_err(|e| {
-                error!(
-                    "Error copying folder tree (source: {}): {}",
-                    source_folder_id, e
-                );
-                e
-            })?;
-
-        info!(
-            "Folder tree copied: {} folders, {} files (new root: {})",
-            result.folders_copied, result.files_copied, result.new_root_folder_id
-        );
-
-        Ok(result)
-    }
 }
 
 impl FileManagementUseCase for FileManagementService {
@@ -482,6 +383,17 @@ impl FileManagementUseCase for FileManagementService {
         caller_id: Uuid,
         folder_id: Option<String>,
     ) -> Result<FileDto, DomainError> {
+        self.move_file_with_perms_on_conflict(file_id, caller_id, folder_id, ConflictPolicy::Fail)
+            .await
+    }
+
+    async fn move_file_with_perms_on_conflict(
+        &self,
+        file_id: &str,
+        caller_id: Uuid,
+        folder_id: Option<String>,
+        on_conflict: ConflictPolicy,
+    ) -> Result<FileDto, DomainError> {
         // External mount: moves stay within one mount; cross-backend is forbidden.
         match self.classify(file_id) {
             ResolvedId::Regular => {
@@ -493,6 +405,12 @@ impl FileManagementUseCase for FileManagementService {
             }
             ResolvedId::MountRoot { .. } => return Err(DomainError::not_found("File", file_id)),
             ResolvedId::MountChild { cfg, node_id } => {
+                if on_conflict == ConflictPolicy::Rename {
+                    return Err(DomainError::operation_not_supported(
+                        "File",
+                        "automatic conflict renaming is not supported on external mounts",
+                    ));
+                }
                 let dest = self.mount_dest_node(&cfg, folder_id.as_deref())?;
                 self.require_mount_perm(&cfg, Permission::Update, caller_id)
                     .await?;
@@ -572,7 +490,11 @@ impl FileManagementUseCase for FileManagementService {
         // the from-side for the fan-out.
         let source_snapshot = self.snapshot_for_publish(file_id).await;
 
-        let dto = self.move_file(file_id, folder_id, caller_id).await?;
+        let dto = FileDto::from(
+            self.file_repository
+                .move_file_on_conflict(file_id, folder_id, caller_id, on_conflict)
+                .await?,
+        );
 
         // Bus fan-out on BOTH source and destination folder
         // topics. Subscribers to the source see the file "gone" from
@@ -590,7 +512,7 @@ impl FileManagementUseCase for FileManagementService {
             use crate::application::ports::message_bus_ports::{MessageBusEvent, Topic};
             let event = MessageBusEvent::FileMoved {
                 file_id: file_uuid,
-                name,
+                name: dto.name.clone(),
                 from: source_uuid,
                 to: dest_uuid,
                 actor: caller_id,
@@ -600,6 +522,7 @@ impl FileManagementUseCase for FileManagementService {
             // one of the two topics.
             bus.publish(&Topic::Folder(source_uuid), event.clone());
             bus.publish(&Topic::Folder(dest_uuid), event);
+            let _ = name;
         }
 
         // Cross-drive move invalidates the file's `owner_cache` entry
@@ -642,6 +565,24 @@ impl FileManagementUseCase for FileManagementService {
         target_folder_id: Option<String>,
         new_name: Option<String>,
     ) -> Result<FileDto, DomainError> {
+        self.copy_file_with_perms_on_conflict(
+            file_id,
+            caller_id,
+            target_folder_id,
+            new_name,
+            ConflictPolicy::Fail,
+        )
+        .await
+    }
+
+    async fn copy_file_with_perms_on_conflict(
+        &self,
+        file_id: &str,
+        caller_id: Uuid,
+        target_folder_id: Option<String>,
+        new_name: Option<String>,
+        on_conflict: ConflictPolicy,
+    ) -> Result<FileDto, DomainError> {
         // Copy = Read on the source file + Create on the target folder.
         self.require_file_perm(file_id, Permission::Read, caller_id)
             .await?;
@@ -672,8 +613,22 @@ impl FileManagementUseCase for FileManagementService {
             }
         }
 
-        self.copy_file(file_id, target_folder_id, new_name.as_deref(), caller_id)
-            .await
+        let copied_file = self
+            .file_repository
+            .copy_file_on_conflict(
+                file_id,
+                target_folder_id,
+                new_name.as_deref(),
+                caller_id,
+                on_conflict,
+            )
+            .await?;
+        let dto = FileDto::from(copied_file);
+        if let Some(hook) = &self.file_lifecycle_hook {
+            hook.on_file_copied(&dto.id, &dto.content_hash, &dto.mime_type, file_id);
+        }
+        self.notify_file_accessed(caller_id, &dto.id);
+        Ok(dto)
     }
 
     async fn rename_file_with_perms(
@@ -840,6 +795,32 @@ impl FileManagementUseCase for FileManagementService {
         target_parent_id: Option<String>,
         dest_name: Option<String>,
     ) -> Result<CopyFolderTreeResult, DomainError> {
+        self.copy_folder_tree_with_perms_on_conflict(
+            source_folder_id,
+            caller_id,
+            target_parent_id,
+            dest_name,
+            ConflictPolicy::Fail,
+        )
+        .await
+    }
+
+    async fn copy_folder_tree_with_perms_on_conflict(
+        &self,
+        source_folder_id: &str,
+        caller_id: Uuid,
+        target_parent_id: Option<String>,
+        dest_name: Option<String>,
+        on_conflict: ConflictPolicy,
+    ) -> Result<CopyFolderTreeResult, DomainError> {
+        if !matches!(self.classify(source_folder_id), ResolvedId::Regular)
+            || target_parent_id
+                .as_deref()
+                .is_some_and(|p| !matches!(self.classify(p), ResolvedId::Regular))
+        {
+            return Err(cross_boundary_move_err());
+        }
+
         // copy_folder_tree = Read on the source folder + Create on the target parent.
         self.require_target_folder_perm(Some(source_folder_id), Permission::Read, caller_id)
             .await?;
@@ -865,8 +846,145 @@ impl FileManagementUseCase for FileManagementService {
             }
         }
 
-        self.copy_folder_tree(source_folder_id, target_parent_id, dest_name)
+        self.file_repository
+            .copy_folder_tree_on_conflict(
+                source_folder_id,
+                target_parent_id,
+                dest_name,
+                on_conflict,
+            )
             .await
+    }
+
+    async fn replace_file_from_source_with_perms(
+        &self,
+        source_file_id: &str,
+        target_file_id: &str,
+        caller_id: Uuid,
+        is_move: bool,
+        expected_hash: Option<&str>,
+    ) -> Result<FileDto, DomainError> {
+        if !matches!(self.classify(source_file_id), ResolvedId::Regular)
+            || !matches!(self.classify(target_file_id), ResolvedId::Regular)
+        {
+            return Err(DomainError::operation_not_supported(
+                "File",
+                "conflict replacement is not supported on external mounts",
+            ));
+        }
+
+        self.require_file_perm(target_file_id, Permission::Update, caller_id)
+            .await?;
+        if is_move {
+            self.require_file_perm(source_file_id, Permission::Update, caller_id)
+                .await?;
+            self.require_file_perm(source_file_id, Permission::Delete, caller_id)
+                .await?;
+        } else {
+            self.require_file_perm(source_file_id, Permission::Read, caller_id)
+                .await?;
+        }
+
+        let file_read = self.file_read.as_ref().ok_or_else(|| {
+            DomainError::internal_error("FileManagement", "file_read port is not wired")
+        })?;
+        let src_file = file_read.get_file(source_file_id).await?;
+        let dst_file = file_read.get_file(target_file_id).await?;
+        let src_size = src_file.size();
+        let dst_size = dst_file.size();
+
+        let mut cross_drive: Option<(Uuid, Uuid)> = None;
+        if let Some(drive_repo) = &self.drive_repo {
+            let src_uuid = Uuid::parse_str(source_file_id)
+                .map_err(|_| DomainError::not_found("File", source_file_id))?;
+            let dst_uuid = Uuid::parse_str(target_file_id)
+                .map_err(|_| DomainError::not_found("File", target_file_id))?;
+            let (src_res, dst_res) = tokio::join!(
+                drive_repo.get_drive_id_and_policies_for_file(src_uuid),
+                drive_repo.get_drive_id_and_policies_for_file(dst_uuid),
+            );
+            let (src_drive_id, src_policies) = src_res.map_err(|e| {
+                DomainError::internal_error("Drive", format!("source drive lookup: {e:?}"))
+            })?;
+            let (dst_drive_id, _) = dst_res.map_err(|e| {
+                DomainError::internal_error("Drive", format!("target drive lookup: {e:?}"))
+            })?;
+            if is_move && src_drive_id != dst_drive_id {
+                src_policies.refuse_cross_drive_move(
+                    crate::domain::entities::drive::CrossDriveMoveGateContext {
+                        caller_id,
+                        resource_type: "file",
+                        resource_id: src_uuid,
+                        src_drive_id,
+                        dst_drive_id,
+                    },
+                )?;
+            }
+            let growth = src_size.saturating_sub(dst_size);
+            if growth > 0
+                && let Some(storage_usage) = &self.storage_usage
+            {
+                storage_usage
+                    .check_drive_quota(dst_drive_id, growth)
+                    .await?;
+            }
+            if src_drive_id != dst_drive_id {
+                cross_drive = Some((src_drive_id, dst_drive_id));
+            }
+        }
+
+        let source_snapshot = if is_move && source_file_id != target_file_id {
+            self.snapshot_for_publish(source_file_id).await
+        } else {
+            None
+        };
+
+        let replaced = self
+            .file_repository
+            .replace_file_from_source(source_file_id, target_file_id, caller_id, expected_hash)
+            .await?;
+
+        if let Some(cc) = &self.content_cache {
+            cc.invalidate(target_file_id).await;
+        }
+
+        let dto = FileDto::from(replaced);
+        if let Some(hook) = &self.file_lifecycle_hook {
+            hook.on_file_updated(
+                target_file_id,
+                &dto.content_hash,
+                &dto.mime_type,
+                WriteSource::External,
+            );
+        }
+        self.notify_file_accessed(caller_id, &dto.id);
+
+        if is_move && source_file_id != target_file_id {
+            if let (Some(collab), Ok(src_uuid)) = (
+                self.collab_session_service.get(),
+                Uuid::parse_str(source_file_id),
+            ) {
+                collab
+                    .evict_sessions_for_file(src_uuid, "resource_deleted")
+                    .await;
+            }
+            self.delete_file(source_file_id).await?;
+            self.publish_file_deleted(caller_id, source_snapshot);
+            if let Some((src_drive_id, dst_drive_id)) = cross_drive {
+                tracing::info!(
+                    target: "audit",
+                    event = "resource.moved_between_drives",
+                    resource_type = "file",
+                    resource_id = %dto.id,
+                    src_drive_id = %src_drive_id,
+                    dst_drive_id = %dst_drive_id,
+                    by = %caller_id,
+                    "📦 file replaced and moved between drives",
+                );
+            }
+        }
+
+        Ok(dto)
     }
 }
 

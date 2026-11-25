@@ -553,6 +553,19 @@ pub trait FileManagementUseCase: Send + Sync + 'static {
         folder_id: Option<String>,
     ) -> Result<FileDto, DomainError>;
 
+    /// Conflict-aware variant of [`Self::move_file_with_perms`].
+    async fn move_file_with_perms_on_conflict(
+        &self,
+        file_id: &str,
+        caller_id: Uuid,
+        folder_id: Option<String>,
+        on_conflict: ConflictPolicy,
+    ) -> Result<FileDto, DomainError> {
+        let _ = on_conflict;
+        self.move_file_with_perms(file_id, caller_id, folder_id)
+            .await
+    }
+
     /// Copies a file, enforcing that `caller_id` is the owner.
     ///
     /// `new_name`, when `Some(_)`, becomes the copy's filename — without it
@@ -566,6 +579,20 @@ pub trait FileManagementUseCase: Send + Sync + 'static {
         target_folder_id: Option<String>,
         new_name: Option<String>,
     ) -> Result<FileDto, DomainError>;
+
+    /// Conflict-aware variant of [`Self::copy_file_with_perms`].
+    async fn copy_file_with_perms_on_conflict(
+        &self,
+        file_id: &str,
+        caller_id: Uuid,
+        target_folder_id: Option<String>,
+        new_name: Option<String>,
+        on_conflict: ConflictPolicy,
+    ) -> Result<FileDto, DomainError> {
+        let _ = on_conflict;
+        self.copy_file_with_perms(file_id, caller_id, target_folder_id, new_name)
+            .await
+    }
 
     /// Renames a file, enforcing that `caller_id` is the owner.
     async fn rename_file_with_perms(
@@ -607,6 +634,38 @@ pub trait FileManagementUseCase: Send + Sync + 'static {
         target_parent_id: Option<String>,
         dest_name: Option<String>,
     ) -> Result<CopyFolderTreeResult, DomainError>;
+
+    /// Conflict-aware variant of [`Self::copy_folder_tree_with_perms`].
+    async fn copy_folder_tree_with_perms_on_conflict(
+        &self,
+        source_folder_id: &str,
+        caller_id: Uuid,
+        target_parent_id: Option<String>,
+        dest_name: Option<String>,
+        on_conflict: ConflictPolicy,
+    ) -> Result<CopyFolderTreeResult, DomainError> {
+        let _ = on_conflict;
+        self.copy_folder_tree_with_perms(source_folder_id, caller_id, target_parent_id, dest_name)
+            .await
+    }
+
+    /// Atomically overwrite `target_file_id` with `source_file_id`'s blob
+    /// (preserving `target_file_id` and checking AuthZ, cross-drive, differential
+    /// quota, and optional CAS `expected_hash`), deleting `source_file_id` when
+    /// `is_move == true`.
+    async fn replace_file_from_source_with_perms(
+        &self,
+        _source_file_id: &str,
+        _target_file_id: &str,
+        _caller_id: Uuid,
+        _is_move: bool,
+        _expected_hash: Option<&str>,
+    ) -> Result<FileDto, DomainError> {
+        Err(DomainError::internal_error(
+            "FileManagementUseCase",
+            "replace_file_from_source_with_perms not implemented",
+        ))
+    }
 }
 
 /// Factory for creating file use case implementations
