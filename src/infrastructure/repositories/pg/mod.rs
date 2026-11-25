@@ -15,6 +15,7 @@ mod face_pg_repository;
 mod favorites_pg_repository;
 pub mod file_metadata_repository;
 mod magic_link_token_pg_repository;
+pub mod name_conflict_pg;
 mod nextcloud_object_id_repository;
 mod notification_pg_repository;
 mod opaque_pg_repository;

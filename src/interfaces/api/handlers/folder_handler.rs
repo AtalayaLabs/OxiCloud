@@ -14,6 +14,9 @@ use crate::application::dtos::folder_dto::{
 };
 use crate::application::dtos::grant_dto::{ResourceContentDto, ResourceTypeDto};
 use crate::application::dtos::timestamp_helpers::epoch_to_datetime;
+use crate::application::dtos::upload_preflight_dto::{
+    UploadPreflightRequest, UploadPreflightResponse,
+};
 use crate::application::ports::external_mount_ports::MountEntry;
 use crate::application::ports::folder_ports::FolderUseCase;
 use crate::application::ports::trash_ports::TrashUseCase;
@@ -411,6 +414,24 @@ impl FolderHandler {
             }
         }
     }
+
+    /// Batch pre-upload comparison (`POST /api/folders/{id}/upload-preflight`).
+    pub(super) async fn upload_preflight_impl(
+        State(state): State<Arc<GlobalAppState>>,
+        auth_user: AuthUser,
+        Path(id): Path<String>,
+        Json(request): Json<UploadPreflightRequest>,
+    ) -> impl IntoResponse {
+        match state
+            .applications
+            .folder_service_concrete
+            .upload_preflight_with_perms(&id, auth_user.id, request)
+            .await
+        {
+            Ok(resp) => (StatusCode::OK, Json(resp)).into_response(),
+            Err(err) => AppError::from(err).into_response(),
+        }
+    }
 }
 
 // ── Route handlers (free functions) ──────────────────────────────────────────
@@ -445,6 +466,28 @@ pub async fn create_folder(
     json: Json<CreateFolderDto>,
 ) -> impl IntoResponse {
     FolderHandler::create_folder_impl(state, auth_user, json).await
+}
+
+#[utoipa::path(
+    post,
+    path = "/api/folders/{id}/upload-preflight",
+    params(("id" = String, Path, description = "Destination folder ID")),
+    request_body = UploadPreflightRequest,
+    responses(
+        (status = 200, description = "Subtree comparison result (existing folders, existing files with content hashes, and kind mismatches)", body = UploadPreflightResponse),
+        (status = 400, description = "Invalid relative path or path limit exceeded", body = crate::interfaces::errors::ApiErrorBody),
+        (status = 404, description = "Folder not found or caller lacks Create permission", body = crate::interfaces::errors::ApiErrorBody),
+    ),
+    security(("bearerAuth" = [])),
+    tag = "folders"
+)]
+pub async fn upload_preflight(
+    state: State<Arc<GlobalAppState>>,
+    auth_user: AuthUser,
+    path: Path<String>,
+    json: Json<UploadPreflightRequest>,
+) -> impl IntoResponse {
+    FolderHandler::upload_preflight_impl(state, auth_user, path, json).await
 }
 
 #[utoipa::path(

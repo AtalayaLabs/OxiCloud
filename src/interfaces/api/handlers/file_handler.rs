@@ -25,6 +25,7 @@ use crate::application::services::mount_registry::MountConfig;
 use crate::common::di::AppState;
 use crate::domain::errors::DomainError;
 use crate::domain::services::external_mount_id::{NodeId, virtual_file_etag};
+use crate::domain::services::name_conflict::ConflictPolicy;
 use crate::interfaces::errors::AppError;
 use crate::interfaces::middleware::auth::{AuthUser, CallerSubjects};
 use crate::interfaces::range_requests::not_modified_response;
@@ -119,14 +120,75 @@ impl FileHandler {
         }
     }
 
-    /// Instant upload: create a file from a blob the caller already owns.
+    /// Parse and validate client-asserted `source_modified_at` (epoch
+    /// milliseconds) against the server's clock trust bounds, emitting an
+    /// audit line on rejection.
+    fn parse_source_mtime_millis(
+        millis: i64,
+        user_id: uuid::Uuid,
+        audit_event: &'static str,
+    ) -> Result<i64, Response<Body>> {
+        let secs = crate::application::dtos::timestamp_helpers::millis_to_seconds_rounded(millis);
+        match crate::application::dtos::timestamp_helpers::validate_client_mtime(
+            secs,
+            chrono::Utc::now().timestamp(),
+        ) {
+            Ok(valid) => Ok(valid),
+            Err(rejection) => {
+                tracing::info!(
+                    target: "audit",
+                    event = audit_event,
+                    reason = rejection.reason(),
+                    asserted_millis = millis,
+                    user_id = %user_id,
+                    "👮🏻‍♂️ rejected client-asserted source_modified_at: {}",
+                    rejection.message(),
+                );
+                Err(AppError::bad_request(rejection.message().to_string()).into_response())
+            }
+        }
+    }
+
+    fn parse_source_mtime_str(
+        raw: &str,
+        user_id: uuid::Uuid,
+        audit_event: &'static str,
+    ) -> Result<Option<i64>, Response<Body>> {
+        if raw.is_empty() {
+            return Ok(None);
+        }
+        let Ok(millis) = raw.parse::<i64>() else {
+            return Err(AppError::bad_request(
+                "source_modified_at must be an integer (epoch milliseconds)",
+            )
+            .into_response());
+        };
+        Self::parse_source_mtime_millis(millis, user_id, audit_event).map(Some)
+    }
+
+    fn is_valid_blake3_hex(hash: &str) -> bool {
+        hash.len() == 64 && hash.chars().all(|c| c.is_ascii_hexdigit())
+    }
+
+    fn strip_basename(raw: &str) -> String {
+        raw.rsplit('/')
+            .next()
+            .unwrap_or(raw)
+            .rsplit('\\')
+            .next()
+            .unwrap_or(raw)
+            .to_string()
+    }
+
+    /// Instant upload / instant replace: create or overwrite a file from a
+    /// blob the caller already owns.
     ///
     /// Zero content bytes travel — the client proved possession of the
-    /// content by hash (it computed BLAKE3 locally and confirmed via
-    /// `GET /api/dedup/check/{hash}`), so the server only bumps the blob's
-    /// reference count and registers the metadata row.
+    /// content by hash, so the server only bumps the blob's reference count
+    /// and creates (`name + folder_id` → 201) or updates (`file_id` → 200)
+    /// the metadata row.
     ///
-    /// All authorization (folder Create permission, hash ownership with
+    /// All authorization (folder `Create` / file `Update`, hash ownership with
     /// anti-enumeration, quota) lives in the application service.
     pub(super) async fn create_file_by_hash_impl(
         State(state): State<GlobalState>,
@@ -134,89 +196,103 @@ impl FileHandler {
         Json(request): Json<CreateFileByHashRequest>,
     ) -> impl IntoResponse {
         // Hash shape check — same contract as /api/dedup/check/{hash}.
-        if request.hash.len() != 64 || !request.hash.chars().all(|c| c.is_ascii_hexdigit()) {
+        if !Self::is_valid_blake3_hex(&request.hash) {
             return AppError::bad_request(
                 "Invalid hash format. Expected BLAKE3 (64 hex characters)",
             )
             .into_response();
         }
 
-        // §9 — round the client's milliseconds to seconds, then apply the
-        // same trust bounds as every other client-asserted mtime. Refuse,
-        // never clamp: a wrong client clock must be visible to whoever can
-        // fix it rather than quietly absorbed into stored data.
         let source_modified_at = match request.source_modified_at {
             None => None,
-            Some(millis) => {
-                let secs =
-                    crate::application::dtos::timestamp_helpers::millis_to_seconds_rounded(millis);
-                match crate::application::dtos::timestamp_helpers::validate_client_mtime(
-                    secs,
-                    chrono::Utc::now().timestamp(),
-                ) {
-                    Ok(valid) => Some(valid),
-                    Err(rejection) => {
-                        tracing::info!(
-                            target: "audit",
-                            event = "by_hash.source_mtime_rejected",
-                            reason = rejection.reason(),
-                            asserted_millis = millis,
-                            user_id = %auth_user.id,
-                            "👮🏻‍♂️ rejected client-asserted source_modified_at on by-hash upload: {}",
-                            rejection.message(),
-                        );
-                        return AppError::bad_request(rejection.message()).into_response();
-                    }
+            Some(millis) => match Self::parse_source_mtime_millis(
+                millis,
+                auth_user.id,
+                "by_hash.source_mtime_rejected",
+            ) {
+                Ok(valid) => Some(valid),
+                Err(resp) => return resp,
+            },
+        };
+
+        let result = match (request.name, request.folder_id, request.file_id) {
+            (Some(raw_name), Some(folder_id), None) => {
+                if request.expected_hash.is_some() {
+                    return AppError::bad_request(
+                        "expected_hash is only valid when updating an existing file by file_id",
+                    )
+                    .into_response();
                 }
+                let filename = Self::strip_basename(&raw_name);
+                if filename.is_empty() {
+                    return AppError::bad_request("File name must not be empty").into_response();
+                }
+                state
+                    .applications
+                    .file_upload_service
+                    .create_file_from_owned_blob_with_perms(
+                        auth_user.id,
+                        filename,
+                        folder_id,
+                        &request.hash,
+                        source_modified_at,
+                        request.on_conflict,
+                    )
+                    .await
+                    .map(|f| (StatusCode::CREATED, f))
+            }
+            (None, None, Some(file_id)) => {
+                if request.on_conflict == ConflictPolicy::Rename {
+                    return AppError::bad_request(
+                        "on_conflict=rename is only valid when creating a new file",
+                    )
+                    .into_response();
+                }
+                if let Some(ref exp) = request.expected_hash
+                    && !Self::is_valid_blake3_hex(exp)
+                {
+                    return AppError::bad_request(
+                        "Invalid expected_hash format. Expected BLAKE3 (64 hex characters)",
+                    )
+                    .into_response();
+                }
+                state
+                    .applications
+                    .file_upload_service
+                    .update_file_from_owned_blob_with_perms(
+                        auth_user.id,
+                        &file_id,
+                        &request.hash,
+                        source_modified_at,
+                        request.expected_hash.as_deref(),
+                    )
+                    .await
+                    .map(|f| (StatusCode::OK, f))
+            }
+            _ => {
+                return AppError::bad_request(
+                    "Provide either name + folder_id (create) or file_id (update)",
+                )
+                .into_response();
             }
         };
-        // Basename only — same path-traversal guard as the multipart upload.
-        let filename = request
-            .name
-            .rsplit('/')
-            .next()
-            .unwrap_or(&request.name)
-            .rsplit('\\')
-            .next()
-            .unwrap_or(&request.name)
-            .to_string();
-        if filename.is_empty() {
-            return AppError::bad_request("File name must not be empty").into_response();
-        }
 
-        match state
-            .applications
-            .file_upload_service
-            .create_file_from_owned_blob_with_perms(
-                auth_user.id,
-                filename,
-                request.folder_id,
-                &request.hash,
-                source_modified_at,
-            )
-            .await
-        {
-            Ok(mut file) => {
+        match result {
+            Ok((status, mut file)) => {
                 crate::interfaces::api::handlers::caller_flags::enrich_file_flags(
                     &state,
                     &mut file,
                     Subject::User(auth_user.id),
                 )
                 .await;
-                Self::created_json_response(&file).into_response()
+                Self::json_response_with_status(status, &file).into_response()
             }
             Err(err) => {
                 // Anti-enumeration shape: every "caller cannot reach this
                 // hash" outcome collapses into the same 404 with an
                 // `upload_path` hint, regardless of whether the hash exists
                 // globally, is owned by another tenant, or got GC'd in a
-                // race against trash-empty. Hides the cross-tenant content
-                // existence oracle and tells the client where to fall back.
-                //
-                // Three NotFound("Blob", _) paths in the service map here:
-                //   1. user_owns_blob_reference returned false
-                //   2. get_blob_metadata returned None (blob row vanished)
-                //   3. add_reference lost the race with GC (rows_affected==0)
+                // race against trash-empty.
                 use crate::common::errors::ErrorKind;
                 if err.kind == ErrorKind::NotFound && err.entity_type == "Blob" {
                     return Response::builder()
@@ -249,10 +325,12 @@ impl FileHandler {
         let upload_service = &state.applications.file_upload_service;
         let mut folder_id: Option<String> = None;
         let mut source_modified_at: Option<i64> = None;
+        let mut on_conflict = ConflictPolicy::Fail;
 
         tracing::debug!("📤 Processing streaming file upload (hash-on-write)");
 
-        // caveat: if folder_id field is given after check can fails
+        // caveat: metadata fields (`folder_id`, `source_modified_at`, `on_conflict`)
+        // must precede the `file` field, which consumes the multipart stream.
         while let Some(field) = multipart.next_field().await.unwrap_or(None) {
             let name = field.name().unwrap_or("").to_string();
 
@@ -264,75 +342,29 @@ impl FileHandler {
                 continue;
             }
 
-            // §9 — the browser's `File.lastModified`, so a drag-and-drop
-            // upload preserves the source mtime instead of being stamped
-            // with the upload moment.
-            //
-            // **Milliseconds on the wire**, unlike `X-OC-Mtime`'s seconds.
-            // That header is seconds because ownCloud defined it so; this
-            // field is ours, and taking `File.lastModified` verbatim keeps
-            // the rounding rule in exactly one place (here) instead of
-            // asking every client to implement half-up correctly. A client
-            // that truncated locally would be invisible to us.
-            //
-            // Must arrive BEFORE the `file` part — that field consumes the
-            // stream, which is why `folder_id` already carries the same
-            // caveat above.
-            if name == "source_modified_at" {
+            if name == "on_conflict" {
                 let raw = field.text().await.unwrap_or_default();
                 if !raw.is_empty() {
-                    let Ok(millis) = raw.parse::<i64>() else {
-                        // Unparseable is refused here, unlike the NC
-                        // header's lenient path: this field is ours, has no
-                        // compatibility surface to protect, and only our own
-                        // frontend sends it — so garbage means a bug worth
-                        // surfacing, not an old client worth tolerating.
-                        return Err(AppError::bad_request(
-                            "source_modified_at must be an integer (epoch milliseconds)",
-                        )
-                        .into_response());
-                    };
-                    let secs =
-                        crate::application::dtos::timestamp_helpers::millis_to_seconds_rounded(
-                            millis,
-                        );
-                    match crate::application::dtos::timestamp_helpers::validate_client_mtime(
-                        secs,
-                        chrono::Utc::now().timestamp(),
-                    ) {
-                        Ok(valid) => source_modified_at = Some(valid),
-                        Err(rejection) => {
-                            tracing::info!(
-                                target: "audit",
-                                event = "upload.source_mtime_rejected",
-                                reason = rejection.reason(),
-                                asserted_millis = millis,
-                                user_id = %auth_user.id,
-                                "👮🏻‍♂️ rejected client-asserted source_modified_at on REST upload: {}",
-                                rejection.message(),
-                            );
-                            return Err(AppError::bad_request(rejection.message().to_string())
-                                .into_response());
-                        }
-                    }
+                    on_conflict = raw
+                        .parse::<ConflictPolicy>()
+                        .map_err(|msg| AppError::bad_request(msg).into_response())?;
                 }
+                continue;
+            }
+
+            if name == "source_modified_at" {
+                let raw = field.text().await.unwrap_or_default();
+                source_modified_at = Self::parse_source_mtime_str(
+                    &raw,
+                    auth_user.id,
+                    "upload.source_mtime_rejected",
+                )?;
                 continue;
             }
 
             if name == "file" {
                 let raw_filename = field.file_name().unwrap_or("unnamed").to_string();
-                // Browsers send the full relative path (e.g. "Screenshots/file.png")
-                // as the filename for folder uploads via webkitRelativePath.
-                // Strip path components to get the basename only.
-                // This also prevents path-traversal attacks.
-                let filename = raw_filename
-                    .rsplit('/')
-                    .next()
-                    .unwrap_or(&raw_filename)
-                    .rsplit('\\')
-                    .next()
-                    .unwrap_or(&raw_filename)
-                    .to_string();
+                let filename = Self::strip_basename(&raw_filename);
                 let content_type = field
                     .content_type()
                     .unwrap_or("application/octet-stream")
@@ -390,6 +422,12 @@ impl FileHandler {
                         ResolvedId::Regular => (None, NodeId::default()),
                     };
                     if let Some(cfg) = mount_cfg {
+                        if on_conflict == ConflictPolicy::Rename {
+                            return Err(AppError::bad_request(
+                                "on_conflict=rename is not supported on external mounts",
+                            )
+                            .into_response());
+                        }
                         use futures::StreamExt;
                         let body: crate::application::ports::external_mount_ports::MountByteStream<
                             '_,
@@ -478,20 +516,21 @@ impl FileHandler {
                 let hash = ingested.hash.clone();
                 let size = ingested.size;
                 match upload_service
-                    .upload_file_streaming(
+                    .upload_file_streaming_on_conflict(
                         filename.clone(),
                         folder_id,
                         ingested.content_type.clone(),
                         ingested.stored(),
                         auth_user.id,
                         source_modified_at,
+                        on_conflict,
                     )
                     .await
                 {
                     Ok(file) => {
                         tracing::info!(
                             "✅ STREAMING UPLOAD: {} ({} bytes, ID: {})",
-                            filename,
+                            file.name,
                             size,
                             file.id
                         );
@@ -506,6 +545,208 @@ impl FileHandler {
         }
 
         Err(AppError::bad_request("No file provided").into_response())
+    }
+
+    /// Replace an existing file's content by ID (`PUT /api/files/{id}/content`),
+    /// preserving `id`, shares/grants, and favorites.
+    ///
+    /// Supports optional CAS protection via `expected_hash` (multipart field
+    /// before `file`, or `If-Match` HTTP header), `source_modified_at` (epoch
+    /// milliseconds), and differential quota enforcement (`new_size - old_size`).
+    pub(super) async fn replace_file_content_impl(
+        State(state): State<GlobalState>,
+        auth_user: AuthUser,
+        Path(file_id): Path<String>,
+        headers: HeaderMap,
+        mut multipart: Multipart,
+    ) -> impl IntoResponse {
+        let mut expected_hash: Option<String> = None;
+        if let Some(if_match) = headers
+            .get(header::IF_MATCH)
+            .and_then(|v| v.to_str().ok())
+            .map(str::trim)
+            .filter(|s| !s.is_empty() && *s != "*")
+        {
+            let trimmed = if_match.trim_matches('"');
+            if !Self::is_valid_blake3_hex(trimmed) {
+                return AppError::bad_request(
+                    "Invalid If-Match format. Expected BLAKE3 (64 hex characters)",
+                )
+                .into_response();
+            }
+            expected_hash = Some(trimmed.to_string());
+        }
+
+        let mut source_modified_at: Option<i64> = None;
+
+        while let Some(field) = multipart.next_field().await.unwrap_or(None) {
+            let name = field.name().unwrap_or("").to_string();
+
+            if name == "expected_hash" {
+                let raw = field.text().await.unwrap_or_default();
+                let trimmed = raw.trim();
+                if !trimmed.is_empty() {
+                    if !Self::is_valid_blake3_hex(trimmed) {
+                        return AppError::bad_request(
+                            "Invalid expected_hash format. Expected BLAKE3 (64 hex characters)",
+                        )
+                        .into_response();
+                    }
+                    expected_hash = Some(trimmed.to_string());
+                }
+                continue;
+            }
+
+            if name == "source_modified_at" {
+                let raw = field.text().await.unwrap_or_default();
+                match Self::parse_source_mtime_str(
+                    &raw,
+                    auth_user.id,
+                    "replace.source_mtime_rejected",
+                ) {
+                    Ok(v) => source_modified_at = v,
+                    Err(resp) => return resp,
+                }
+                continue;
+            }
+
+            if name == "file" {
+                let raw_filename = field.file_name().unwrap_or("unnamed").to_string();
+                let filename = Self::strip_basename(&raw_filename);
+                let content_type = field
+                    .content_type()
+                    .unwrap_or("application/octet-stream")
+                    .to_string();
+
+                // Fail-fast AuthZ before reading or spooling request bytes.
+                if let Err(err) = state
+                    .applications
+                    .file_management_service
+                    .require_permission(
+                        &[Subject::User(auth_user.id)],
+                        Permission::Update,
+                        &file_id,
+                    )
+                    .await
+                {
+                    return Self::domain_error_response(err);
+                }
+
+                if matches!(
+                    state.mount_router.classify(&file_id),
+                    ResolvedId::MountRoot { .. } | ResolvedId::MountChild { .. }
+                ) {
+                    return Self::domain_error_response(DomainError::operation_not_supported(
+                        "File",
+                        "Replacing file content by ID is not supported on external mounts",
+                    ));
+                }
+
+                let existing = match state
+                    .applications
+                    .file_retrieval_service
+                    .get_file_with_perms(&file_id, Subject::User(auth_user.id))
+                    .await
+                {
+                    Ok(f) => f,
+                    Err(err) => return Self::domain_error_response(err),
+                };
+
+                // Fast-fail CAS before transferring/ingesting bytes.
+                if let Some(ref exp) = expected_hash
+                    && !exp.eq_ignore_ascii_case(&existing.content_hash)
+                {
+                    return Self::domain_error_response(DomainError::precondition_failed(
+                        "File",
+                        "content was modified concurrently",
+                    ));
+                }
+
+                if let Some(storage_svc) = state.storage_usage_service.as_ref() {
+                    let estimated_size = field
+                        .headers()
+                        .get(header::CONTENT_LENGTH)
+                        .and_then(|v| v.to_str().ok())
+                        .and_then(|s| s.parse::<u64>().ok())
+                        .unwrap_or(0);
+                    let estimated_growth = estimated_size.saturating_sub(existing.size);
+                    if estimated_growth > 0
+                        && let Err(err) = storage_svc
+                            .check_storage_quota(auth_user.id, estimated_growth)
+                            .await
+                    {
+                        return Self::quota_error_response(err);
+                    }
+                }
+
+                let dedup = &state.core.blob_handler;
+                let source = upload_ingest::multipart_field_stream(field);
+                let ingested = match upload_ingest::ingest_stream_to_cas(
+                    source,
+                    dedup,
+                    &filename,
+                    &content_type,
+                    usize::MAX,
+                    None,
+                )
+                .await
+                {
+                    Ok(ingested) => ingested,
+                    Err(e) => return e.into_response(),
+                };
+
+                let growth = ingested.size.saturating_sub(existing.size);
+                if growth > 0
+                    && let Some(storage_svc) = state.storage_usage_service.as_ref()
+                {
+                    if let Err(err) = storage_svc.check_storage_quota(auth_user.id, growth).await {
+                        upload_ingest::discard_ingested(dedup, &ingested).await;
+                        return Self::quota_error_response(err);
+                    }
+                    if let Some(fid) = existing
+                        .folder_id
+                        .as_deref()
+                        .and_then(|s| uuid::Uuid::parse_str(s).ok())
+                        && let Err(err) = storage_svc.check_drive_quota_by_folder(fid, growth).await
+                    {
+                        upload_ingest::discard_ingested(dedup, &ingested).await;
+                        return Self::quota_error_response(err);
+                    }
+                }
+
+                match state
+                    .applications
+                    .file_upload_service
+                    .update_file_content_by_id_with_perms(
+                        auth_user.id,
+                        &file_id,
+                        ingested.stored(),
+                        source_modified_at,
+                        expected_hash.as_deref(),
+                    )
+                    .await
+                {
+                    Ok(mut file) => {
+                        crate::interfaces::api::handlers::caller_flags::enrich_file_flags(
+                            &state,
+                            &mut file,
+                            Subject::User(auth_user.id),
+                        )
+                        .await;
+                        tracing::info!(
+                            "🔄 REPLACED FILE CONTENT: {} ({} bytes, ID: {})",
+                            file.name,
+                            file.size,
+                            file.id
+                        );
+                        return Self::json_response_with_status(StatusCode::OK, &file);
+                    }
+                    Err(err) => return Self::domain_error_response(err),
+                }
+            }
+        }
+
+        AppError::bad_request("No file provided").into_response()
     }
 
     // ═══════════════════════════════════════════════════════════════════════
@@ -1647,14 +1888,22 @@ impl FileHandler {
         build_content_disposition(name, mime, force_inline)
     }
 
-    /// Build a 201 Created JSON response.
-    fn created_json_response(file: &crate::application::dtos::file_dto::FileDto) -> Response<Body> {
+    /// Build a JSON response with an explicit HTTP status and no-store cache headers.
+    fn json_response_with_status(
+        status: StatusCode,
+        file: &crate::application::dtos::file_dto::FileDto,
+    ) -> Response<Body> {
         Response::builder()
-            .status(StatusCode::CREATED)
+            .status(status)
             .header(header::CONTENT_TYPE, "application/json")
             .header(header::CACHE_CONTROL, "no-cache, no-store, must-revalidate")
             .body(Body::from(serde_json::to_string(file).unwrap()))
             .unwrap()
+    }
+
+    /// Build a 201 Created JSON response.
+    fn created_json_response(file: &crate::application::dtos::file_dto::FileDto) -> Response<Body> {
+        Self::json_response_with_status(StatusCode::CREATED, file)
     }
 
     /// Build error response for DomainError.
@@ -1836,10 +2085,11 @@ pub async fn list_files_query(
 #[utoipa::path(
     post,
     path = "/api/files/upload",
-    request_body(content_type = "multipart/form-data", description = "File data + folder_id (required: it determines the file's owner and drive)"),
+    request_body(content_type = "multipart/form-data", description = "File data + folder_id (required: it determines the file's owner and drive), optional source_modified_at (epoch ms) and on_conflict (fail | rename)"),
     responses(
         (status = 201, description = "File uploaded", body = FileDto),
         (status = 400, description = "Invalid request", body = crate::interfaces::errors::ApiErrorBody),
+        (status = 409, description = "A file with this name and different content already exists in the folder", body = crate::interfaces::errors::ApiErrorBody),
         (status = 507, description = "Storage quota exceeded", body = crate::interfaces::errors::ApiErrorBody),
     ),
     security(("bearerAuth" = [])),
@@ -1853,28 +2103,58 @@ pub async fn upload_file_with_thumbnails(
     FileHandler::upload_file_with_thumbnails_impl(state, auth_user, multipart).await
 }
 
-/// Request body for the instant-upload endpoint.
+#[utoipa::path(
+    put,
+    path = "/api/files/{id}/content",
+    params(("id" = String, Path, description = "Existing file ID to overwrite")),
+    request_body(content_type = "multipart/form-data", description = "Replacement file stream + optional source_modified_at (epoch ms) and optional expected_hash (64 hex BLAKE3 CAS guard, also accepted via If-Match)"),
+    responses(
+        (status = 200, description = "File content replaced (preserves file ID, shares, and favorites)", body = FileDto),
+        (status = 400, description = "Invalid request or malformed hash/mtime", body = crate::interfaces::errors::ApiErrorBody),
+        (status = 404, description = "File not found or caller lacks Update permission", body = crate::interfaces::errors::ApiErrorBody),
+        (status = 412, description = "Concurrent modification: expected_hash / If-Match no longer matches", body = crate::interfaces::errors::ApiErrorBody),
+        (status = 507, description = "Storage quota exceeded", body = crate::interfaces::errors::ApiErrorBody),
+    ),
+    security(("bearerAuth" = [])),
+    tag = "files"
+)]
+pub async fn replace_file_content(
+    state: State<GlobalState>,
+    auth_user: AuthUser,
+    path: Path<String>,
+    req_headers: HeaderMap,
+    multipart: Multipart,
+) -> impl IntoResponse {
+    FileHandler::replace_file_content_impl(state, auth_user, path, req_headers, multipart).await
+}
+
+/// Request body for the instant-upload / instant-replace endpoint (`POST /api/files/by-hash`).
+///
+/// Provide either `(name, folder_id)` to create a new file (`201 Created`) or
+/// `file_id` to replace an existing file's content (`200 OK`).
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct CreateFileByHashRequest {
-    /// File name to create (path components are stripped).
-    pub name: String,
-    /// Target folder ID (the caller needs Create permission on it).
-    pub folder_id: String,
+    /// Create mode: file name to create (path components are stripped).
+    #[serde(default)]
+    pub name: Option<String>,
+    /// Create mode: target folder ID (the caller needs Create permission on it).
+    #[serde(default)]
+    pub folder_id: Option<String>,
+    /// Update mode: existing file ID whose content is replaced (the caller needs Update permission on it).
+    #[serde(default)]
+    pub file_id: Option<String>,
     /// BLAKE3 hash (64 hex chars) of content the caller already owns.
     pub hash: String,
     /// §9 — the browser's `File.lastModified`, epoch **milliseconds**.
-    ///
-    /// Optional, and absent means "stamp `NOW()`". Same unit and same
-    /// trust bounds as the multipart `source_modified_at` field on
-    /// `/api/files/upload`; the server rounds half-up and rejects
-    /// implausible values with a 400 rather than clamping.
-    ///
-    /// This endpoint needs its own slot because it is `uploadOneFile`'s
-    /// FIRST short-circuit: re-uploading content the caller already owns
-    /// never reaches the multipart path, so without this a duplicate
-    /// upload silently lost its source mtime even for a small file.
     #[serde(default)]
     pub source_modified_at: Option<i64>,
+    /// Create mode conflict policy (`fail` by default, `rename` to elect `stem (2).ext`).
+    #[serde(default)]
+    pub on_conflict: ConflictPolicy,
+    /// Update mode optional compare-and-swap guard: current expected whole-file
+    /// BLAKE3 hash (64 hex chars). Mismatch returns `412 PreconditionFailed`.
+    #[serde(default)]
+    pub expected_hash: Option<String>,
 }
 
 #[utoipa::path(
@@ -1883,9 +2163,11 @@ pub struct CreateFileByHashRequest {
     request_body = CreateFileByHashRequest,
     responses(
         (status = 201, description = "File created from an already-owned blob — zero bytes transferred", body = FileDto),
-        (status = 400, description = "Invalid hash format or empty name", body = crate::interfaces::errors::ApiErrorBody),
-        (status = 404, description = "No owned blob with this hash (anti-enumeration: same shape as unknown hash)", body = crate::interfaces::errors::ApiErrorBody),
+        (status = 200, description = "Existing file's content replaced from an already-owned blob — zero bytes transferred", body = FileDto),
+        (status = 400, description = "Invalid hash format, empty name, or invalid mode combination", body = crate::interfaces::errors::ApiErrorBody),
+        (status = 404, description = "No owned blob with this hash, or target file/folder inaccessible", body = crate::interfaces::errors::ApiErrorBody),
         (status = 409, description = "A file with this name already exists in the folder", body = crate::interfaces::errors::ApiErrorBody),
+        (status = 412, description = "Concurrent modification: expected_hash no longer matches", body = crate::interfaces::errors::ApiErrorBody),
         (status = 507, description = "Storage quota exceeded", body = crate::interfaces::errors::ApiErrorBody),
     ),
     security(("bearerAuth" = [])),
@@ -2175,5 +2457,53 @@ mod mount_range_tests {
             plan_mount_range(100, Some("bytes=200-300")),
             MountRangePlan::NotSatisfiable
         );
+    }
+}
+
+#[cfg(test)]
+mod upload_conflict_helper_tests {
+    use super::FileHandler;
+    use uuid::Uuid;
+
+    #[test]
+    fn blake3_hex_validator_accepts_64_hex_and_rejects_short_or_non_hex() {
+        assert!(FileHandler::is_valid_blake3_hex(&"a".repeat(64)));
+        assert!(FileHandler::is_valid_blake3_hex(
+            &"0123456789ABCDEF".repeat(4)
+        ));
+        assert!(!FileHandler::is_valid_blake3_hex(""));
+        assert!(!FileHandler::is_valid_blake3_hex(&"a".repeat(63)));
+        assert!(!FileHandler::is_valid_blake3_hex(&"z".repeat(64)));
+    }
+
+    #[test]
+    fn strip_basename_handles_posix_and_windows_separators() {
+        assert_eq!(
+            FileHandler::strip_basename("Photos/2026/img.jpg"),
+            "img.jpg"
+        );
+        assert_eq!(
+            FileHandler::strip_basename("C:\\Users\\test\\doc.pdf"),
+            "doc.pdf"
+        );
+        assert_eq!(FileHandler::strip_basename("plain.txt"), "plain.txt");
+    }
+
+    #[test]
+    fn parse_source_mtime_str_accepts_empty_and_plausible_millis_rejects_garbage_and_pre2000() {
+        let uid = Uuid::nil();
+        assert!(
+            FileHandler::parse_source_mtime_str("", uid, "test.mtime")
+                .unwrap()
+                .is_none()
+        );
+        // 2024-01-01T00:00:00.600Z -> rounded half-up to 1704067201s
+        let ok = FileHandler::parse_source_mtime_str("1704067200600", uid, "test.mtime")
+            .expect("valid mtime")
+            .expect("some seconds");
+        assert_eq!(ok, 1_704_067_201);
+
+        assert!(FileHandler::parse_source_mtime_str("not-a-number", uid, "test.mtime").is_err());
+        assert!(FileHandler::parse_source_mtime_str("1000", uid, "test.mtime").is_err());
     }
 }

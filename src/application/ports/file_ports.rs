@@ -11,6 +11,7 @@ use crate::application::services::file_retrieval_service::FileRetrievalService;
 use crate::application::services::file_upload_service::FileUploadService;
 use crate::common::errors::DomainError;
 use crate::domain::services::authorization::{Permission, Subject};
+use crate::domain::services::name_conflict::ConflictPolicy;
 
 // ─────────────────────────────────────────────────────
 // Upload port
@@ -60,6 +61,30 @@ pub trait FileUploadUseCase: Send + Sync + 'static {
         caller_id: Uuid,
         source_modified_at: Option<i64>,
     ) -> Result<FileDto, DomainError>;
+
+    /// Variant of [`Self::upload_file_streaming`] that honours [`ConflictPolicy`].
+    #[allow(clippy::too_many_arguments)]
+    async fn upload_file_streaming_on_conflict(
+        &self,
+        name: String,
+        folder_id: Option<String>,
+        content_type: String,
+        blob: StoredBlob,
+        caller_id: Uuid,
+        source_modified_at: Option<i64>,
+        on_conflict: ConflictPolicy,
+    ) -> Result<FileDto, DomainError> {
+        let _ = on_conflict;
+        self.upload_file_streaming(
+            name,
+            folder_id,
+            content_type,
+            blob,
+            caller_id,
+            source_modified_at,
+        )
+        .await
+    }
 
     /// `_with_perms` variant of `upload_file_streaming` — enforces
     /// `Create` on the target folder before registering the row.

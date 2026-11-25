@@ -1119,6 +1119,7 @@ impl BatchOperationService {
                 let dto = crate::application::dtos::folder_dto::CreateFolderDto {
                     name: name.clone(),
                     parent_id: parent_id.clone(),
+                    on_conflict: Default::default(),
                 };
                 let create_result = folder_service.create_folder_with_perms(dto, user_id).await;
                 let id = format!("{}:{}", name, parent_id.unwrap_or_default());

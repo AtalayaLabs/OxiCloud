@@ -9312,6 +9312,16 @@
           "required": true
         },
         "responses": {
+          "200": {
+            "description": "Existing file's content replaced from an already-owned blob — zero bytes transferred",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FileDto"
+                }
+              }
+            }
+          },
           "201": {
             "description": "File created from an already-owned blob — zero bytes transferred",
             "content": {
@@ -9323,7 +9333,7 @@
             }
           },
           "400": {
-            "description": "Invalid hash format or empty name",
+            "description": "Invalid hash format, empty name, or invalid mode combination",
             "content": {
               "application/json": {
                 "schema": {
@@ -9333,7 +9343,7 @@
             }
           },
           "404": {
-            "description": "No owned blob with this hash (anti-enumeration: same shape as unknown hash)",
+            "description": "No owned blob with this hash, or target file/folder inaccessible",
             "content": {
               "application/json": {
                 "schema": {
@@ -9344,6 +9354,16 @@
           },
           "409": {
             "description": "A file with this name already exists in the folder",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "412": {
+            "description": "Concurrent modification: expected_hash no longer matches",
             "content": {
               "application/json": {
                 "schema": {
@@ -9484,6 +9504,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/DeltaStillMissingResponse"
+                }
+              }
+            }
+          },
+          "412": {
+            "description": "Concurrent modification: expected_hash no longer matches",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
                 }
               }
             }
@@ -9788,7 +9818,7 @@
         ],
         "operationId": "upload_file_with_thumbnails",
         "requestBody": {
-          "description": "File data + folder_id (required: it determines the file's owner and drive)",
+          "description": "File data + folder_id (required: it determines the file's owner and drive), optional source_modified_at (epoch ms) and on_conflict (fail | rename)",
           "content": {
             "multipart/form-data": {}
           }
@@ -9806,6 +9836,16 @@
           },
           "400": {
             "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "A file with this name and different content already exists in the folder",
             "content": {
               "application/json": {
                 "schema": {
@@ -9933,6 +9973,88 @@
           },
           "404": {
             "description": "File not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
+    },
+    "/api/files/{id}/content": {
+      "put": {
+        "tags": [
+          "files"
+        ],
+        "operationId": "replace_file_content",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Existing file ID to overwrite",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "description": "Replacement file stream + optional source_modified_at (epoch ms) and optional expected_hash (64 hex BLAKE3 CAS guard, also accepted via If-Match)",
+          "content": {
+            "multipart/form-data": {}
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "File content replaced (preserves file ID, shares, and favorites)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FileDto"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request or malformed hash/mtime",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "File not found or caller lacks Update permission",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "412": {
+            "description": "Concurrent modification: expected_hash / If-Match no longer matches",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "507": {
+            "description": "Storage quota exceeded",
             "content": {
               "application/json": {
                 "schema": {
@@ -10791,6 +10913,72 @@
           }
         ],
         "x-oxicloud-scope": "share:read"
+      }
+    },
+    "/api/folders/{id}/upload-preflight": {
+      "post": {
+        "tags": [
+          "folders"
+        ],
+        "operationId": "upload_preflight",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Destination folder ID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UploadPreflightRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Subtree comparison result (existing folders, existing files with content hashes, and kind mismatches)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UploadPreflightResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid relative path or path limit exceeded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Folder not found or caller lacks Create permission",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
       }
     },
     "/api/grants": {
@@ -16920,6 +17108,14 @@
           }
         }
       },
+      "ConflictPolicy": {
+        "type": "string",
+        "description": "How a create/upload endpoint handles a colliding sibling name in the target\nfolder.\n\nDefault is [`ConflictPolicy::Fail`] (`409 AlreadyExists`, preserving the\nexisting idempotent-upload semantics for identical content).",
+        "enum": [
+          "fail",
+          "rename"
+        ]
+      },
       "ContactDto": {
         "type": "object",
         "required": [
@@ -17272,24 +17468,46 @@
       },
       "CreateFileByHashRequest": {
         "type": "object",
-        "description": "Request body for the instant-upload endpoint.",
+        "description": "Request body for the instant-upload / instant-replace endpoint (`POST /api/files/by-hash`).\n\nProvide either `(name, folder_id)` to create a new file (`201 Created`) or\n`file_id` to replace an existing file's content (`200 OK`).",
         "required": [
-          "name",
-          "folder_id",
           "hash"
         ],
         "properties": {
+          "expected_hash": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Update mode optional compare-and-swap guard: current expected whole-file\nBLAKE3 hash (64 hex chars). Mismatch returns `412 PreconditionFailed`."
+          },
+          "file_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Update mode: existing file ID whose content is replaced (the caller needs Update permission on it)."
+          },
           "folder_id": {
-            "type": "string",
-            "description": "Target folder ID (the caller needs Create permission on it)."
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Create mode: target folder ID (the caller needs Create permission on it)."
           },
           "hash": {
             "type": "string",
             "description": "BLAKE3 hash (64 hex chars) of content the caller already owns."
           },
           "name": {
-            "type": "string",
-            "description": "File name to create (path components are stripped)."
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Create mode: file name to create (path components are stripped)."
+          },
+          "on_conflict": {
+            "$ref": "#/components/schemas/ConflictPolicy",
+            "description": "Create mode conflict policy (`fail` by default, `rename` to elect `stem (2).ext`)."
           },
           "source_modified_at": {
             "type": [
@@ -17297,7 +17515,7 @@
               "null"
             ],
             "format": "int64",
-            "description": "§9 — the browser's `File.lastModified`, epoch **milliseconds**.\n\nOptional, and absent means \"stamp `NOW()`\". Same unit and same\ntrust bounds as the multipart `source_modified_at` field on\n`/api/files/upload`; the server rounds half-up and rejects\nimplausible values with a 400 rather than clamping.\n\nThis endpoint needs its own slot because it is `uploadOneFile`'s\nFIRST short-circuit: re-uploading content the caller already owns\nnever reaches the multipart path, so without this a duplicate\nupload silently lost its source mtime even for a small file."
+            "description": "§9 — the browser's `File.lastModified`, epoch **milliseconds**."
           }
         }
       },
@@ -17331,6 +17549,10 @@
           "name": {
             "type": "string",
             "description": "Name of the folder to create"
+          },
+          "on_conflict": {
+            "$ref": "#/components/schemas/ConflictPolicy",
+            "description": "Conflict handling policy when a sibling already exists (`fail` by default,\n`rename` to atomically elect `name (2)`, `name (3)`, …)."
           },
           "parent_id": {
             "type": [
@@ -18214,6 +18436,13 @@
             },
             "description": "Full chunk sequence, in file order (per occurrence)."
           },
+          "expected_hash": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Update mode optional compare-and-swap guard: current expected whole-file\nBLAKE3 hash (64 hex chars). Mismatch returns `412 PreconditionFailed`."
+          },
           "file_hash": {
             "type": "string",
             "description": "BLAKE3 of the complete file (verified server-side, never trusted)."
@@ -18238,6 +18467,10 @@
               "null"
             ],
             "description": "Create mode: file name (basename)."
+          },
+          "on_conflict": {
+            "$ref": "#/components/schemas/ConflictPolicy",
+            "description": "Create mode conflict policy (`fail` by default; `rename` to elect `stem (2).ext`)."
           },
           "source_modified_at": {
             "type": [
@@ -21745,6 +21978,98 @@
           }
         }
       },
+      "PreflightExistingFileDto": {
+        "type": "object",
+        "description": "Metadata for an existing live file colliding with an incoming upload path.",
+        "required": [
+          "relative_path",
+          "id",
+          "folder_id",
+          "name",
+          "size",
+          "modified_at",
+          "content_hash",
+          "can_update"
+        ],
+        "properties": {
+          "can_update": {
+            "type": "boolean",
+            "description": "Whether the caller holds `Permission::Update` on this file (false for\ne.g. `Contributor` roles or read-only drives)."
+          },
+          "content_hash": {
+            "type": "string",
+            "description": "BLAKE3 whole-file content hash (64 hex chars)."
+          },
+          "folder_id": {
+            "type": "string",
+            "description": "Parent folder ID holding the existing file."
+          },
+          "id": {
+            "type": "string",
+            "description": "Existing file ID (used as the target for `Replace` / `PUT /api/files/{id}/content`)."
+          },
+          "modified_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Content modification timestamp (`content_modified_at`, RFC 3339 UTC)."
+          },
+          "name": {
+            "type": "string",
+            "description": "Basename of the existing file (NFC-normalized)."
+          },
+          "relative_path": {
+            "type": "string",
+            "description": "Relative path of the incoming file (NFC-normalized)."
+          },
+          "size": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Stored content size in bytes.",
+            "minimum": 0
+          }
+        }
+      },
+      "PreflightExistingFolderDto": {
+        "type": "object",
+        "description": "An existing folder already present under the target directory.",
+        "required": [
+          "relative_path",
+          "id"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Existing folder ID — reused directly instead of calling `POST /api/folders`."
+          },
+          "relative_path": {
+            "type": "string",
+            "description": "Relative path matching the incoming directory prefix (NFC-normalized)."
+          }
+        }
+      },
+      "PreflightKindConflictDto": {
+        "type": "object",
+        "description": "A cross-kind collision at an incoming path: either an incoming file wants\nthe name of an existing folder, or an incoming directory segment wants the\nname of an existing file.",
+        "required": [
+          "relative_path",
+          "existing_kind",
+          "existing_id"
+        ],
+        "properties": {
+          "existing_id": {
+            "type": "string",
+            "description": "ID of the existing server item."
+          },
+          "existing_kind": {
+            "$ref": "#/components/schemas/ItemKind",
+            "description": "Kind of the existing server item blocking that path (`file` or `folder`)."
+          },
+          "relative_path": {
+            "type": "string",
+            "description": "Relative path where the kind mismatch occurs (NFC-normalized)."
+          }
+        }
+      },
       "ProgressHeader": {
         "type": "object",
         "description": "Shared progress shape used by both `migration` and `rotation`\nheader fields — same struct name, same JSON field names. Frontend\ntreats them identically at the render layer.",
@@ -24310,6 +24635,59 @@
               "string",
               "null"
             ]
+          }
+        }
+      },
+      "UploadPreflightRequest": {
+        "type": "object",
+        "description": "Request body of `POST /api/folders/{id}/upload-preflight`.",
+        "required": [
+          "paths"
+        ],
+        "properties": {
+          "paths": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Relative paths of files to upload (e.g. `\"report.pdf\"`, `\"Photos/2026/img.jpg\"`).\nLeading/trailing slashes, backslashes, `.` / `..` segments and null bytes are rejected."
+          }
+        }
+      },
+      "UploadPreflightResponse": {
+        "type": "object",
+        "description": "Response body of `POST /api/folders/{id}/upload-preflight`.",
+        "required": [
+          "supported",
+          "existing_folders",
+          "existing_files",
+          "kind_conflicts"
+        ],
+        "properties": {
+          "existing_files": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PreflightExistingFileDto"
+            },
+            "description": "Existing live files colliding with incoming file paths."
+          },
+          "existing_folders": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PreflightExistingFolderDto"
+            },
+            "description": "Existing subfolders matching directory prefixes of `paths`."
+          },
+          "kind_conflicts": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PreflightKindConflictDto"
+            },
+            "description": "File↔folder kind mismatches preventing direct creation or overwrite."
+          },
+          "supported": {
+            "type": "boolean",
+            "description": "`true` for native PostgreSQL folders; `false` for external mounts\n(`ext:` / mount root) where subtree preflight is unsupported and the\nclient falls back gracefully."
           }
         }
       },
