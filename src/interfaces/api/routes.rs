@@ -218,75 +218,28 @@ pub fn create_public_api_routes(app_state: &Arc<AppState>) -> GatedRouter<Arc<Ap
     router
 }
 
-/// Creates protected API routes for the application.
+/// The whole app's compiled policy declarations, keyed by operation.
 ///
-/// These routes require authentication when auth is enabled.
-/// Receives the fully-assembled `AppState` and extracts all needed services
-/// from it, avoiding a long parameter list.
-/// The router AND the fully-resolved policy registry, ready to install or
-/// to mark a spec with.
+/// Built from the SAME two functions the server builds its router from —
+/// `ApiSubRouters::new` and `main_api_router` — so the table the spec is
+/// marked from cannot differ from the table the gate enforces. It used to
+/// re-declare `main.rs`'s prefixes by hand, and that drifted three times:
+/// each time the generator marked nothing, because its registry was keyed
+/// `/admin` where the server's was keyed `/api/admin`.
 ///
-/// One function because there are TWO callers that must not drift: the
-/// server, which installs the registry for the gate, and
-/// `generate-openapi`, which marks the published spec from it. When the
-/// rebasing lived in `main.rs` alone, the generator produced a registry
-/// keyed `/admin` instead of `/api/admin` and silently marked nothing.
-pub fn api_router_and_policies(
-    app_state: &Arc<AppState>,
-) -> (Router<Arc<AppState>>, Router<Arc<AppState>>, PolicyRegistry) {
-    let (protected, protected_decls) = create_api_routes(app_state).finish();
-    let (public, public_decls) = create_public_api_routes(app_state).finish();
+/// Undecorated on purpose. A layer cannot change a declaration —
+/// `GatedRouter::layer` passes the registry through untouched — and the
+/// generator has no rate limiters to decorate with.
+pub fn app_policies(app_state: &Arc<AppState>) -> PolicyRegistry {
+    let mut registry = main_api_router(ApiSubRouters::new(app_state))
+        .into_policies()
+        .rebased_under("/api");
 
-    // Both are nested at `/api` and both write their declarations RELATIVE
-    // to themselves, so both rebase the same way.
-    let mut registry = protected_decls.rebased_under("/api");
-    registry.absorb(public_decls.rebased_under("/api"));
-    // Routers that `main.rs` builds and mounts itself, declared here so
-    // ONE function owns the whole registry. Their routers are constructed
-    // and dropped: only the declarations are wanted, and construction is
-    // pure.
-    //
-    // This is deliberate redundancy with `main.rs`'s nests — the prefix
-    // appears in both — and it is policed rather than trusted: a prefix
-    // that matches no operation is an ORPHAN (a boot error), and a public
-    // route whose declaration never lands is reported by `just openapi`.
-    // Both caught the earlier versions of this, where the generator saw a
-    // registry the server did not have.
-    {
-        use crate::interfaces::api::handlers::{
-            auth_handler, device_auth_handler, opaque_auth_handler,
-        };
-        for (prefix, decls) in [
-            (
-                "/api/auth",
-                auth_handler::auth_public_routes().into_policies(),
-            ),
-            ("/api/auth", auth_handler::login_route().into_policies()),
-            ("/api/auth", auth_handler::register_route().into_policies()),
-            ("/api/auth", auth_handler::refresh_route().into_policies()),
-            ("/api", auth_handler::setup_route().into_policies()),
-            (
-                "/api/auth/opaque/login",
-                opaque_auth_handler::opaque_login_routes().into_policies(),
-            ),
-            (
-                "/api/auth/opaque",
-                opaque_auth_handler::opaque_params_routes().into_policies(),
-            ),
-            (
-                "/api/auth/device",
-                device_auth_handler::device_auth_public_routes().into_policies(),
-            ),
-        ] {
-            registry.absorb(decls.rebased_under(prefix));
-        }
-    }
-
-    // Plus the operations that have no route to declare against — the DAV
-    // surfaces.
+    // Plus the operations with no route to declare against — the DAV
+    // surfaces, whose one `any` handler covers a whole subtree.
     registry.absorb(crate::interfaces::api::policy_declarations::declarations());
 
-    (protected, public, registry)
+    registry
 }
 
 /// Returns the router AND the policy declarations made against it.
@@ -1047,4 +1000,96 @@ async fn api_not_found() -> Response {
         .status(StatusCode::NOT_FOUND)
         .body(Body::empty())
         .unwrap()
+}
+
+/// Every sub-router that lives under `/api`, straight from its
+/// constructor and before any middleware.
+///
+/// It exists so the PREFIXES have exactly one home (`main_api_router`)
+/// and the CONSTRUCTORS have exactly one home (here). Three separate
+/// bugs came from a second place assembling the registry: the server and
+/// the spec generator then saw different tables, and the generator marked
+/// nothing. Both now call the same two functions, so they cannot drift —
+/// the duplication is not policed, it is gone.
+///
+/// `main.rs` decorates these fields with the middleware stacks whose
+/// construction needs things only it has — the per-route rate limiters,
+/// and config. The spec generator decorates nothing, which is sound
+/// because a layer cannot change a DECLARATION: `.layer()` on a
+/// `GatedRouter` passes the registry through untouched.
+pub struct ApiSubRouters {
+    pub login: GatedRouter<Arc<AppState>>,
+    pub register: GatedRouter<Arc<AppState>>,
+    pub refresh: GatedRouter<Arc<AppState>>,
+    pub auth_public: GatedRouter<Arc<AppState>>,
+    pub auth_protected: GatedRouter<Arc<AppState>>,
+    pub app_passwords: GatedRouter<Arc<AppState>>,
+    pub opaque_register: GatedRouter<Arc<AppState>>,
+    pub opaque_login: GatedRouter<Arc<AppState>>,
+    pub opaque_params: GatedRouter<Arc<AppState>>,
+    pub setup: GatedRouter<Arc<AppState>>,
+    pub device_public: GatedRouter<Arc<AppState>>,
+    pub device_protected: GatedRouter<Arc<AppState>>,
+    pub public: GatedRouter<Arc<AppState>>,
+    pub protected: GatedRouter<Arc<AppState>>,
+}
+
+impl ApiSubRouters {
+    /// Undecorated — no middleware, as the spec generator wants them.
+    pub fn new(app_state: &Arc<AppState>) -> Self {
+        use crate::interfaces::api::handlers::{
+            app_password_handler, auth_handler, device_auth_handler, opaque_auth_handler,
+        };
+        Self {
+            login: auth_handler::login_route(),
+            register: auth_handler::register_route(),
+            refresh: auth_handler::refresh_route(),
+            auth_public: auth_handler::auth_public_routes(),
+            auth_protected: auth_handler::auth_protected_routes(),
+            app_passwords: app_password_handler::app_password_routes(),
+            opaque_register: opaque_auth_handler::opaque_register_routes(),
+            opaque_login: opaque_auth_handler::opaque_login_routes(),
+            opaque_params: opaque_auth_handler::opaque_params_routes(),
+            setup: auth_handler::setup_route(),
+            device_public: device_auth_handler::device_auth_public_routes(),
+            device_protected: device_auth_handler::device_auth_protected_routes(),
+            public: create_public_api_routes(app_state),
+            protected: create_api_routes(app_state),
+        }
+    }
+}
+
+/// **The one place every `/api` path is written.** Paths are RELATIVE —
+/// the caller mounts the result at `/api`, and `rebased_under("/api")`
+/// shifts the declarations to match.
+///
+/// Nothing may nest a `/api/…` router anywhere else. A second mount point
+/// is how the registry and the router drift apart: the server would gate
+/// a path the generator never saw, which is a silent hole in the spec and
+/// — before the type guard — could be a silent hole in the gate.
+pub fn main_api_router(subs: ApiSubRouters) -> GatedRouter<Arc<AppState>> {
+    GatedRouter::new()
+        // Rate-limited auth endpoints, then the rest of `/api/auth`.
+        // Several routers nest at the SAME prefix on purpose: axum merges
+        // nests that share a path, and keeping them separate is what lets
+        // each carry its own middleware stack.
+        .nest("/auth", subs.login)
+        .nest("/auth", subs.register)
+        .nest("/auth", subs.refresh)
+        .nest("/auth", subs.auth_public)
+        .nest("/auth", subs.auth_protected)
+        .nest("/auth", subs.app_passwords)
+        // OPAQUE aPAKE — three mounts because the register half needs a
+        // session and the login half must not.
+        .nest("/auth/opaque/register", subs.opaque_register)
+        .nest("/auth/opaque/login", subs.opaque_login)
+        .nest("/auth/opaque", subs.opaque_params)
+        // Device Authorization Grant (RFC 8628): `authorize`/`token` are
+        // public by design, `verify`/`devices` need the session.
+        .nest("/auth/device", subs.device_public)
+        .nest("/auth/device", subs.device_protected)
+        // Mounted AT `/api`, so merged rather than nested.
+        .merge(subs.setup)
+        .merge(subs.public)
+        .merge(subs.protected)
 }

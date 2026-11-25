@@ -73,8 +73,11 @@ async fn main() {
         .build_app_state(Some(pools))
         .await
         .expect("service graph builds without a database");
-    let (_protected, _public, registry) =
-        oxicloud::interfaces::api::routes::api_router_and_policies(&state.into());
+    // The SAME function the server installs its registry from, so the
+    // spec cannot be marked from a different table than the gate
+    // enforces. Nothing here is decorated with middleware, which is sound
+    // because a layer cannot change a declaration.
+    let registry = oxicloud::interfaces::api::routes::app_policies(&state.into());
 
     // Spec generation validates the declarations: `security(...)` is
     // derived from the policy, so an annotation that disagrees is stale or

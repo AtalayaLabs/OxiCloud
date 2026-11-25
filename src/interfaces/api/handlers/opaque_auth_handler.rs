@@ -104,7 +104,6 @@ use uuid::Uuid;
 
 use crate::application::dtos::user_dto::AuthResponseDto;
 use crate::application::ports::scope_ports::Condition;
-use axum::Router;
 
 use crate::common::di::AppState;
 use crate::interfaces::api::policy_router::{GatedRouter, get as policy_get, post as policy_post};
@@ -129,8 +128,8 @@ use crate::interfaces::middleware::auth::CurrentUserId;
 /// shared prefixes — the login endpoints would then inherit
 /// register's auth+CSRF middleware and 403 every unauthenticated
 /// KE1. Separate prefixes side-step the composition rule cleanly.
-pub fn opaque_register_routes() -> Router<Arc<AppState>> {
-    Router::new()
+pub fn opaque_register_routes() -> GatedRouter<Arc<AppState>> {
+    GatedRouter::new()
         .route("/start", post(register_start))
         .route("/finish", post(register_finish))
 }

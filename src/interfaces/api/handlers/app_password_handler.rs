@@ -8,9 +8,9 @@ use crate::common::di::AppState;
 use crate::interfaces::api::policy_router::GatedRouter;
 use crate::interfaces::errors::AppError;
 use crate::interfaces::middleware::auth::AuthUser;
+use axum::Json;
 use axum::extract::State;
 use axum::routing::{delete, get, post};
-use axum::Json;
 use std::sync::Arc;
 use uuid::Uuid;
 
