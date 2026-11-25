@@ -119,11 +119,14 @@ mod tests {
                 path[verb]["security"][0]["bearerAuth"],
                 serde_json::json!([])
             );
-            // `minrole`, not `scope`: a role floor and a credential scope
-            // are different axes, and one key used to carry both.
+            // `role`, not `scope`: a role floor and a credential scope
+            // are different axes, and one key used to carry both. The
+            // whole `Policy` is published per operation, so the other two
+            // fields are asserted here too — a change that dropped the
+            // principal to `visitor` on an admin route would show up.
             assert_eq!(
-                path[verb][crate::interfaces::api::MINROLE_EXTENSION],
-                "admin"
+                path[verb][crate::interfaces::api::POLICY_EXTENSION],
+                serde_json::json!({"role": "admin", "principal": "user", "scope": null})
             );
             assert!(path[verb]["responses"]["200"]["content"]["application/json"].is_object());
         }

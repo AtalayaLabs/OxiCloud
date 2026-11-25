@@ -812,24 +812,40 @@ pub struct ApiDoc;
 /// The vendor extension marking an operation reachable with only a
 /// public-share token. `share:read` names a CAPABILITY, not a caller: the set
 /// of reads a share link permits.
-/// The role FLOOR an operation requires: `internal`, `admin` or `owner`.
+/// The compiled policy for an operation, as ONE object, on EVERY
+/// operation.
 ///
-/// Separate from [`SCOPE_EXTENSION`] because they are different axes.
-/// One key used to carry both — `role:admin` sat in `x-oxicloud-scope`
-/// alongside `share:read`, so a consumer could not tell a role floor from
-/// a credential scope from a principal kind. Three axes, three keys.
-pub const MINROLE_EXTENSION: &str = "x-oxicloud-minrole";
-
-/// The least privileged PRINCIPAL an operation admits, when it is not the
-/// default authenticated user: `visitor` or `public`.
+/// ```json
+/// "x-oxicloud-policy": { "caller": "admin" }
+/// ```
 ///
-/// `share:read` lived in `x-oxicloud-scope` and was never a scope — "a
-/// public-share visitor may reach this" is the principal axis.
-pub const PRINCIPAL_EXTENSION: &str = "x-oxicloud-principal";
-
-/// The credential SCOPE an operation requires, as `area:access` —
-/// `files:ro`. Inert until PR 2 mints credentials carrying a scope set.
-pub const SCOPE_EXTENSION: &str = "x-oxicloud-scope";
+/// Three sibling keys came first — `x-oxicloud-minrole`,
+/// `x-oxicloud-principal`, `x-oxicloud-scope` — each emitted only when it
+/// DIFFERED from the default, on the reasoning that marking 250
+/// operations `principal: user` was noise. That reasoning was wrong, and
+/// a consumer is why: absence could not be read. An operation with no
+/// marker might require a user session or might have no requirement at
+/// all, and a frontend deciding whether to prompt for elevation before
+/// issuing a call cannot act on that. So the object is always present and
+/// always complete.
+///
+/// `caller` is ONE ladder, weakest first:
+///
+/// `public` < `visitor` < `user` < `internal` < `admin` < `owner`
+///
+/// It collapses what the engine holds as two axes — `MinPrincipal` and
+/// `MinRole` — and the collapse is total rather than lossy: the compile
+/// step REFUSES `public`/`visitor` combined with a role floor, and a role
+/// floor implies an internal user, so every policy is exactly one of
+/// those six. `MinRole` has no `User` variant precisely because
+/// internal-vs-external is not a role; on the consumer's single ladder
+/// that distinction becomes `user` (any user, external included) versus
+/// `internal`.
+///
+/// Fields added as the axes land: `scope` (`"files:rw"`) in PR 2, and an
+/// `elevated` flag when `Condition::Elevated` exists — which is the case
+/// that motivated one object rather than more sibling keys.
+pub const POLICY_EXTENSION: &str = "x-oxicloud-policy";
 
 /// Injects the `bearerAuth` HTTP Bearer security scheme into the generated
 /// spec, and marks the operations a public-share visitor may reach.
@@ -1006,54 +1022,48 @@ pub fn mark_policies(
                 >("bearerAuth", [])]
             });
 
-            // One key per AXIS. A consumer can now tell "needs admin" from
-            // "a share visitor may read this" from "the credential must
-            // carry files:rw", which a single key could not express.
-            let mut ext = utoipa::openapi::extensions::ExtensionsBuilder::new();
+            // ONE object, on EVERY operation — see `POLICY_EXTENSION` for
+            // why absence-when-default was the wrong call.
             let mut notes: Vec<&str> = Vec::new();
 
+            // The object IS `Policy`, field for field. Keys are the
+            // struct's field names and every one is present, including
+            // explicit nulls — so the published contract evolves exactly
+            // when the Rust type does, instead of needing a shape
+            // decision per release. `elevation` is already a commented
+            // field on `Policy`; when it is uncommented it appears here
+            // and nothing else about the format changes.
+            let mut policy_obj = serde_json::Map::new();
+
+            policy_obj.insert(
+                "role".to_string(),
+                match policy.role {
+                    None => serde_json::Value::Null,
+                    Some(MinRole::Internal) => serde_json::json!("internal"),
+                    Some(MinRole::Admin) => serde_json::json!("admin"),
+                    Some(MinRole::Owner) => serde_json::json!("owner"),
+                },
+            );
+            policy_obj.insert(
+                "principal".to_string(),
+                match policy.principal {
+                    MinPrincipal::Public => serde_json::json!("public"),
+                    MinPrincipal::Visitor => serde_json::json!("visitor"),
+                    MinPrincipal::User => serde_json::json!("user"),
+                },
+            );
+            policy_obj.insert("scope".to_string(), serde_json::Value::Null);
+
             if let Some(role) = policy.role {
-                let name = match role {
-                    MinRole::Internal => "internal",
-                    MinRole::Admin => "admin",
-                    MinRole::Owner => "owner",
-                };
-                ext = ext.add(MINROLE_EXTENSION, serde_json::json!(name));
                 notes.push(match role {
                     MinRole::Internal => INTERNAL_NOTE,
                     MinRole::Admin => ADMIN_NOTE,
                     MinRole::Owner => OWNER_NOTE,
                 });
             }
-
-            // Only when it differs from the default (an authenticated
-            // user) — marking every operation "principal: user" would be
-            // noise on 270 of them.
             match policy.principal {
-                MinPrincipal::Visitor => {
-                    ext = ext.add(PRINCIPAL_EXTENSION, serde_json::json!("visitor"));
-                    notes.push(SHARE_NOTE);
-                }
-                MinPrincipal::Public => {
-                    ext = ext.add(PRINCIPAL_EXTENSION, serde_json::json!("public"));
-                    notes.push(PUBLIC_NOTE);
-                    // An EMPTY security array is OpenAPI's "no
-                    // authentication required", and it overrides the
-                    // document-level requirement. Without this the spec
-                    // claims a bearer is needed where none is — which it
-                    // does today for `/api/auth/login` and `/api/setup`,
-                    // because nothing declares them `public()` yet and
-                    // their compiled policy is therefore the default.
-                    //
-                    // So this is the mechanism that makes the published
-                    // bearer requirement TRUE, and it starts working the
-                    // moment those routes declare what they are.
-                    // `[]`, not `[{}]`: an EMPTY array removes the
-                    // document-level requirement, while an array holding
-                    // an empty object means auth is OPTIONAL. Only the
-                    // first says "no credential needed".
-                    op.security = Some(Vec::new());
-                }
+                MinPrincipal::Visitor => notes.push(SHARE_NOTE),
+                MinPrincipal::Public => notes.push(PUBLIC_NOTE),
                 MinPrincipal::User => {}
             }
 
@@ -1062,18 +1072,24 @@ pub fn mark_policies(
                     Access::ReadOnly => "ro",
                     Access::ReadWrite => "rw",
                 };
-                ext = ext.add(
-                    SCOPE_EXTENSION,
+                policy_obj.insert(
+                    "scope".to_string(),
                     serde_json::json!(format!("{}:{access}", area_name(scope))),
                 );
             }
 
-            if notes.is_empty() && policy.scope.is_none() {
-                // No axis differs from the default, so no marker — but
-                // the security array above is already set.
+            op.extensions = Some(
+                utoipa::openapi::extensions::ExtensionsBuilder::new()
+                    .add(POLICY_EXTENSION, serde_json::Value::Object(policy_obj))
+                    .build(),
+            );
+
+            if notes.is_empty() {
+                // Nothing to SAY in prose — the default policy needs no
+                // sentence of explanation — but the object above is
+                // emitted either way.
                 continue;
             }
-            op.extensions = Some(ext.build());
 
             let note = notes.join("\n\n");
             op.description = Some(match op.description.take() {
@@ -1095,7 +1111,7 @@ mod tests {
     /// drift from and nothing to compare. What IS worth pinning is that
     /// each axis gets its own key — one key used to carry all three.
     #[test]
-    fn each_axis_marks_its_own_extension_key() {
+    fn every_operation_carries_its_whole_policy() {
         use crate::application::ports::scope_ports::{Condition, MinRole};
         use crate::application::services::scope_table::{PolicyRegistry, Site};
 
@@ -1116,21 +1132,24 @@ mod tests {
         mark_policies(&mut openapi, &registry);
         let spec = serde_json::to_value(openapi).expect("spec serializes");
 
-        let admin = &spec["paths"]["/api/admin/users"]["get"];
-        assert_eq!(admin[MINROLE_EXTENSION], "admin", "a role floor is a ROLE");
-        assert!(
-            admin.get(PRINCIPAL_EXTENSION).is_none(),
-            "an admin route states no principal — the default is implied"
+        // The object is `Policy` field for field, on EVERY operation,
+        // with explicit nulls. Absence used to mean "the default", which
+        // a consumer could not distinguish from "no requirement" — the
+        // reason a frontend could not decide whether to prompt before
+        // issuing a call.
+        let admin = &spec["paths"]["/api/admin/users"]["get"][POLICY_EXTENSION];
+        assert_eq!(
+            *admin,
+            serde_json::json!({"role": "admin", "principal": "user", "scope": null}),
+            "a role floor is the ROLE field, and the other two are still stated"
         );
 
-        let shared = &spec["paths"]["/api/files/{id}"]["get"];
+        let shared = &spec["paths"]["/api/files/{id}"]["get"][POLICY_EXTENSION];
         assert_eq!(
-            shared[PRINCIPAL_EXTENSION], "visitor",
-            "visitor-reachable is the PRINCIPAL axis, never a scope"
-        );
-        assert!(
-            shared.get(MINROLE_EXTENSION).is_none(),
-            "a visitor route states no role floor"
+            *shared,
+            serde_json::json!({"role": null, "principal": "visitor", "scope": null}),
+            "visitor-reachable is the PRINCIPAL axis, never a scope, and the \
+             absent role floor is stated as null rather than omitted"
         );
 
         // A PUBLIC operation drops the bearer requirement, which is the
@@ -1155,14 +1174,18 @@ mod tests {
             "an empty security array removes the bearer requirement; \
              `[{{}}]` would mean auth is merely OPTIONAL"
         );
-        assert_eq!(login[PRINCIPAL_EXTENSION], "public");
+        assert_eq!(
+            login[POLICY_EXTENSION],
+            serde_json::json!({"role": null, "principal": "public", "scope": null})
+        );
 
         // And the sibling verb on that same path is untouched, which a
         // path-level marker could not express.
-        let deleted = &spec["paths"]["/api/files/{id}"]["delete"];
-        assert!(
-            deleted.get(PRINCIPAL_EXTENSION).is_none(),
-            "DELETE on an allowlisted path must NOT be marked visitor"
+        let deleted = &spec["paths"]["/api/files/{id}"]["delete"][POLICY_EXTENSION];
+        assert_eq!(
+            deleted["principal"], "user",
+            "DELETE on a visitor-allowed path must NOT be visitor — and now it \
+             SAYS `user` rather than leaving a reader to infer it from silence"
         );
     }
 }

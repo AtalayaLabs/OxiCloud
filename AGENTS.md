@@ -390,10 +390,24 @@ The test is the spec, not the path: if an operation appears in
 it by construction.
 
 **Do not write `security(...)` in `#[utoipa::path]`.** The engine derives
-the spec's auth markers from the operation's policy — `x-oxicloud-minrole`,
-`x-oxicloud-principal`, `x-oxicloud-scope`, and the `security` array itself.
-A hand-written one can only agree or be wrong, and `just gen-openapi` reports
-every disagreement.
+the spec's auth markers from the operation's policy — `x-oxicloud-policy`
+and the `security` array itself. A hand-written one can only agree or be
+wrong, and `just gen-openapi` reports every disagreement.
+
+`x-oxicloud-policy` is `Policy` field for field, on EVERY operation, with
+explicit nulls:
+
+```json
+"x-oxicloud-policy": { "role": null, "principal": "user", "scope": null }
+```
+
+Keys are the struct's field names deliberately, so the published contract
+evolves exactly when the Rust type does — `elevation` is already a
+commented field on `Policy` and will appear here when it is uncommented.
+Nothing is omitted when it equals the default: a consumer could not tell
+"a user session is required" from "no requirement", which is what a
+frontend needs in order to decide whether to prompt before issuing a
+call.
 
 The engine is in `docs/architecture/authorization-axes.md` (concepts) and
 `docs/plan/scope-gates.md` (design and rollout).

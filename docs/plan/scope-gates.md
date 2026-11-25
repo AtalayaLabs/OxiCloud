@@ -1961,15 +1961,41 @@ automatically, and cannot silently disagree with what is enforced —
 which is stronger than the cross-check this plan proposed earlier, since
 drift becomes impossible rather than merely detectable.
 
-**SHIPPED** (`0159fb215`, `7fbf0a6b6`). The spec's auth markers are
-projections of the compiled table, in three keys — one per axis, because
-`x-oxicloud-scope` had been carrying a role floor and a principal kind
-neither of which is a scope:
+**SHIPPED** (`0159fb215`, `7fbf0a6b6`), then reshaped once: the spec's
+auth marker is ONE object per operation, mirroring `Policy` field for
+field, on all 250 operations, with explicit nulls.
 
-    x-oxicloud-minrole      internal | admin | owner
-    x-oxicloud-principal    visitor | public
-    x-oxicloud-scope        files:ro …          (inert until PR 2)
-    security: []            when the principal is Public
+    x-oxicloud-policy  { "role":      null | internal | admin | owner,
+                         "principal": public | visitor | user,
+                         "scope":     null | "files:rw" }   (inert until PR 2)
+    security: []       when the principal is Public
+
+Three sibling keys came first — `x-oxicloud-minrole`,
+`x-oxicloud-principal`, `x-oxicloud-scope` — each emitted only when it
+DIFFERED from the default, since marking 250 operations `principal: user`
+looked like noise. Two things were wrong with that:
+
+- **absence could not be read.** An unmarked operation might require a
+  user session or have no requirement at all, and a frontend deciding
+  whether to prompt for elevation before issuing a call cannot act on
+  that. Ed's case, and the reason the object is always complete.
+- **the shape was a hand-made projection**, so every new axis would need
+  a fresh decision about how to express it — and a decision taken under
+  time pressure is where formats collapse. Keying on `Policy`'s own field
+  names removes the decision: the JSON evolves when the struct does.
+
+A hash rather than an array, because an array would mirror the
+DECLARATION (`[Condition; N]`) while an operation's effective policy is
+the FOLD of several declarations — nest plus route. The object mirrors
+what `evaluate` is handed.
+
+`scope` is `null` on all 250 today. The native OpenAPI slot for scopes
+(the array in a security requirement) is NOT usable for it: `bearerAuth`
+is declared `type: http, scheme: bearer`, and the spec requires that
+array to be empty for any scheme that is not `oauth2`/`openIdConnect`.
+Using it would mean redeclaring the scheme as `oauth2` and describing a
+flow we do not implement for the bearer most calls use — a PR 2
+decision, recorded here so it is not rediscovered.
 
 It gained three gates the constants could not express: `owner` on
 transfer-ownership (previously mislabelled `role:admin`), and `internal`
