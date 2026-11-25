@@ -717,6 +717,14 @@ line is drawn between them rather than around "media":
   the app-password default (`files,calendar,contacts`) withholds
   biometrics by construction — the same reason `enable_faces` is opt-in.
 
+**The split is by OPERATION, not by collection, and that matters for
+routes not yet written.** Album sharing is planned and playlist sharing
+exists; both are `sharing`, while everything else under those collections
+is `files`. So a `share*` subresource arriving under any media collection
+follows the playlist precedent rather than inheriting its parent's area —
+the question is never "which collection is this under" but "does this
+create a grant to another user".
+
 Three naming traps:
 
 - **`contacts` is the caller's own address books**, not the user
