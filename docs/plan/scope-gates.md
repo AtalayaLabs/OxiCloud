@@ -2344,7 +2344,7 @@ belongs to the engine.
 
 | surface | auth | in the spec? | action |
 |---|---|---|---|
-| `/api/wopi/*` | `auth_middleware` + CSRF, so a `CurrentCaller` exists | **no** | make it a `GatedRouter` AND document it with `#[utoipa::path]` |
+| ~~`/api/wopi/*`~~ | **DONE** (`bee8c9667`) — `GatedRouter` + the policy gate via `route_layer`, and the operation is documented. No declaration needed: the default policy already demands a user, which is what `AuthUser` asks for | yes, now | make it a `GatedRouter` AND document it with `#[utoipa::path]` |
 | `/wopi/*` | `?access_token=`, validated in the handler (`wopi_handler.rs`) | **no** | leave it a plain `Router` |
 
 **`/wopi/*` must NOT be gated.** It carries no `CurrentCaller`, so the
