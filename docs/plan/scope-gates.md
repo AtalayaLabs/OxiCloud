@@ -1099,7 +1099,7 @@ you must remember to write does. So the value is two narrower things:
 |---|---|
 | `require_internal_user_layer` — SIX sites, not 11: three DAV nests in `main.rs` (**removed**, `06a046593`) plus three per-METHOD sites in `routes.rs` | `[Condition::role(MinRole::Internal)]` — on the six DAV operations, and method-qualified for the three REST sites, which `.policy()` cannot express because a `MethodRouter` hides its methods |
 | ~~admin middleware on `/api/admin/*`~~ | **removed** (`b80c1a12b`) — `admin_router.policy([role(Admin)])` on the nest |
-| hand-rolled owner check in `transfer_ownership` | `[Condition::role(MinRole::Owner)]` — declared, but the service check is still in place until `admin_routes()` can declare per verb |
+| ~~hand-rolled owner check in `transfer_ownership`~~ | **removed** (`7dc03cfb7`) — `policy_post(h).policy([role(Owner)])` at the route, tightening the admin nest |
 | `anonymous_allowlist_layer` (1 site) | `[Condition::visitor_allowed()]` on the allowlisted routes; keeps the allowlist itself, and is the mechanism § Authentication by default would promote to the root |
 | `require_no_password_change_pending_layer` (8 sites) | **untouched** — a scope narrowing, deleted later by `authn-pipeline.md` part B. Below. |
 | `require_dpop_layer` (8 sites) | **untouched** — an integrity check, not an axis. § Not axes: integrity checks |
@@ -2144,7 +2144,7 @@ Landing them together means PR 2's risk rides in on PR 1's green suite.
 | 4-xv | delete the hand-written `security(...)` annotations | **done** — `8f6aaa73c`; 231 gone, `openapi.json` byte-identical |
 | 4-xvi | a bare `Router` cannot enter the API tree | **done** — `497908491`; `nest` and `.policy()` take only a `GatedRouter`, no escape hatch |
 | 4-xvii | `into_router()` / `into_policies()` instead of `.0`/`.1` | **done** — `6d1f60582` |
-| **4-xviii** | `transfer_ownership`: declare `Owner` at its route, drop the service check | **not started** — the last central declaration that HAS a route, now possible since `admin_routes` is a `GatedRouter` |
+| 4-xviii | `transfer_ownership`: declare `Owner` at its route, drop the service check | **done** — `7dc03cfb7`; `policy_declarations.rs` now holds nothing with a route |
 | **4-xix** | gate `main.rs`'s `/api/*` assembly | **not started** — optional; `auth_protected_routes` mounts there, so the type guard does not reach it |
 
 Step 1 landed as `CurrentCaller.kind: CallerKind`, not the `is_external`
