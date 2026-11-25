@@ -88,6 +88,12 @@ use crate::interfaces::middleware::server_status::{HeaderPayload, ProgressHeader
 #[openapi(
     modifiers(&SecurityAddon),
     paths(
+        // WOPI — only the FRONTEND endpoint. `/wopi/*` is the protocol
+        // surface the Office server calls with `?access_token=`; it has no
+        // `CurrentCaller`, so it is deliberately absent from the spec and
+        // therefore from the policy engine. See § Between PR 1 and PR 2 in
+        // `docs/plan/scope-gates.md`.
+        handlers::wopi_handler::get_editor_url,
         handlers::admin_appearance_handler::get_appearance,
         handlers::admin_appearance_handler::reload_themes,
         handlers::admin_appearance_handler::select_theme,
@@ -453,6 +459,7 @@ use crate::interfaces::middleware::server_status::{HeaderPayload, ProgressHeader
         // The full six-class audit, and why the rule is off rather than
         // merely downgraded, is in `checks/openapi/redocly.yaml`.
         schemas(
+            handlers::wopi_handler::EditorUrlResponse,
             crate::application::dtos::theme_dto::AppearanceDto,
             crate::application::dtos::theme_dto::ThemeDiagnosticDto,
             crate::application::dtos::theme_dto::SelectThemeDto,

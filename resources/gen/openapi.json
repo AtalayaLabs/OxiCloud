@@ -15728,6 +15728,83 @@
           }
         ]
       }
+    },
+    "/api/wopi/editor-url": {
+      "get": {
+        "tags": [
+          "wopi"
+        ],
+        "summary": "GET /api/wopi/editor-url — Returns the editor iframe URL + WOPI token.",
+        "description": "This endpoint is behind normal auth middleware. The authenticated user\nrequests a WOPI session for a specific file.",
+        "operationId": "get_editor_url",
+        "parameters": [
+          {
+            "name": "file_id",
+            "in": "query",
+            "description": "The file to open (UUID)",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "action",
+            "in": "query",
+            "description": "`edit` (default) or `view`. It is a REQUEST, not a grant: the minted token's write capability comes from the caller's real Update permission.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "A host-page URL and a freshly minted WOPI token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EditorUrlResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or a share visitor — `AuthUser` requires role >= User and `CallerKind::Visitor` reports `Anonymous`, so a ring cannot open an editor. A visitor downloads the file instead.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "No Read permission on the file",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No WOPI client is configured for this file's extension",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
     }
   },
   "components": {
@@ -19042,6 +19119,30 @@
             "type": "boolean",
             "description": "Requires every anonymous link in this drive to carry a password.\nEnforced at `share_service::create_shared_link`; the corresponding\nstate is `storage.shares.password_hash IS NOT NULL`.",
             "default": false
+          }
+        }
+      },
+      "EditorUrlResponse": {
+        "type": "object",
+        "description": "Response from the editor URL API endpoint.",
+        "required": [
+          "editor_url",
+          "access_token",
+          "access_token_ttl"
+        ],
+        "properties": {
+          "access_token": {
+            "type": "string",
+            "description": "A WOPI access token scoped to this file and this caller's ACTUAL\nrights — `resolve_mint_target` derives `can_write` from the\ncaller's Update permission, not from the requested action."
+          },
+          "access_token_ttl": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Seconds until `access_token` expires."
+          },
+          "editor_url": {
+            "type": "string",
+            "description": "The host page to load in an iframe, on OUR origin."
           }
         }
       },

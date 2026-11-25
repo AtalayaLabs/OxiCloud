@@ -2664,6 +2664,55 @@ impl MagicLinkConfig {
     }
 }
 
+impl FeaturesConfig {
+    /// Every feature flag ON, for generating the OpenAPI spec.
+    ///
+    /// The spec's policy markers come from the BUILT router, and
+    /// `create_api_routes` branches on these flags — so a feature that is
+    /// off while the spec is generated contributes no declarations, and
+    /// its operations publish the default policy instead of the one the
+    /// server would enforce with the feature on. The operation list is
+    /// unaffected, since that comes from the `#[utoipa::path]` macros at
+    /// compile time, which is what makes it easy to miss: the spec looks
+    /// complete while a marker quietly reads as the default.
+    ///
+    /// Written as an EXHAUSTIVE literal on purpose — **do not add
+    /// `..Default::default()`**. Adding a field to `FeaturesConfig` then
+    /// fails to compile until it is listed here, so a new flag that
+    /// defaults to off cannot silently reintroduce the problem. The
+    /// non-flag fields below are the only ones taken from `Default`,
+    /// because they are retention windows and a prefix, not features.
+    pub fn all_enabled() -> Self {
+        let base = Self::default();
+        Self {
+            enable_file_sharing: true,
+            enable_trash: true,
+            enable_search: true,
+            enable_music: true,
+            enable_photos: true,
+            enable_recent_changes: true,
+            enable_places: true,
+            enable_faces: true,
+            expose_system_users: true,
+            enable_video_thumbnails: true,
+            enable_external_mounts: true,
+            enable_webdav: true,
+            enable_caldav: true,
+            enable_carddav: true,
+            enable_calendars: true,
+            enable_contacts: true,
+            enable_nextcloud: true,
+            enable_message_bus: true,
+            enable_markdown_collab: true,
+            enable_shared_worker_bus: true,
+            webdav_drive_listing_prefix: base.webdav_drive_listing_prefix,
+            grant_cleanup: base.grant_cleanup,
+            notifications_retention_days: base.notifications_retention_days,
+            file_touches_retention_days: base.file_touches_retention_days,
+        }
+    }
+}
+
 /// Feature configuration (feature flags)
 #[derive(Debug, Clone)]
 pub struct FeaturesConfig {

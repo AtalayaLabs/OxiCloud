@@ -1424,12 +1424,26 @@ async fn run(config: common::config::AppConfig) -> Result<(), Box<dyn std::error
         // Same reasoning as NC above: merge before the trace layer so
         // WOPI requests appear in the structured log channel.
         if let Some((wopi_protocol, wopi_api)) = wopi_routes {
+            // The gate, so the policy the spec PUBLISHES for
+            // `/api/wopi/editor-url` is the one enforced. Without it the
+            // operation would carry `security: bearerAuth` in the spec
+            // while only the handler's `AuthUser` extractor stood behind
+            // it — a claim no router check backed.
+            //
+            // `route_layer`, as on the protected `/api` subtree: it reads
+            // `MatchedPath`, and an unmatched `/api/wopi/*` must stay a
+            // 404 rather than become a 401.
             let wopi_api_protected = wopi_api
+                .route_layer(axum::middleware::from_fn_with_state(
+                    app_state.clone(),
+                    oxicloud::interfaces::middleware::policy::policy_gate_layer,
+                ))
                 .layer(axum::middleware::from_fn(csrf_middleware))
                 .layer(axum::middleware::from_fn_with_state(
                     app_state.clone(),
                     auth_middleware,
-                ));
+                ))
+                .into_router();
             app = app
                 .nest("/wopi", wopi_protocol.layer(access_log!("http::wopi")))
                 .nest(

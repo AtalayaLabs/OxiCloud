@@ -61,7 +61,33 @@ async fn main() {
             .connect_lazy(url)
             .expect("a parseable connection string")
     };
-    let config = AppConfig::default();
+    // EVERY feature on, deliberately.
+    //
+    // The policy markers come from the built router, and
+    // `create_api_routes` branches on feature flags — so a feature that is
+    // off in `AppConfig::default()` has no router here, hence no
+    // declarations, hence default markers for operations the server would
+    // in fact gate differently. Four are off by default: faces, external
+    // mounts, NextCloud and WOPI.
+    //
+    // The operation LIST is unaffected (it comes from the `#[utoipa::path]`
+    // macros at compile time), which is what makes this easy to miss: the
+    // spec looks complete while a marker quietly reads as the default.
+    //
+    // Today nothing drifts — those features' routes resolve through PREFIX
+    // declarations like the `/admin` nest, which exist whether or not the
+    // routes were built, and turning them all on changes 0 of 250
+    // operations. Pinning them on keeps it that way, so the published spec
+    // describes what the BUILD can serve rather than what one config
+    // enables.
+    //
+    // `all_enabled()` rather than a list of flags here: it is an
+    // exhaustive literal, so a feature added later fails to COMPILE until
+    // it is listed, where a list here would just silently miss it. WOPI
+    // lives in its own config section, so it is set separately.
+    let mut config = AppConfig::default();
+    config.features = oxicloud::common::config::FeaturesConfig::all_enabled();
+    config.wopi.enabled = true;
     let url = "postgres://spec-only@127.0.0.1:1/oxicloud_spec_only";
     let pools = DbPools {
         primary: lazy(url),

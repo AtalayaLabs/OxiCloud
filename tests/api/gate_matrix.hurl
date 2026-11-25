@@ -244,6 +244,22 @@ HTTP 401
 [Asserts]
 header "WWW-Authenticate" exists
 
+# WOPI's FRONTEND endpoint. `/api/wopi/editor-url` mints a token
+# usable against `/wopi/files/{id}/contents`, so an unauthenticated
+# caller reaching it would be a credential-minting hole. It became a
+# `GatedRouter` with the policy gate applied when WOPI was folded in;
+# before that only the handler's `AuthUser` extractor stood behind it.
+#
+# This belongs HERE and not in `wopi_authz.hurl`: that file logs in
+# several principals, and hurl keeps ONE cookie jar per file, so a
+# request with no `Authorization` header there still carries the last
+# login's `oxicloud_access` cookie. Written there first, this pin got
+# 404 — the anti-enumeration answer for a caller who cannot see the
+# file — rather than the 401 it claimed to test.
+GET {{base_url}}/api/wopi/editor-url?file_id=00000000-0000-0000-0000-000000000000&action=edit
+HTTP 401
+
+
 GET {{base_url}}/api/admin/users
 HTTP 401
 

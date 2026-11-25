@@ -524,10 +524,15 @@ fn default_action() -> String {
 }
 
 /// Response from the editor URL API endpoint.
-#[derive(Serialize)]
+#[derive(Serialize, utoipa::ToSchema)]
 pub struct EditorUrlResponse {
+    /// The host page to load in an iframe, on OUR origin.
     pub editor_url: String,
+    /// A WOPI access token scoped to this file and this caller's ACTUAL
+    /// rights — `resolve_mint_target` derives `can_write` from the
+    /// caller's Update permission, not from the requested action.
     pub access_token: String,
+    /// Seconds until `access_token` expires.
     pub access_token_ttl: i64,
 }
 
@@ -600,6 +605,21 @@ async fn authorize_wopi_access<S: FileRetrievalUseCase>(
 ///
 /// This endpoint is behind normal auth middleware. The authenticated user
 /// requests a WOPI session for a specific file.
+#[utoipa::path(
+    get,
+    path = "/api/wopi/editor-url",
+    params(
+        ("file_id" = String, Query, description = "The file to open (UUID)"),
+        ("action" = Option<String>, Query, description = "`edit` (default) or `view`. It is a REQUEST, not a grant: the minted token's write capability comes from the caller's real Update permission."),
+    ),
+    responses(
+        (status = 200, description = "A host-page URL and a freshly minted WOPI token", body = EditorUrlResponse),
+        (status = 401, description = "Not signed in, or a share visitor — `AuthUser` requires role >= User and `CallerKind::Visitor` reports `Anonymous`, so a ring cannot open an editor. A visitor downloads the file instead.", body = crate::interfaces::errors::ApiErrorBody),
+        (status = 403, description = "No Read permission on the file", body = crate::interfaces::errors::ApiErrorBody),
+        (status = 404, description = "No WOPI client is configured for this file's extension", body = crate::interfaces::errors::ApiErrorBody),
+    ),
+    tag = "wopi"
+)]
 pub async fn get_editor_url(
     auth_user: AuthUser,
     Query(params): Query<EditorUrlParams>,
@@ -861,11 +881,28 @@ async fn get_supported_extensions(State(state): State<WopiState>) -> Response {
 /// Returns a tuple: (wopi_protocol_router, wopi_api_router)
 /// - wopi_protocol_router: mounted at `/wopi` (no auth middleware)
 /// - wopi_api_router: mounted at `/api/wopi` (behind auth middleware)
+///
+/// Only the SECOND is a `GatedRouter`, and the asymmetry is the point.
+///
+/// `/api/wopi/editor-url` is called by our own frontend, arrives with a
+/// `CurrentCaller`, and is in `openapi.json` — so a policy can be
+/// projected onto it and the engine enforces one. It needs no declaration:
+/// the default policy already demands a user, which is exactly what
+/// `AuthUser` asks for (`CallerKind::Visitor` reports `Anonymous`, so a
+/// share visitor is refused and downloads the file instead).
+///
+/// `/wopi/*` must NOT be gated. It is authenticated by `?access_token=`,
+/// validated inside each handler; there is no `CurrentCaller` for the
+/// axes to read, so the default policy would 401 every Office client.
+/// Two of its routes are not even server-to-server — the browser loads
+/// `/wopi/edit/{id}` as an iframe and fetches `/supported-extensions` —
+/// which is why binding the whole subtree to an internal interface would
+/// break the editor. Only `/wopi/files/*` is a candidate for that.
 pub fn wopi_routes(
     wopi_state: WopiState,
 ) -> (
     Router<Arc<crate::common::di::AppState>>,
-    Router<Arc<crate::common::di::AppState>>,
+    crate::interfaces::api::policy_router::GatedRouter<Arc<crate::common::di::AppState>>,
 ) {
     let protocol_router = Router::new()
         // CheckFileInfo
@@ -888,8 +925,11 @@ pub fn wopi_routes(
         .route("/{*rest}", any(wopi_not_found))
         .with_state(wopi_state.clone());
 
-    let api_router = Router::new()
-        .route("/editor-url", get(get_editor_url))
+    let api_router = crate::interfaces::api::policy_router::GatedRouter::new()
+        .route(
+            "/editor-url",
+            crate::interfaces::api::policy_router::get(get_editor_url),
+        )
         .with_state(wopi_state);
 
     (protocol_router, api_router)

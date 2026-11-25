@@ -607,6 +607,18 @@ GET {{base_url}}/api/files/{{inside_file_id}}/manifest
 HTTP 403
 
 
+# WOPI: a visitor may DOWNLOAD a shared file but may not open an
+# editor session on it. `AuthUser` requires role >= User and
+# `CallerKind::Visitor` reports `Anonymous`, so the handler always
+# refused — but until `/api/wopi` became a `GatedRouter` that
+# refusal lived only in the extractor, while the spec published
+# `security: bearerAuth`. The policy gate now answers first, so
+# this pins the ROUTER's refusal and not just the handler's.
+GET {{base_url}}/api/wopi/editor-url?file_id={{inside_file_id}}&action=edit
+
+HTTP 403
+
+
 # The ROLE axis against a visitor. Every other refusal here is the
 # principal axis (`user_session_required`); this one would also be
 # refused for a plain user, and asserting it from a ring pins that
