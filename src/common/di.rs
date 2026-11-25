@@ -98,6 +98,24 @@ pub struct AppServiceFactory {
     locale_registry: Arc<LocaleRegistry>,
 }
 
+/// What an `AppState` is being built FOR.
+///
+/// `generate-openapi` builds the REAL service graph, because the shape of
+/// the router depends on it — feature flags and which optional services
+/// exist decide which sub-routers are mounted, and therefore which
+/// operations have declarations. The graph cannot be faked. But its
+/// construction-time DATABASE READS can be skipped, and in CI they must
+/// be: there is no Postgres there.
+pub enum Bootstrap {
+    /// Serving requests. Every construction-time read happens and a
+    /// failure is fatal — a server that cannot reach its database at boot
+    /// should say so loudly rather than start degraded.
+    Serving,
+    /// Generating the OpenAPI spec. Construction-time reads are skipped
+    /// and their defaults used. `main` never passes this.
+    SpecOnly,
+}
+
 impl AppServiceFactory {
     /// Creates a new service factory
     pub fn new(storage_path: PathBuf, locales_path: PathBuf) -> Self {
@@ -1587,6 +1605,7 @@ impl AppServiceFactory {
     pub async fn build_app_state(
         &self,
         db_pools: Option<DbPools>,
+        bootstrap: Bootstrap,
     ) -> Result<AppState, DomainError> {
         // Hoisted so ONE atomic is shared between `AppState` (read by
         // `/api/config` and the register gate) and `AuthApplicationService`
@@ -2728,18 +2747,32 @@ impl AppServiceFactory {
         })
         .await
         .map_err(|e| DomainError::internal_error("Theme", e.to_string()))??;
+        // The one construction-time read that is FATAL, and so the one
+        // thing standing between `generate-openapi` and a database. It
+        // asks which theme is active, which cannot change the shape of the
+        // API — so `SpecOnly` resolves to the default instead of reading.
+        let settings_repo_for_theme = Arc::new(
+            crate::infrastructure::repositories::pg::SettingsPgRepository::new(pool.clone()),
+        );
+        let theme = match bootstrap {
+            Bootstrap::Serving => {
+                crate::application::services::theme_service::ThemeService::new(
+                    settings_repo_for_theme,
+                    catalogue,
+                )
+                .await?
+            }
+            Bootstrap::SpecOnly => {
+                crate::application::services::theme_service::ThemeService::without_stored_selection(
+                    settings_repo_for_theme,
+                    catalogue,
+                )?
+            }
+        };
         let theme_service = Arc::new(
-            crate::application::services::theme_service::ThemeService::new(
-                Arc::new(
-                    crate::infrastructure::repositories::pg::SettingsPgRepository::new(
-                        pool.clone(),
-                    ),
-                ),
-                catalogue,
-            )
-            .await?
-            .with_loader(theme_loader)
-            .with_forced_default(self.config.themes.force_default),
+            theme
+                .with_loader(theme_loader)
+                .with_forced_default(self.config.themes.force_default),
         );
 
         // 9. Assemble final AppState

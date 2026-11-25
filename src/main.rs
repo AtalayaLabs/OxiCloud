@@ -100,7 +100,10 @@ async fn build_app_state_with_boot_retry(
             maintenance: p.maintenance.clone(),
         });
 
-        match factory.build_app_state(pools).await {
+        match factory
+            .build_app_state(pools, oxicloud::common::di::Bootstrap::Serving)
+            .await
+        {
             Ok(state) => {
                 if attempt > 1 {
                     tracing::info!(attempt, "storage backend reachable — continuing boot");

@@ -49,6 +49,26 @@ impl<S: SettingsRepository> ThemeService<S> {
             mutation: Mutex::new(()),
         })
     }
+    /// Construct WITHOUT reading the stored selection, resolving to the
+    /// built-in default.
+    ///
+    /// For `Bootstrap::SpecOnly`, where there is no database to read: the
+    /// stored theme name cannot change the SHAPE of the API, so the spec
+    /// does not care which one is active.
+    pub fn without_stored_selection(
+        repository: Arc<S>,
+        catalogue: ThemeCatalogue,
+    ) -> Result<Self, DomainError> {
+        let snapshot = Self::resolve(Arc::new(catalogue), None)?;
+        Ok(Self {
+            repository,
+            loader: None,
+            force_default: false,
+            snapshot: ArcSwap::from_pointee(snapshot),
+            mutation: Mutex::new(()),
+        })
+    }
+
     fn resolve(
         catalogue: Arc<ThemeCatalogue>,
         selected: Option<String>,

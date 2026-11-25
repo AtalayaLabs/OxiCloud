@@ -1,5 +1,5 @@
 use oxicloud::common::config::AppConfig;
-use oxicloud::common::di::AppServiceFactory;
+use oxicloud::common::di::{AppServiceFactory, Bootstrap};
 use oxicloud::common::spec_tag::require_release_tag_or_exit;
 use oxicloud::infrastructure::db::DbPools;
 use oxicloud::interfaces::api::{ApiDoc, mark_policies};
@@ -45,16 +45,24 @@ async fn main() {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let mut openapi = ApiDoc::openapi();
 
-    // A pool that never connects. The router is only CONSTRUCTED here, so
-    // no query runs through it.
+    // A pool that CANNOT connect — port 1, where nothing listens.
+    //
+    // Deliberately not the configured URL. This said "a pool that never
+    // connects" and pointed at `AppConfig::default()`, which on a
+    // developer's machine is a RUNNING local Postgres: the one fatal
+    // construction-time read succeeded here and timed out in CI, so the
+    // claim was verified on a machine that disproved it. An unconnectable
+    // URL makes the generator fail the same way everywhere, which is the
+    // only way that claim stays true.
     let lazy = |url: &str| {
         PgPoolOptions::new()
             .max_connections(1)
+            .acquire_timeout(std::time::Duration::from_secs(2))
             .connect_lazy(url)
             .expect("a parseable connection string")
     };
     let config = AppConfig::default();
-    let url = &config.database.connection_string;
+    let url = "postgres://spec-only@127.0.0.1:1/oxicloud_spec_only";
     let pools = DbPools {
         primary: lazy(url),
         maintenance: lazy(url),
@@ -70,7 +78,7 @@ async fn main() {
         config.clone(),
     );
     let state = factory
-        .build_app_state(Some(pools))
+        .build_app_state(Some(pools), Bootstrap::SpecOnly)
         .await
         .expect("service graph builds without a database");
     // The SAME function the server installs its registry from, so the
