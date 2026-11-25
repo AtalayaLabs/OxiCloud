@@ -19,11 +19,22 @@
 //! happens — `policy_declarations`'s test compiles every operation in
 //! `openapi.json` and refuses to pass on a boot error or an orphan. What
 //! this layer does per request is resolve ONE operation's chain, which is
-//! a prefix scan over ~20 declarations. Precomputing the whole table at
-//! boot would need the operation list at boot, i.e. parsing `openapi.json`
-//! in the server, to save a scan that is orders of magnitude below the DB
-//! round trips on every path it guards. If it ever shows up in a profile,
-//! a cache keyed by `Op` goes here and changes nothing else.
+//! a prefix scan over 67 declarations — it was ~20 when this was written,
+//! and PR 1 tripled it by moving declarations out of the central table and
+//! onto their routes, so expect it to keep growing.
+//!
+//! Precomputing the whole table at boot needs the operation list at boot.
+//! That is cheaper than this comment used to claim — `ApiDoc::openapi()`
+//! builds the spec IN PROCESS, so no file has to be parsed — but it buys
+//! a scan that is still orders of magnitude below the DB round trips on
+//! every path it guards. If it shows up in a profile, a cache keyed by
+//! `Op` goes here and changes nothing else.
+//!
+//! What did matter was the LOCK, not the scan: `leak` interned the method
+//! and the template through a global `Mutex`, so every gated request
+//! serialized on it. A scan costs each request a little; a global lock
+//! costs the whole server its concurrency. See `leak` and
+//! `method_static`.
 
 use std::sync::LazyLock;
 
@@ -100,7 +111,7 @@ fn op_from_parts(method: &str, matched: &str) -> Option<Op> {
     if let Some(area) = dav_area(matched) {
         return Some(Op::Dav(area, dav_access(method)));
     }
-    Some(Op::Rest(leak(method), leak(matched)))
+    Some(Op::Rest(method_static(method), leak(matched)))
 }
 
 /// `Op` holds `&'static str` because every operation is known at compile
@@ -112,14 +123,63 @@ fn op_from_parts(method: &str, matched: &str) -> Option<Op> {
 /// first requests after boot, which is why this is a leak rather than a
 /// cache: the alternative is a lock on a hot path to store strings that
 /// are never freed anyway.
-fn leak(s: &str) -> &'static str {
-    // A `Box::leak` per request would grow without bound, so intern.
-    use std::collections::HashSet;
-    use std::sync::Mutex;
-    static INTERNED: LazyLock<Mutex<HashSet<&'static str>>> =
-        LazyLock::new(|| Mutex::new(HashSet::new()));
+/// The HTTP method as a `&'static str`, WITHOUT touching the interner.
+///
+/// Methods are a closed set, so a match is both exact and free. This used
+/// to go through `leak`, which means every gated request took a global
+/// mutex to discover that "GET" is "GET" — on the listing and thumbnail
+/// paths, i.e. the ones AGENTS.md names as hot.
+fn method_static(method: &str) -> &'static str {
+    match method {
+        "GET" => "GET",
+        "POST" => "POST",
+        "PUT" => "PUT",
+        "DELETE" => "DELETE",
+        "PATCH" => "PATCH",
+        "HEAD" => "HEAD",
+        "OPTIONS" => "OPTIONS",
+        // WebDAV / CalDAV / CardDAV.
+        "PROPFIND" => "PROPFIND",
+        "PROPPATCH" => "PROPPATCH",
+        "MKCOL" => "MKCOL",
+        "COPY" => "COPY",
+        "MOVE" => "MOVE",
+        "LOCK" => "LOCK",
+        "UNLOCK" => "UNLOCK",
+        "REPORT" => "REPORT",
+        "MKCALENDAR" => "MKCALENDAR",
+        // Anything else falls back to the interner. It MUST still produce
+        // an `Op`: `op_from_parts` returning `None` makes the gate pass
+        // the request THROUGH, so returning `None` for an unrecognised
+        // method would let an exotic one skip the gate entirely. An
+        // unknown method matches no declaration and so compiles to the
+        // default policy, which is what refuses it — the same as before.
+        other => leak(other),
+    }
+}
 
-    let mut set = INTERNED.lock().expect("interner poisoned");
+/// Intern a route TEMPLATE so it can live in an `Op<'static>`.
+///
+/// Templates are a fixed set fixed at compile time, so after the first
+/// request to each route the set never changes again. That makes this a
+/// read-mostly structure, and it is an `RwLock` for exactly that reason:
+/// a `Mutex` here serialized EVERY gated request behind one lock, which
+/// is a throughput ceiling rather than a latency cost — invisible in a
+/// single-request measurement and sharply visible under concurrency.
+fn leak(s: &str) -> &'static str {
+    use std::collections::HashSet;
+    use std::sync::RwLock;
+    static INTERNED: LazyLock<RwLock<HashSet<&'static str>>> =
+        LazyLock::new(|| RwLock::new(HashSet::new()));
+
+    // The fast path, taken by every request after the first to a given
+    // route: a SHARED read, so concurrent requests do not queue.
+    if let Some(found) = INTERNED.read().expect("interner poisoned").get(s) {
+        return found;
+    }
+
+    let mut set = INTERNED.write().expect("interner poisoned");
+    // Re-check: another thread may have interned it between the two locks.
     if let Some(found) = set.get(s) {
         return found;
     }
@@ -227,6 +287,36 @@ pub async fn policy_gate_layer(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An unrecognised method must STILL produce an `Op`.
+    ///
+    /// Caught while removing the interner's global mutex from the request
+    /// path: `method_static` was first written to return `Option` and give
+    /// `None` for anything outside the known set, on the reasoning that an
+    /// unknown method matches no declaration anyway. It does not fail
+    /// closed — `policy_gate_layer` treats `None` as "no route matched"
+    /// and runs the handler — so an exotic method would have skipped the
+    /// gate entirely. An unknown method must instead compile to the
+    /// DEFAULT policy, which is what refuses it.
+    #[test]
+    fn an_unrecognised_method_still_yields_an_op() {
+        let op = op_from_parts("WEIRD", "/api/files/{id}");
+        assert!(
+            matches!(op, Some(Op::Rest("WEIRD", "/api/files/{id}"))),
+            "an unknown method must still produce an Op so the gate \
+             applies: {op:?}"
+        );
+
+        // And the policy it compiles to must demand a user, not nothing.
+        let policy = declarations()
+            .compile_one(op.expect("an op"))
+            .expect("the default compiles");
+        assert_eq!(
+            policy.principal,
+            crate::application::ports::scope_ports::MinPrincipal::User,
+            "an undeclared operation must inherit the default policy"
+        );
+    }
     use crate::application::ports::scope_ports::{Access, MinRole, Policy, Scope};
 
     /// A DAV request resolves to its METHOD, not its path: all three
