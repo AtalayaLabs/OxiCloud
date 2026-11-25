@@ -21,7 +21,6 @@ use uuid::Uuid;
 use crate::application::dtos::device_auth_dto::*;
 use crate::application::ports::scope_ports::Condition;
 use crate::application::services::device_auth_service::{DeviceAuthService, DeviceInfoDto};
-use axum::Router;
 
 use crate::common::di::AppState;
 use crate::interfaces::api::policy_router::{GatedRouter, post as policy_post};
@@ -44,8 +43,8 @@ pub fn device_auth_public_routes() -> GatedRouter<Arc<AppState>> {
         .route("/token", policy_post(device_token).policy(PUBLIC))
 }
 
-pub fn device_auth_protected_routes() -> Router<Arc<AppState>> {
-    Router::new()
+pub fn device_auth_protected_routes() -> GatedRouter<Arc<AppState>> {
+    GatedRouter::new()
         // User-facing endpoints (require valid session)
         .route("/verify", get(device_verify_info))
         .route("/verify", post(device_verify_action))

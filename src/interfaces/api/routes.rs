@@ -130,9 +130,7 @@ pub fn create_health_routes(app_state: &Arc<AppState>) -> Router<Arc<AppState>> 
 /// Declared per route rather than on the subtree, because this router is
 /// nested at `/api` alongside the protected one — a prefix declaration
 /// would cover both.
-pub fn create_public_api_routes(
-    app_state: &Arc<AppState>,
-) -> (Router<Arc<AppState>>, PolicyRegistry) {
+pub fn create_public_api_routes(app_state: &Arc<AppState>) -> GatedRouter<Arc<AppState>> {
     let share_service = app_state.share_service.clone();
     let i18n_service = Some(app_state.applications.i18n_service.clone());
 
@@ -217,7 +215,7 @@ pub fn create_public_api_routes(
             .with_state(app_state.clone()),
     );
 
-    router.finish()
+    router
 }
 
 /// Creates protected API routes for the application.
@@ -236,8 +234,8 @@ pub fn create_public_api_routes(
 pub fn api_router_and_policies(
     app_state: &Arc<AppState>,
 ) -> (Router<Arc<AppState>>, Router<Arc<AppState>>, PolicyRegistry) {
-    let (protected, protected_decls) = create_api_routes(app_state);
-    let (public, public_decls) = create_public_api_routes(app_state);
+    let (protected, protected_decls) = create_api_routes(app_state).finish();
+    let (public, public_decls) = create_public_api_routes(app_state).finish();
 
     // Both are nested at `/api` and both write their declarations RELATIVE
     // to themselves, so both rebase the same way.
@@ -298,7 +296,7 @@ pub fn api_router_and_policies(
 /// central table. The declarations come back as a registry because a
 /// `Router` cannot be asked what it holds, and the paths here are relative
 /// to this router, so `main.rs` rebases them under `/api`.
-pub fn create_api_routes(app_state: &Arc<AppState>) -> (Router<Arc<AppState>>, PolicyRegistry) {
+pub fn create_api_routes(app_state: &Arc<AppState>) -> GatedRouter<Arc<AppState>> {
     // Extract services from the pre-built AppState
     let folder_service = app_state.applications.folder_service_concrete.clone();
     let file_retrieval_service = app_state.applications.file_retrieval_service.clone();
@@ -1036,13 +1034,10 @@ pub fn create_api_routes(app_state: &Arc<AppState>) -> (Router<Arc<AppState>>, P
     // (benches/ROUND13.md §H1). Compression is likewise the global layer's
     // job — re-applying it here (no predicate) would compress media
     // downloads, burning CPU for ~0 gain and stripping `Content-Length`.
-    let (router, policy) = router
-        .layer(axum::middleware::from_fn_with_state(
-            app_state.clone(),
-            crate::interfaces::middleware::server_status::server_status_middleware,
-        ))
-        .finish();
-    (router, policy)
+    router.layer(axum::middleware::from_fn_with_state(
+        app_state.clone(),
+        crate::interfaces::middleware::server_status::server_status_middleware,
+    ))
 }
 
 /// Catch-all 404 for unknown `/api/*` paths. Pure log-anchoring

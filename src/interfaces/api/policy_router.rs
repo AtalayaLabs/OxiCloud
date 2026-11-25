@@ -345,6 +345,24 @@ where
         self.registry
     }
 
+    /// `Router::route_layer` — applies only to MATCHED routes, so an
+    /// unmatched path stays a 404 instead of becoming a 401/403. Needed
+    /// by anything that reads `MatchedPath`, the policy gate included.
+    #[must_use]
+    pub fn route_layer<L>(mut self, layer: L) -> Self
+    where
+        L: tower::Layer<axum::routing::Route> + Clone + Send + Sync + 'static,
+        L::Service: tower::Service<axum::extract::Request> + Clone + Send + Sync + 'static,
+        <L::Service as tower::Service<axum::extract::Request>>::Response:
+            axum::response::IntoResponse + 'static,
+        <L::Service as tower::Service<axum::extract::Request>>::Error:
+            Into<std::convert::Infallible> + 'static,
+        <L::Service as tower::Service<axum::extract::Request>>::Future: Send + 'static,
+    {
+        self.router = self.router.route_layer(layer);
+        self
+    }
+
     /// The router to serve, and the declarations to compile.
     ///
     /// Returns both rather than compiling here: compilation needs the

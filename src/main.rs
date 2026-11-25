@@ -1314,7 +1314,9 @@ async fn run(config: common::config::AppConfig) -> Result<(), Box<dyn std::error
             // App password management (create, list, revoke)
             .nest(
                 "/api/auth",
-                app_pw_protected.layer(access_log!("http::api::auth")),
+                app_pw_protected
+                    .layer(access_log!("http::api::auth"))
+                    .into_router(),
             )
             // OPAQUE aPAKE — session-required register endpoints
             // (mounted under a distinct sub-prefix so auth+CSRF
@@ -1346,7 +1348,9 @@ async fn run(config: common::config::AppConfig) -> Result<(), Box<dyn std::error
             // Device Auth Grant protected endpoints (verify + device management)
             .nest(
                 "/api/auth/device",
-                device_protected.layer(access_log!("http::api::auth")),
+                device_protected
+                    .layer(access_log!("http::api::auth"))
+                    .into_router(),
             )
             // Public API routes (share access, i18n) — no auth required
             .nest("/api", public_api_routes.layer(access_log!("http::api")))
