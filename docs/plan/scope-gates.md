@@ -2434,7 +2434,7 @@ way PR 1 was. Two orderings are load-bearing rather than tidy:
 | 1 | `ScopeReq { Undefined, None, Area(Scope, Access) }`; `Policy::scope: ScopeReq`, `Default = Undefined`. Boot check OFF | not started — inert, a type change only |
 | 2 | `Condition::scope(area, access)` and `Condition::scopeless()` | not started — inert |
 | 3 | the ~10 AREA-PREFIX declarations (§ Areas, not protocols), plus `scopeless()` on the login/public/ops routes (§ Deliberately scopeless) | not started — inert; the acceptance is mechanical, see below |
-| 4 | the `Undefined` BOOT refusal in `compile_all` | not started — first step that can fail a deploy; `just gen-openapi` is the local proof |
+| 4 | the `Undefined` refusal at GENERATION time (`generate-openapi` exits non-zero), plus a runtime deny as defence in depth | not started — gates merges via CI's `openapi-spec-drift`; `just gen-openapi` is the local proof. NOT a boot check: feature-gated routers would make a stock deployment refuse to start |
 | 5 | `auth.app_passwords.scopes` column + backfill `files,calendar,contacts`; WIDEN existing `device_codes` rows with `account` | not started — migration; the widening is not optional (§ Defaults) |
 | 6 | the wire parser → `ScopeSet`: namespaced, both delimiters, `effective = (requested ?? type_default) ∩ type_maximum`, empty REJECTED, `mail` REJECTED | not started |
 | 7 | mint: the scope set into the JWT claim; absent claim ⇒ every scope `:rw` | not started — must precede 9 |
@@ -2472,15 +2472,15 @@ design:
 | axis | an undeclared operation gets | how that is safe |
 |---|---|---|
 | gate | `principal = User` | a DEFAULT that is itself a requirement — a session is needed, so a new route is gated by the type |
-| scope | `ScopeReq::Undefined` | a default that is UNSATISFIABLE — the deploy refuses to start, so the implementor declares an area or writes `scopeless()` |
+| scope | `ScopeReq::Undefined` | a default that is UNSATISFIABLE — spec generation fails, so CI refuses the merge and the implementor declares an area or writes `scopeless()` |
 
 The gate can have a safe default because "a user session" is a real
 requirement that happens to be the common case. Scope has no such value:
 the only candidate default is "no scope required", which is fail-open —
 precisely the device-flow bug, where a credential restricted to `files`
 reaches a surface nobody classified. So rather than choose a default,
-`Undefined` makes the absence **unrepresentable at boot**: a forgotten
-route is a startup failure, not a silently reachable one.
+`Undefined` makes the absence **unmergeable**: a forgotten route fails
+spec generation, not a request in production.
 
 Add `/remote.php/new-feature` or `/new-feature-dav/` and it inherits a
 session requirement from the gate axis and an unsatisfiable scope from
@@ -2517,14 +2517,32 @@ the `CallerKind` mistake repeated: `Option::None` and `Scope::None` would
 both be reachable and mean different things. Naming all three states is
 what makes the wrong combination unrepresentable.
 
-**`Undefined` is a BOOT error, not just a runtime denial.** A runtime
-denial means the first request to an undeclared route fails, in whatever
-environment reaches it first; a boot refusal means the deploy fails
-(`feedback_fail_fast_config`: a boot panic beats a silent skip). The
-sharper reason is that `Undefined` is unsatisfiable even by a FULL-scope
-session cookie — so on enforcement day an undeclared operation breaks an
-ordinary browser, not only an app password. Keep the runtime deny as
-defence in depth; it should be unreachable.
+**`Undefined` is caught at GENERATION time, not at boot.** Boot is the
+wrong phase, and feature flags are why: the operation list for the check
+comes from the SPEC — a `Router` cannot be enumerated, which is § Both
+surfaces are already enumerated — while a feature-gated router only
+exists when its feature is on. `generate-openapi` forces every feature on
+(`FeaturesConfig::all_enabled`), so the spec holds all 250 operations;
+a server with `enable_photos=false` would then find `/api/photos/*` in
+the spec, no declaration for it, and refuse to start over a feature the
+operator deliberately turned off. Four features are off by default, so
+that is a stock deployment.
+
+Generation is the right phase for the same reason it already hosts the
+other two checks — the orphan cross-check and `audit_declared_security`
+both run there, and there is no boot-time `compile_all` anywhere. So:
+
+- **generation fails** (non-zero exit, hence CI's `openapi-spec-drift`
+  job) if any operation compiles to `Undefined`. That is EARLIER than a
+  boot refusal — pre-merge rather than pre-deploy — and it names the
+  path rather than a startup log line;
+- **the runtime keeps a deny**, not a pass-through, as defence in depth.
+  It is unreachable in practice: a disabled feature's route does not
+  exist, so the request 404s before the gate runs.
+
+This also keeps declarations AT their routes, including feature-gated
+ones, instead of forcing the ten area declarations into the central map
+to dodge a boot check.
 
 The operation list for that check is § 2b's existing cross-check against
 `openapi.json` and `asyncapi.json`.
