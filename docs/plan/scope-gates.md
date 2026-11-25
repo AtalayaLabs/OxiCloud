@@ -165,7 +165,19 @@ pub struct Policy {
     /// Resolved scope requirement. Scope is its own AXIS, not a Gate-axis
     /// condition: client-requestable and frozen at mint, so it is checked
     /// against the credential's `ScopeSet` rather than the user row.
-    pub scope: Option<(Scope, Access)>,
+    ///
+    /// A TOTAL enum, not an `Option`, and the reason is the one that
+    /// makes `role`'s `Option` fine: `role: None` means "any
+    /// authenticated principal", which is a real requirement, whereas
+    /// `scope: None` would mean "no scope required" — fail-open, and the
+    /// exact bug § The feature is half-built exists to fix. So the
+    /// absence is unrepresentable: `Undefined` is the default and a BOOT
+    /// error, and "no scope required" is `None` written on purpose.
+    ///
+    /// PR 1 shipped this as `Option<(Scope, Access)>`, inert because
+    /// nothing declared one. PR 2 step 1 replaces the type; § PR 2 — a
+    /// new route must not be silently scopeless has the rest.
+    pub scope: ScopeReq,
 }
 
 /// From the USER row, re-read live per request. ORDERED: each variant
@@ -2454,18 +2466,25 @@ construction, which is the intended failure direction.
 
 ### PR 2 — a new route must not be silently scopeless
 
-The two axes have opposite defaults, and only one of them is safe:
+The two axes reach safety by opposite routes, and that asymmetry is the
+design:
 
-| axis | an undeclared operation gets | is that safe? |
+| axis | an undeclared operation gets | how that is safe |
 |---|---|---|
-| gate | `principal = User` | **yes** — a session is required, so a new route is gated by the type |
-| scope | `scope = None`, i.e. no requirement | **NO** — reachable by ANY credential, including an app password that should never touch it |
+| gate | `principal = User` | a DEFAULT that is itself a requirement — a session is needed, so a new route is gated by the type |
+| scope | `ScopeReq::Undefined` | a default that is UNSATISFIABLE — the deploy refuses to start, so the implementor declares an area or writes `scopeless()` |
 
-So `Policy::default()` protects a forgotten route from anonymous callers
-and not from a narrowly-scoped one. Add `/remote.php/new-feature` or
-`/new-feature-dav/` and it inherits a session requirement and no area at
-all, which is exactly the shape of the device-flow bug: a credential
-restricted to `files` reaches a surface nobody classified.
+The gate can have a safe default because "a user session" is a real
+requirement that happens to be the common case. Scope has no such value:
+the only candidate default is "no scope required", which is fail-open —
+precisely the device-flow bug, where a credential restricted to `files`
+reaches a surface nobody classified. So rather than choose a default,
+`Undefined` makes the absence **unrepresentable at boot**: a forgotten
+route is a startup failure, not a silently reachable one.
+
+Add `/remote.php/new-feature` or `/new-feature-dav/` and it inherits a
+session requirement from the gate axis and an unsatisfiable scope from
+this one — the second is what stops it shipping unclassified.
 
 `public()` turned out NOT to be a prerequisite for shadowing `/api`:
 `main.rs:1049` warns that nesting two routers at one prefix composes
