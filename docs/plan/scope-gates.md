@@ -16,9 +16,10 @@ document — see the two § Required sections.
 
 ## Status
 
-**PR 1 is in progress and ENFORCING.** The engine is built and the first
-of the four folded gates is gone. Step-by-step state is § PR 1 — status;
-this table is the coarse view. Keep both current.
+**PR 1 is DONE.** All four folded gates are declarations, the engine
+enforces them, and the OpenAPI spec is a projection of the same table.
+One optional item remains (§ PR 1 — status 4-xix). Step-by-step state is
+that section; this table is the coarse view. Keep both current.
 
 | item | status |
 |---|---|
@@ -26,8 +27,10 @@ this table is the coarse view. Keep both current.
 | `.policy([...])` at the route, per VERB | **built** — `policy_router.rs`; `.policy()` on a `MethodRouter` is a compile error, since it could only declare for the whole path |
 | The policy gate, ENFORCING | **live** on the three DAV nests, `/api/admin` and the whole protected `/api` subtree |
 | `require_internal_user_layer` | **DELETED** — and a third fail-open with it (`7a6f939ae`) |
-| All four folded gates | **DELETED** — `require_internal_user_layer`, `require_admin`, `anonymous_allowlist_layer`, and `transfer_ownership`'s owner check is declared (its service check stands until `admin_routes()` declares per verb) |
-| `/api` declarations living at their routes | **partly** — the admin nest is done; TEN operations that have routes still sit in `policy_declarations.rs` (§ PR 1 — status 4-x). Closing PR 1 needs those ten moved, NOT all 279 declared |
+| All four folded gates | **DELETED** — `require_internal_user_layer`, `require_admin`, `anonymous_allowlist_layer` and `transfer_ownership`'s hand-rolled owner check. Each is now a declaration at its route |
+| `policy_declarations.rs` | holds **nothing with a route** — only the six DAV `(area, access)` operations, which have none |
+| A bare `Router` in the API tree | **does not compile** — `nest` and `.policy()` take only a `GatedRouter`, with no escape hatch |
+| `/api` declarations living at their routes | **done** — every declaration with a route is at its route, per verb where the verbs differ |
 | Credential scopes — `ScopeReq`, `ScopeSet`, the area map | **not started** — PR 2. `Scope`/`ScopeSet` exist and are INERT: no credential carries a set, and an absent one grandfathers to FULL |
 | Authentication by default (`NotAnonymous` inverted) | **falls out, not built** — `Policy::default()` IS an authenticated user, so an undeclared operation is already closed to anonymous callers |
 | A password-change condition | **never** — it is a scope narrowing, not a condition; the layer is deleted by `authn-pipeline.md` part B after PR 2. § Fold in |
