@@ -48,9 +48,19 @@ use crate::application::dtos::search_dto::{
     SearchSuggestionsDto, SearchTypeFilter,
 };
 use crate::application::dtos::share_dto::{CreateShareDto, ShareDto, UpdateShareDto};
+use crate::application::dtos::transfer_dto::{
+    TransferDecisionAction, TransferExecuteRequest, TransferExecuteResponse,
+    TransferFileConflictDto, TransferFolderConflictDto, TransferItemDecision, TransferItemOutcome,
+    TransferKindConflictDto, TransferOperation, TransferOutcomeStatus, TransferPreflightRequest,
+    TransferPreflightResponse,
+};
 use crate::application::dtos::trash_dto::{
     DeletePermanentlyRequest, MoveToTrashRequest, RestoreFromTrashRequest, TrashOrderBy,
     TrashResourceItemDto, TrashResourcesDto, TrashedItemDto,
+};
+use crate::application::dtos::upload_preflight_dto::{
+    PreflightExistingFileDto, PreflightExistingFolderDto, PreflightKindConflictDto,
+    UploadPreflightRequest, UploadPreflightResponse,
 };
 use crate::application::dtos::user_dto::{
     AuthResponseDto, ChangePasswordDto, LoginDto, OidcExchangeDto, PublicUserDto, RefreshTokenDto,
@@ -59,6 +69,7 @@ use crate::application::dtos::user_dto::{
 use crate::application::ports::chunked_upload_ports::{
     ChunkUploadResponseDto, CreateUploadResponseDto, UploadStatusResponseDto,
 };
+use crate::domain::services::name_conflict::ConflictPolicy;
 use crate::interfaces::api::handlers::calendar_handler::{
     CalendarEventResponse, CalendarResponse, CreateCalendarRequest, SaveEventRequest,
     UpdateCalendarRequest,
@@ -114,6 +125,7 @@ use crate::interfaces::middleware::server_status::{HeaderPayload, ProgressHeader
         // File handlers (free functions — see file_handler.rs for why)
         handlers::file_handler::list_files_query,
         handlers::file_handler::upload_file_with_thumbnails,
+        handlers::file_handler::replace_file_content,
         handlers::file_handler::create_file_by_hash,
         handlers::delta_upload_handler::delta_negotiate,
         handlers::delta_upload_handler::delta_upload_chunks,
@@ -131,6 +143,9 @@ use crate::interfaces::middleware::server_status::{HeaderPayload, ProgressHeader
         handlers::folder_handler::create_folder,
         handlers::folder_handler::get_folder,
         handlers::folder_handler::get_folder_ancestors,
+        handlers::folder_handler::upload_preflight,
+        handlers::folder_handler::transfer_preflight,
+        handlers::folder_handler::transfer_execute,
         handlers::folder_handler::list_root_folders,
         handlers::folder_handler::list_folder_resources,
         handlers::folder_handler::rename_folder,
@@ -464,6 +479,24 @@ use crate::interfaces::middleware::server_status::{HeaderPayload, ProgressHeader
             FolderDto,
             FolderOrderBy,
             CreateFolderDto,
+            ConflictPolicy,
+            UploadPreflightRequest,
+            UploadPreflightResponse,
+            PreflightExistingFolderDto,
+            PreflightExistingFileDto,
+            PreflightKindConflictDto,
+            TransferOperation,
+            TransferPreflightRequest,
+            TransferPreflightResponse,
+            TransferFileConflictDto,
+            TransferFolderConflictDto,
+            TransferKindConflictDto,
+            TransferDecisionAction,
+            TransferItemDecision,
+            TransferExecuteRequest,
+            TransferOutcomeStatus,
+            TransferItemOutcome,
+            TransferExecuteResponse,
             RenameFolderDto,
             MoveFolderDto,
             FolderListingDto,

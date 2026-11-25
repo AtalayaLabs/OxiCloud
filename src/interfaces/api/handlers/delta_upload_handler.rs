@@ -216,6 +216,7 @@ pub async fn delta_upload_chunks(
         (status = 400, description = "Malformed request, or the declared file_hash does not match the chunk sequence", body = crate::interfaces::errors::ApiErrorBody),
         (status = 404, description = "Target folder/file not found or not accessible", body = crate::interfaces::errors::ApiErrorBody),
         (status = 409, description = "Chunks not claimable — upload them and retry", body = DeltaStillMissingResponse),
+        (status = 412, description = "Concurrent modification: expected_hash no longer matches", body = crate::interfaces::errors::ApiErrorBody),
         (status = 429, description = "Rate limited", body = crate::interfaces::errors::ApiErrorBody),
         (status = 507, description = "Storage quota exceeded", body = crate::interfaces::errors::ApiErrorBody),
     ),

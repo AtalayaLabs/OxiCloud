@@ -14,6 +14,13 @@ use crate::application::dtos::folder_dto::{
 };
 use crate::application::dtos::grant_dto::{ResourceContentDto, ResourceTypeDto};
 use crate::application::dtos::timestamp_helpers::epoch_to_datetime;
+use crate::application::dtos::transfer_dto::{
+    TransferExecuteRequest, TransferExecuteResponse, TransferPreflightRequest,
+    TransferPreflightResponse,
+};
+use crate::application::dtos::upload_preflight_dto::{
+    UploadPreflightRequest, UploadPreflightResponse,
+};
 use crate::application::ports::external_mount_ports::MountEntry;
 use crate::application::ports::folder_ports::FolderUseCase;
 use crate::application::ports::trash_ports::TrashUseCase;
@@ -411,6 +418,60 @@ impl FolderHandler {
             }
         }
     }
+
+    /// Batch pre-upload comparison (`POST /api/folders/{id}/upload-preflight`).
+    pub(super) async fn upload_preflight_impl(
+        State(state): State<Arc<GlobalAppState>>,
+        auth_user: AuthUser,
+        Path(id): Path<String>,
+        Json(request): Json<UploadPreflightRequest>,
+    ) -> impl IntoResponse {
+        match state
+            .applications
+            .folder_service_concrete
+            .upload_preflight_with_perms(&id, auth_user.id, request)
+            .await
+        {
+            Ok(resp) => (StatusCode::OK, Json(resp)).into_response(),
+            Err(err) => AppError::from(err).into_response(),
+        }
+    }
+
+    /// Conflict preflight for internal Move / Copy operations (`POST /api/folders/{id}/transfer-preflight`).
+    pub(super) async fn transfer_preflight_impl(
+        State(state): State<Arc<GlobalAppState>>,
+        auth_user: AuthUser,
+        Path(id): Path<String>,
+        Json(request): Json<TransferPreflightRequest>,
+    ) -> impl IntoResponse {
+        match state
+            .applications
+            .transfer_service
+            .preflight_transfer_with_perms(auth_user.id, &id, request)
+            .await
+        {
+            Ok(resp) => (StatusCode::OK, Json(resp)).into_response(),
+            Err(err) => AppError::from(err).into_response(),
+        }
+    }
+
+    /// Execute conflict-resolved Move / Copy operations (`POST /api/folders/{id}/transfer`).
+    pub(super) async fn transfer_execute_impl(
+        State(state): State<Arc<GlobalAppState>>,
+        auth_user: AuthUser,
+        Path(id): Path<String>,
+        Json(request): Json<TransferExecuteRequest>,
+    ) -> impl IntoResponse {
+        match state
+            .applications
+            .transfer_service
+            .execute_transfer_with_perms(auth_user.id, &id, request)
+            .await
+        {
+            Ok(resp) => (StatusCode::OK, Json(resp)).into_response(),
+            Err(err) => AppError::from(err).into_response(),
+        }
+    }
 }
 
 // ── Route handlers (free functions) ──────────────────────────────────────────
@@ -445,6 +506,73 @@ pub async fn create_folder(
     json: Json<CreateFolderDto>,
 ) -> impl IntoResponse {
     FolderHandler::create_folder_impl(state, auth_user, json).await
+}
+
+#[utoipa::path(
+    post,
+    path = "/api/folders/{id}/upload-preflight",
+    params(("id" = String, Path, description = "Destination folder ID")),
+    request_body = UploadPreflightRequest,
+    responses(
+        (status = 200, description = "Subtree comparison result (existing folders, existing files with content hashes, and kind mismatches)", body = UploadPreflightResponse),
+        (status = 400, description = "Invalid relative path or path limit exceeded", body = crate::interfaces::errors::ApiErrorBody),
+        (status = 404, description = "Folder not found or caller lacks Create permission", body = crate::interfaces::errors::ApiErrorBody),
+    ),
+    security(("bearerAuth" = [])),
+    tag = "folders"
+)]
+pub async fn upload_preflight(
+    state: State<Arc<GlobalAppState>>,
+    auth_user: AuthUser,
+    path: Path<String>,
+    json: Json<UploadPreflightRequest>,
+) -> impl IntoResponse {
+    FolderHandler::upload_preflight_impl(state, auth_user, path, json).await
+}
+
+#[utoipa::path(
+    post,
+    path = "/api/folders/{id}/transfer-preflight",
+    params(("id" = String, Path, description = "Destination folder ID")),
+    request_body = TransferPreflightRequest,
+    responses(
+        (status = 200, description = "Move/copy conflict comparison result (same-parent, cycles, file/folder conflicts, kind mismatches)", body = TransferPreflightResponse),
+        (status = 400, description = "Transfer item limit exceeded", body = crate::interfaces::errors::ApiErrorBody),
+        (status = 404, description = "Folder/item not found or caller lacks permission", body = crate::interfaces::errors::ApiErrorBody),
+    ),
+    security(("bearerAuth" = [])),
+    tag = "folders"
+)]
+pub async fn transfer_preflight(
+    state: State<Arc<GlobalAppState>>,
+    auth_user: AuthUser,
+    path: Path<String>,
+    json: Json<TransferPreflightRequest>,
+) -> impl IntoResponse {
+    FolderHandler::transfer_preflight_impl(state, auth_user, path, json).await
+}
+
+#[utoipa::path(
+    post,
+    path = "/api/folders/{id}/transfer",
+    params(("id" = String, Path, description = "Destination folder ID")),
+    request_body = TransferExecuteRequest,
+    responses(
+        (status = 200, description = "Conflict-resolved transfer execution summary with per-item outcomes", body = TransferExecuteResponse),
+        (status = 400, description = "Transfer item limit exceeded", body = crate::interfaces::errors::ApiErrorBody),
+        (status = 404, description = "Destination folder not found or caller lacks Create permission", body = crate::interfaces::errors::ApiErrorBody),
+        (status = 501, description = "Not supported on external mounts", body = crate::interfaces::errors::ApiErrorBody),
+    ),
+    security(("bearerAuth" = [])),
+    tag = "folders"
+)]
+pub async fn transfer_execute(
+    state: State<Arc<GlobalAppState>>,
+    auth_user: AuthUser,
+    path: Path<String>,
+    json: Json<TransferExecuteRequest>,
+) -> impl IntoResponse {
+    FolderHandler::transfer_execute_impl(state, auth_user, path, json).await
 }
 
 #[utoipa::path(

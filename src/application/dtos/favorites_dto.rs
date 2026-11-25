@@ -16,7 +16,7 @@ use crate::domain::services::authorization::ResourceKind;
 /// calendars, address books or playlists. If a future product decision
 /// permits favoriting one of those, add the variant here and the TS SDK
 /// surfaces it on regen.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ItemKind {
     File,

@@ -73,7 +73,16 @@ async function loadWasm() {
 }
 
 workerScope.onmessage = async (event) => {
-    const { file, folderId, name, csrfToken, uploadBatchBytes } = /** @type {{ file: File, folderId: string, name: string, csrfToken: string, uploadBatchBytes?: number }} */ (event.data);
+    const {
+        file,
+        folderId,
+        fileId,
+        expectedHash,
+        onConflict,
+        name,
+        csrfToken,
+        uploadBatchBytes
+    } = /** @type {{ file: File, folderId?: string, fileId?: string, expectedHash?: string, onConflict?: 'fail' | 'rename', name: string, csrfToken: string, uploadBatchBytes?: number }} */ (event.data);
     // Per-upload override sourced from `window.oxi.UPLOAD_BATCH_BYTES`
     // in the main thread. Falls back to the module default (8 MiB).
     const uploadBatchBytesEff =
@@ -389,25 +398,35 @@ workerScope.onmessage = async (event) => {
             return;
         }
 
-        const commitBody = {
-            file_hash: fileHash,
-            chunks: chunks.map(({ h, s }) => ({ h, s })),
-            name,
-            folder_id: folderId,
-            // §9 — the source mtime, epoch milliseconds. The worker already
-            // holds the real `File`, so this needs no extra plumbing from
-            // the main thread.
-            //
-            // Delta is chosen purely by size (>= 8 MiB), so without this
-            // every large upload silently lost its mtime while small ones
-            // kept it — a capability that depended on file size.
-            //
-            // `|| undefined` omits a falsy value rather than sending 0:
-            // `lastModified` is 0 for a synthesised File, and 0 would be
-            // refused by the server's pre-2000 floor. JSON.stringify drops
-            // undefined keys, so the field simply does not appear.
-            source_modified_at: file.lastModified || undefined
-        };
+        const commitBody = fileId
+            ? {
+                  file_hash: fileHash,
+                  chunks: chunks.map(({ h, s }) => ({ h, s })),
+                  file_id: fileId,
+                  expected_hash: expectedHash || undefined,
+                  // Preserve POSIX source mtime across replacement commits too.
+                  source_modified_at: file.lastModified || undefined
+              }
+            : {
+                  file_hash: fileHash,
+                  chunks: chunks.map(({ h, s }) => ({ h, s })),
+                  name,
+                  folder_id: folderId,
+                  on_conflict: onConflict || undefined,
+                  // §9 — the source mtime, epoch milliseconds. The worker already
+                  // holds the real `File`, so this needs no extra plumbing from
+                  // the main thread.
+                  //
+                  // Delta is chosen purely by size (>= 8 MiB), so without this
+                  // every large upload silently lost its mtime while small ones
+                  // kept it — a capability that depended on file size.
+                  //
+                  // `|| undefined` omits a falsy value rather than sending 0:
+                  // `lastModified` is 0 for a synthesised File, and 0 would be
+                  // refused by the server's pre-2000 floor. JSON.stringify drops
+                  // undefined keys, so the field simply does not appear.
+                  source_modified_at: file.lastModified || undefined
+              };
         for (let attempt = 0; ; attempt++) {
             // eslint-disable-next-line no-await-in-loop -- retry loop
             const response = await withHeartbeat(() =>

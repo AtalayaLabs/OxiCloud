@@ -22,6 +22,7 @@ use crate::application::services::trash_service::TrashService;
 use crate::common::config::AppConfig;
 use crate::common::errors::{DomainError, ErrorKind};
 use crate::domain::services::authorization::Subject;
+use crate::domain::services::name_conflict::ConflictPolicy;
 use uuid::Uuid;
 
 /// Specific errors for batch operations
@@ -196,6 +197,18 @@ impl BatchOperationService {
         target_folder_id: Option<String>,
         user_id: Uuid,
     ) -> Result<BatchResult<FileDto>, BatchOperationError> {
+        self.copy_files_on_conflict(file_ids, target_folder_id, user_id, ConflictPolicy::Fail)
+            .await
+    }
+
+    /// Copies multiple files in parallel honouring [`ConflictPolicy`].
+    pub async fn copy_files_on_conflict(
+        &self,
+        file_ids: Vec<String>,
+        target_folder_id: Option<String>,
+        user_id: Uuid,
+        on_conflict: ConflictPolicy,
+    ) -> Result<BatchResult<FileDto>, BatchOperationError> {
         info!("Starting batch copy of {} files", file_ids.len());
         let start_time = std::time::Instant::now();
         let max_concurrent = self.config.concurrency.max_concurrent_files;
@@ -220,11 +233,12 @@ impl BatchOperationService {
 
             async move {
                 let copy_result = mgmt
-                    .copy_file_with_perms(
+                    .copy_file_with_perms_on_conflict(
                         &file_id,
                         user_id,
                         target_folder.map(|s| s.to_string()),
                         None,
+                        on_conflict,
                     )
                     .await;
                 (file_id, copy_result)
@@ -268,6 +282,18 @@ impl BatchOperationService {
         target_folder_id: Option<String>,
         user_id: Uuid,
     ) -> Result<BatchResult<FileDto>, BatchOperationError> {
+        self.move_files_on_conflict(file_ids, target_folder_id, user_id, ConflictPolicy::Fail)
+            .await
+    }
+
+    /// Moves multiple files in parallel honouring [`ConflictPolicy`].
+    pub async fn move_files_on_conflict(
+        &self,
+        file_ids: Vec<String>,
+        target_folder_id: Option<String>,
+        user_id: Uuid,
+        on_conflict: ConflictPolicy,
+    ) -> Result<BatchResult<FileDto>, BatchOperationError> {
         info!("Starting batch move of {} files", file_ids.len());
         let start_time = std::time::Instant::now();
         let max_concurrent = self.config.concurrency.max_concurrent_files;
@@ -290,7 +316,12 @@ impl BatchOperationService {
 
             async move {
                 let move_result = mgmt
-                    .move_file_with_perms(&file_id, user_id, target_folder.map(|s| s.to_string()))
+                    .move_file_with_perms_on_conflict(
+                        &file_id,
+                        user_id,
+                        target_folder.map(|s| s.to_string()),
+                        on_conflict,
+                    )
                     .await;
                 (file_id, move_result)
             }
@@ -638,6 +669,18 @@ impl BatchOperationService {
         target_folder_id: Option<String>,
         user_id: Uuid,
     ) -> Result<BatchResult<FolderDto>, BatchOperationError> {
+        self.move_folders_on_conflict(folder_ids, target_folder_id, user_id, ConflictPolicy::Fail)
+            .await
+    }
+
+    /// Moves multiple folders to a target parent in parallel honouring [`ConflictPolicy`].
+    pub async fn move_folders_on_conflict(
+        &self,
+        folder_ids: Vec<String>,
+        target_folder_id: Option<String>,
+        user_id: Uuid,
+        on_conflict: ConflictPolicy,
+    ) -> Result<BatchResult<FolderDto>, BatchOperationError> {
         info!("Starting batch move of {} folders", folder_ids.len());
         let start_time = std::time::Instant::now();
 
@@ -659,6 +702,7 @@ impl BatchOperationService {
             async move {
                 let dto = MoveFolderDto {
                     parent_id: target.map(|s| s.to_string()),
+                    on_conflict,
                 };
                 let move_result = folder_service
                     .move_folder_with_perms(&folder_id, dto, user_id)
@@ -702,6 +746,18 @@ impl BatchOperationService {
         target_folder_id: Option<String>,
         user_id: Uuid,
     ) -> Result<BatchResult<CopyFolderTreeResult>, BatchOperationError> {
+        self.copy_folders_on_conflict(folder_ids, target_folder_id, user_id, ConflictPolicy::Fail)
+            .await
+    }
+
+    /// Copies multiple folder trees to a target parent in parallel honouring [`ConflictPolicy`].
+    pub async fn copy_folders_on_conflict(
+        &self,
+        folder_ids: Vec<String>,
+        target_folder_id: Option<String>,
+        user_id: Uuid,
+        on_conflict: ConflictPolicy,
+    ) -> Result<BatchResult<CopyFolderTreeResult>, BatchOperationError> {
         info!("Starting batch copy of {} folders", folder_ids.len());
         let start_time = std::time::Instant::now();
 
@@ -722,11 +778,12 @@ impl BatchOperationService {
 
             async move {
                 let copy_result = file_management
-                    .copy_folder_tree_with_perms(
+                    .copy_folder_tree_with_perms_on_conflict(
                         &folder_id,
                         user_id,
                         target.map(|s| s.to_string()),
                         None,
+                        on_conflict,
                     )
                     .await;
                 (folder_id, copy_result)
@@ -1119,6 +1176,7 @@ impl BatchOperationService {
                 let dto = crate::application::dtos::folder_dto::CreateFolderDto {
                     name: name.clone(),
                     parent_id: parent_id.clone(),
+                    on_conflict: Default::default(),
                 };
                 let create_result = folder_service.create_folder_with_perms(dto, user_id).await;
                 let id = format!("{}:{}", name, parent_id.unwrap_or_default());

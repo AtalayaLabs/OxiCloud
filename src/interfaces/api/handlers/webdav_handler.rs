@@ -2559,6 +2559,7 @@ async fn handle_mkcol(
     let create_dto = crate::application::dtos::folder_dto::CreateFolderDto {
         name: normalized_segment.clone(),
         parent_id,
+        on_conflict: Default::default(),
     };
     folder_service
         .create_folder_with_perms(create_dto, user.id)
@@ -2930,6 +2931,7 @@ async fn handle_move(
 
             let move_dto = crate::application::dtos::folder_dto::MoveFolderDto {
                 parent_id: target_parent_id,
+                on_conflict: Default::default(),
             };
 
             folder_service
@@ -3246,6 +3248,7 @@ async fn handle_copy(
                 let create_dto = crate::application::dtos::folder_dto::CreateFolderDto {
                     name: dest_name.to_string(),
                     parent_id: target_parent_id,
+                    on_conflict: Default::default(),
                 };
                 folder_service
                     .create_folder_with_perms(create_dto, user.id)

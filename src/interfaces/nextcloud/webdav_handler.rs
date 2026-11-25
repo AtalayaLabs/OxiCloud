@@ -1354,6 +1354,7 @@ async fn handle_mkcol(
     let dto = CreateFolderDto {
         name: normalized_target.clone(),
         parent_id: Some(parent_folder.id.clone()),
+        on_conflict: Default::default(),
     };
     // AuthZ audit #7 (2026-07-12): route `_with_perms` errors through
     // `AppError::from` so authz denials surface as 404 (the anti-enum
@@ -1717,6 +1718,7 @@ async fn handle_move(
                     &folder.id,
                     MoveFolderDto {
                         parent_id: Some(dest_parent.id.clone()),
+                        on_conflict: Default::default(),
                     },
                     user.id,
                 )

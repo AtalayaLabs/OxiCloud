@@ -10,6 +10,7 @@
 
 use crate::common::errors::DomainError;
 use crate::domain::entities::folder::Folder;
+use crate::domain::services::name_conflict::ConflictPolicy;
 use crate::domain::services::path_service::StoragePath;
 use uuid::Uuid;
 
@@ -42,6 +43,18 @@ pub trait FolderRepository: Send + Sync + 'static {
         parent_id: Option<String>,
         caller_id: Uuid,
     ) -> Result<Folder, DomainError>;
+
+    /// Variant of [`Self::create_folder`] that honours [`ConflictPolicy`].
+    async fn create_folder_on_conflict(
+        &self,
+        name: String,
+        parent_id: Option<String>,
+        caller_id: Uuid,
+        on_conflict: ConflictPolicy,
+    ) -> Result<Folder, DomainError> {
+        let _ = on_conflict;
+        self.create_folder(name, parent_id, caller_id).await
+    }
 
     /// Gets a folder by its ID
     async fn get_folder(&self, id: &str) -> Result<Folder, DomainError>;
@@ -142,6 +155,19 @@ pub trait FolderRepository: Send + Sync + 'static {
         new_parent_id: Option<&str>,
         caller_id: Uuid,
     ) -> Result<Folder, DomainError>;
+
+    /// Variant of [`Self::move_folder`] that honours [`ConflictPolicy`] and
+    /// rejects descendant cycles via `ltree`.
+    async fn move_folder_on_conflict(
+        &self,
+        id: &str,
+        new_parent_id: Option<&str>,
+        caller_id: Uuid,
+        on_conflict: ConflictPolicy,
+    ) -> Result<Folder, DomainError> {
+        let _ = on_conflict;
+        self.move_folder(id, new_parent_id, caller_id).await
+    }
 
     /// Deletes a folder
     async fn delete_folder(&self, id: &str) -> Result<(), DomainError>;

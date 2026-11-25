@@ -14,6 +14,7 @@ use crate::application::services::batch_operations::{
     BatchOperationService, BatchResult, BatchStats, sole_kind,
 };
 use crate::common::errors::ErrorKind;
+use crate::domain::services::name_conflict::ConflictPolicy;
 use crate::interfaces::api::deserializer;
 use crate::interfaces::api::handlers::ApiResult;
 use crate::interfaces::errors::{AppError, status_for_kind};
@@ -37,6 +38,9 @@ pub struct BatchFileOperationRequest {
     /// Target folder ID (optional)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub target_folder_id: Option<String>,
+    /// Conflict handling policy (`fail` by default, `rename` for `name (2)`).
+    #[serde(default)]
+    pub on_conflict: ConflictPolicy,
 }
 
 /// DTO for batch folder operation requests
@@ -50,6 +54,9 @@ pub struct BatchFolderOperationRequest {
     /// Target folder ID (optional)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub target_folder_id: Option<String>,
+    /// Conflict handling policy (`fail` by default, `rename` for `name (2)`).
+    #[serde(default)]
+    pub on_conflict: ConflictPolicy,
 }
 
 /// DTO for batch folder creation requests
@@ -214,7 +221,12 @@ pub async fn move_files_batch(
     // Execute batch operation
     let result = state
         .batch_service
-        .move_files(request.file_ids, request.target_folder_id, auth_user.id)
+        .move_files_on_conflict(
+            request.file_ids,
+            request.target_folder_id,
+            auth_user.id,
+            request.on_conflict,
+        )
         .await
         .map_err(|e| {
             tracing::error!("Batch move_files failed: {}", e);
@@ -270,7 +282,12 @@ pub async fn copy_files_batch(
     // Execute batch operation
     let result = state
         .batch_service
-        .copy_files(request.file_ids, request.target_folder_id, auth_user.id)
+        .copy_files_on_conflict(
+            request.file_ids,
+            request.target_folder_id,
+            auth_user.id,
+            request.on_conflict,
+        )
         .await
         .map_err(|e| {
             tracing::error!("Batch copy_files failed: {}", e);
@@ -782,7 +799,12 @@ pub async fn move_folders_batch(
 
     let result = state
         .batch_service
-        .move_folders(request.folder_ids, request.target_folder_id, auth_user.id)
+        .move_folders_on_conflict(
+            request.folder_ids,
+            request.target_folder_id,
+            auth_user.id,
+            request.on_conflict,
+        )
         .await
         .map_err(|e| {
             tracing::error!("Batch move_folders failed: {}", e);
@@ -856,7 +878,12 @@ pub async fn copy_folders_batch(
 
     let result = state
         .batch_service
-        .copy_folders(request.folder_ids, request.target_folder_id, auth_user.id)
+        .copy_folders_on_conflict(
+            request.folder_ids,
+            request.target_folder_id,
+            auth_user.id,
+            request.on_conflict,
+        )
         .await
         .map_err(|e| {
             tracing::error!("Batch copy_folders failed: {}", e);

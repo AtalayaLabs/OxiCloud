@@ -14,10 +14,11 @@
 	import { resolve } from '$app/paths';
 	import { page } from '$app/state';
 	import { searchResources } from '$lib/api/endpoints/search';
-	import { deleteFile, moveFile } from '$lib/api/endpoints/files';
-	import { deleteFolder, moveFolder } from '$lib/api/endpoints/folders';
+	import { deleteFile } from '$lib/api/endpoints/files';
+	import { deleteFolder } from '$lib/api/endpoints/folders';
+	import { runTransfer } from '$lib/transfer/runTransfer';
 	import { addFavorite } from '$lib/api/endpoints/favorites';
-	import { copyFiles, copyFolders } from '$lib/api/endpoints/batch';
+	// `deleteFile` / `deleteFolder` handle trash drops below.
 	import { isCopyDrop, ITEM_DRAG_MIME } from '$lib/utils/dragModifiers';
 	import { dragAutoScroll } from '$lib/utils/dragAutoScroll';
 	// OS-file drops on a drive row: same "is this an OS drag?" test the rest of
@@ -598,48 +599,16 @@
 		// and breadcrumb drops on /files — see `$lib/utils/dragModifiers`.
 		const copy = isCopyDrop(e);
 		try {
-			if (copy) {
-				// Batch endpoints: one call per kind, both independent.
-				await Promise.all([
-					copyFiles(
-						moving.filter((it) => it.kind === 'file').map((it) => it.id),
-						target
-					),
-					copyFolders(
-						moving.filter((it) => it.kind === 'folder').map((it) => it.id),
-						target
-					)
-				]);
-			} else {
-				// Per-item, bounded — mirrors `/files`'s `moveInto`. There is
-				// no batch move endpoint, and a cross-drive move can fail
-				// per item (the D5 `forbid_cross_drive_move` drive policy
-				// refuses, or the destination drive's quota check returns
-				// 507), so each is attempted and `fanout` toasts failures
-				// individually rather than abandoning the rest.
-				await fanout(moving, 6, async (it) => {
-					if (it.kind === 'file') await moveFile(it.id, target);
-					else await moveFolder(it.id, target);
-				});
-			}
+			await runTransfer({
+				operation: copy ? 'copy' : 'move',
+				targetFolderId: target,
+				targetName: d.name,
+				items: moving.map((it) => ({ id: it.id, kind: it.kind }))
+			});
 		} catch (err) {
 			errorToast(err);
 			return;
 		}
-		ui.notify(
-			copy
-				? t(
-						'drive.copied_n',
-						{ n: moving.length, drive: d.name },
-						'Copied {{n}} item(s) to {{drive}}'
-					)
-				: t(
-						'drive.moved_n',
-						{ n: moving.length, drive: d.name },
-						'Moved {{n}} item(s) to {{drive}}'
-					),
-			'success'
-		);
 		// No refresh event dispatched, matching the trash drop above: the
 		// source listing updates itself off the message bus, since the
 		// move/copy services publish and `/files` subscribes to its

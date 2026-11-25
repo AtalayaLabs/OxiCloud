@@ -15,10 +15,14 @@ use uuid::Uuid;
 
 use crate::application::dtos::display_helpers::category_order_for;
 use crate::application::ports::storage_ports::{CopyFolderTreeResult, FileWritePort};
-use crate::common::errors::DomainError;
+use crate::common::errors::{DomainError, ErrorKind};
 use crate::domain::entities::file::File;
+use crate::domain::services::name_conflict::{ConflictPolicy, NameKind};
 use crate::domain::services::path_service::{normalize_storage_name, normalize_storage_name_owned};
 
+use super::name_conflict_pg::{
+    CandidateInsertError, elect_and_insert_in_tx, sibling_name_exists_in_other_table,
+};
 use super::transaction_utils::retry_on_deadlock;
 use crate::infrastructure::services::blob_handler::BlobHandler;
 
@@ -31,6 +35,97 @@ pub struct FileBlobWriteRepository {
     /// so the read side can never serve a stale blob after a PUT update.
     hash_cache: Cache<String, String>,
 }
+
+/// Shared single-round-trip CTE that inserts into `storage.files` and
+/// records the initial touch in `storage.file_content_touches`.
+///
+/// Bind parameters:
+/// - `$1`: file name (`&str`)
+/// - `$2`: parent folder id (`&str`, cast to `uuid`)
+/// - `$3`: blob hash (`&str`)
+/// - `$4`: size in bytes (`i64`)
+/// - `$5`: mime type (`&str`)
+/// - `$6`: `category_order` (`i16`)
+/// - `$7`: caller id (`Uuid`)
+/// - `$8`: optional client-asserted `content_modified_at` epoch seconds (`Option<f64>`)
+const INSERT_FILE_CTE_SQL: &str = concat!(
+    r#"
+    WITH parent AS (
+        SELECT id, drive_id, path FROM storage.folders WHERE id = $2::uuid
+    ),
+    new_file AS (
+    INSERT INTO storage.files
+        (name, folder_id, drive_id, blob_hash, size,
+         mime_type, category_order, created_by, updated_by,
+         content_modified_by,
+         content_modified_at, media_sort_date)
+    SELECT $1, parent.id, parent.drive_id, $3, $4,
+           $5, $6, $7, $7,
+           $7,
+           COALESCE(to_timestamp($8), NOW()),
+           -- Same value as content_modified_at, and it must be
+           -- set HERE rather than left to the column default.
+           --
+           -- `media_sort_date` is COALESCE(captured_at,
+           -- content_modified_at). At INSERT no `file_metadata`
+           -- row can exist yet (its FK points at this row), so
+           -- the chain reduces to `content_modified_at` — and
+           -- the column's own DEFAULT is CURRENT_TIMESTAMP,
+           -- which is a DIFFERENT value whenever the caller
+           -- asserted an X-OC-Mtime. That left a fresh upload
+           -- sorted by its arrival time while reporting a 2023
+           -- mtime, caught by
+           -- `photos_sort_date_content_clock.hurl`.
+           --
+           -- Deliberately not a BEFORE INSERT trigger: that
+           -- would also fire for `copy_folder_tree`, which
+           -- passes an explicit `media_sort_date` copied from
+           -- the source so a copied photo keeps its place in
+           -- the timeline. A trigger cannot tell an explicit
+           -- value from a defaulted one and would clobber it.
+           --
+           -- A later EXIF extraction fires
+           -- `trg_sync_media_sort_date` on the `file_metadata`
+           -- insert, which recomputes the full COALESCE — so
+           -- the `captured_at` arm still wins once it exists.
+           COALESCE(to_timestamp($8), NOW())
+      FROM parent
+    RETURNING id, created_at, content_modified_at,
+              created_by, updated_by
+    ),
+"#,
+    // In the SAME statement as the row it describes: a content
+    // change that commits without its touch is a change
+    // `/api/files/recent-changes` can never recover, because there
+    // is no second source to reconcile against.
+    //
+    // `touched_at` is `NOW()`, the moment the SERVER observed the
+    // upload — NOT the row's `content_modified_at`, which is the
+    // POSIX content clock and is client-assertable via
+    // `X-OC-Mtime`. Every sync client and most photo uploads
+    // assert one, so taking it here meant a holiday photo with a
+    // 2019 mtime wrote a 2019 touch and never appeared in the feed
+    // at all: outside a 90-day window the moment it was uploaded.
+    // An event log needs event time. The `ON CONFLICT` cannot fire
+    // for a brand-new file; it is here so every touch write in
+    // this module reads identically.
+    r#"
+    touch AS (
+        INSERT INTO storage.file_content_touches (file_id, user_id, touched_at)
+        SELECT id, $7, NOW() FROM new_file
+        ON CONFLICT (file_id, user_id)
+            DO UPDATE SET touched_at = GREATEST(
+                storage.file_content_touches.touched_at, EXCLUDED.touched_at)
+    )
+    SELECT id::text,
+           (SELECT path FROM parent),
+           EXTRACT(EPOCH FROM created_at)::bigint,
+           EXTRACT(EPOCH FROM content_modified_at)::bigint,
+           created_by,
+           updated_by
+      FROM new_file
+    "#
+);
 
 impl FileBlobWriteRepository {
     pub fn new(
@@ -444,84 +539,9 @@ impl FileBlobWriteRepository {
         // with the server's `NOW()` rather than the file's content clock —
         // see the comment on that arm for why the two must not be conflated.
         let result = retry_on_deadlock("files.insert", || {
-            sqlx::query_as::<_, (String, String, i64, i64, Option<Uuid>, Option<Uuid>)>(concat!(
-                r#"
-                WITH parent AS (
-                    SELECT id, drive_id, path FROM storage.folders WHERE id = $2::uuid
-                ),
-                new_file AS (
-                INSERT INTO storage.files
-                    (name, folder_id, drive_id, blob_hash, size,
-                     mime_type, category_order, created_by, updated_by,
-                     content_modified_by,
-                     content_modified_at, media_sort_date)
-                SELECT $1, parent.id, parent.drive_id, $3, $4,
-                       $5, $6, $7, $7,
-                       $7,
-                       COALESCE(to_timestamp($8), NOW()),
-                       -- Same value as content_modified_at, and it must be
-                       -- set HERE rather than left to the column default.
-                       --
-                       -- `media_sort_date` is COALESCE(captured_at,
-                       -- content_modified_at). At INSERT no `file_metadata`
-                       -- row can exist yet (its FK points at this row), so
-                       -- the chain reduces to `content_modified_at` — and
-                       -- the column's own DEFAULT is CURRENT_TIMESTAMP,
-                       -- which is a DIFFERENT value whenever the caller
-                       -- asserted an X-OC-Mtime. That left a fresh upload
-                       -- sorted by its arrival time while reporting a 2023
-                       -- mtime, caught by
-                       -- `photos_sort_date_content_clock.hurl`.
-                       --
-                       -- Deliberately not a BEFORE INSERT trigger: that
-                       -- would also fire for `copy_folder_tree`, which
-                       -- passes an explicit `media_sort_date` copied from
-                       -- the source so a copied photo keeps its place in
-                       -- the timeline. A trigger cannot tell an explicit
-                       -- value from a defaulted one and would clobber it.
-                       --
-                       -- A later EXIF extraction fires
-                       -- `trg_sync_media_sort_date` on the `file_metadata`
-                       -- insert, which recomputes the full COALESCE — so
-                       -- the `captured_at` arm still wins once it exists.
-                       COALESCE(to_timestamp($8), NOW())
-                  FROM parent
-                RETURNING id, created_at, content_modified_at,
-                          created_by, updated_by
-                ),
-"#,
-                // In the SAME statement as the row it describes: a content
-                // change that commits without its touch is a change
-                // `/api/files/recent-changes` can never recover, because there
-                // is no second source to reconcile against.
-                //
-                // `touched_at` is `NOW()`, the moment the SERVER observed the
-                // upload — NOT the row's `content_modified_at`, which is the
-                // POSIX content clock and is client-assertable via
-                // `X-OC-Mtime`. Every sync client and most photo uploads
-                // assert one, so taking it here meant a holiday photo with a
-                // 2019 mtime wrote a 2019 touch and never appeared in the feed
-                // at all: outside a 90-day window the moment it was uploaded.
-                // An event log needs event time. The `ON CONFLICT` cannot fire
-                // for a brand-new file; it is here so every touch write in
-                // this module reads identically.
-                r#"
-                touch AS (
-                    INSERT INTO storage.file_content_touches (file_id, user_id, touched_at)
-                    SELECT id, $7, NOW() FROM new_file
-                    ON CONFLICT (file_id, user_id)
-                        DO UPDATE SET touched_at = GREATEST(
-                            storage.file_content_touches.touched_at, EXCLUDED.touched_at)
-                )
-                SELECT id::text,
-                       (SELECT path FROM parent),
-                       EXTRACT(EPOCH FROM created_at)::bigint,
-                       EXTRACT(EPOCH FROM content_modified_at)::bigint,
-                       created_by,
-                       updated_by
-                  FROM new_file
-                "#
-            ))
+            sqlx::query_as::<_, (String, String, i64, i64, Option<Uuid>, Option<Uuid>)>(
+                INSERT_FILE_CTE_SQL,
+            )
             .bind(&name)
             .bind(fid)
             .bind(blob_hash)
@@ -623,6 +643,134 @@ impl FileBlobWriteRepository {
         )
     }
 
+    /// Variant of [`Self::save_file_with_blob_impl`] that atomically elects the
+    /// first free disambiguated sibling name (`stem (2).ext`, `stem (3).ext`, …)
+    /// when `on_conflict == ConflictPolicy::Rename`.
+    ///
+    /// Consumes the caller's blob reference: released ONLY if every candidate
+    /// fails definitively, never between `SAVEPOINT` retries.
+    #[allow(clippy::too_many_arguments)]
+    async fn save_file_with_blob_rename_impl(
+        &self,
+        name: String,
+        folder_id: Option<String>,
+        content_type: String,
+        blob_hash: &str,
+        size: u64,
+        caller_id: Uuid,
+        content_modified_at: Option<i64>,
+    ) -> Result<File, DomainError> {
+        let name = normalize_storage_name_owned(name);
+
+        let Some(fid) = folder_id.as_deref() else {
+            if let Err(rollback_err) = self.dedup.remove_reference(blob_hash).await {
+                tracing::error!(
+                    "Blob orphaned after missing folder_id — hash: {}, err: {}",
+                    &blob_hash[..12],
+                    rollback_err
+                );
+            }
+            return Err(DomainError::validation_error(
+                "folder_id is required: the destination folder determines the \
+                 file's owner and drive",
+            ));
+        };
+
+        let Ok(fid_uuid) = Uuid::parse_str(fid) else {
+            if let Err(rollback_err) = self.dedup.remove_reference(blob_hash).await {
+                tracing::error!(
+                    "Blob orphaned after invalid folder_id — hash: {}, err: {}",
+                    &blob_hash[..12],
+                    rollback_err
+                );
+            }
+            return Err(DomainError::not_found("Folder", fid));
+        };
+
+        let elected = elect_and_insert_in_tx(
+            self.pool.as_ref(),
+            "files.insert_on_conflict",
+            "File",
+            fid_uuid,
+            &name,
+            NameKind::File,
+            |conn, candidate| {
+                let fid_str = fid.to_string();
+                let blob_hash_owned = blob_hash.to_string();
+                let content_type_owned = content_type.clone();
+                Box::pin(async move {
+                    let cat_order = category_order_for(&candidate, &content_type_owned);
+                    let row = sqlx::query_as::<
+                        _,
+                        (String, String, i64, i64, Option<Uuid>, Option<Uuid>),
+                    >(INSERT_FILE_CTE_SQL)
+                    .bind(&candidate)
+                    .bind(&fid_str)
+                    .bind(&blob_hash_owned)
+                    .bind(size as i64)
+                    .bind(&content_type_owned)
+                    .bind(cat_order)
+                    .bind(caller_id)
+                    .bind(content_modified_at.map(|s| s as f64))
+                    .fetch_optional(conn)
+                    .await?;
+
+                    match row {
+                        Some((id, folder_path, created_at, updated_at, created_by, updated_by)) => {
+                            Ok((
+                                id,
+                                candidate,
+                                folder_path,
+                                created_at,
+                                updated_at,
+                                created_by,
+                                updated_by,
+                            ))
+                        }
+                        None => Err(CandidateInsertError::ParentNotFound),
+                    }
+                })
+            },
+        )
+        .await;
+
+        let (id, actual_name, folder_path, created_at, updated_at, created_by, updated_by) =
+            match elected {
+                Ok(row) => row,
+                Err(err) => {
+                    if let Err(rollback_err) = self.dedup.remove_reference(blob_hash).await {
+                        tracing::error!(
+                            "Blob orphaned after failed rename-on-conflict INSERT — hash: {}, err: {}",
+                            &blob_hash[..12],
+                            rollback_err
+                        );
+                    }
+                    return Err(err);
+                }
+            };
+
+        tracing::info!(
+            "📡 STREAMING WRITE (rename on conflict): {} ({} bytes, hash: {})",
+            actual_name,
+            size,
+            &blob_hash[..12]
+        );
+
+        Self::row_to_file(
+            id,
+            actual_name,
+            folder_id,
+            Some(folder_path),
+            size as i64,
+            content_type,
+            created_at,
+            updated_at,
+            blob_hash.to_string(),
+            created_by,
+            updated_by,
+        )
+    }
+
     /// Fetch a non-trashed file in `folder_id` named `name` whose content blob
     /// is `blob_hash` — the "is this re-upload byte-identical?" probe that makes
     /// uploads idempotent on a name conflict. `Ok(None)` means the conflicting
@@ -700,6 +848,557 @@ impl FileBlobWriteRepository {
         )
         .map(Some)
     }
+    async fn fetch_live_file_row(&self, file_id: &str) -> Result<File, DomainError> {
+        let row = sqlx::query_as::<
+            _,
+            (
+                String,
+                String,
+                Option<String>,
+                Option<String>,
+                i64,
+                String,
+                i64,
+                i64,
+                String,
+                Option<Uuid>,
+                Option<Uuid>,
+            ),
+        >(
+            r#"
+            SELECT f.id::text, f.name, f.folder_id::text, fo.path, f.size, f.mime_type,
+                   EXTRACT(EPOCH FROM f.created_at)::bigint,
+                   EXTRACT(EPOCH FROM f.content_modified_at)::bigint,
+                   f.blob_hash, f.created_by, f.updated_by
+              FROM storage.files f
+              LEFT JOIN storage.folders fo ON fo.id = f.folder_id
+             WHERE f.id = $1::uuid AND NOT f.is_trashed
+            "#,
+        )
+        .bind(file_id)
+        .fetch_optional(self.pool.as_ref())
+        .await
+        .map_err(|e| DomainError::internal_error("FileBlobWrite", format!("fetch file: {e}")))?
+        .ok_or_else(|| DomainError::not_found("File", file_id))?;
+
+        Self::row_to_file(
+            row.0, row.1, row.2, row.3, row.4, row.5, row.6, row.7, row.8, row.9, row.10,
+        )
+    }
+
+    async fn move_file_on_conflict_impl(
+        &self,
+        file_id: &str,
+        target_folder_id: Option<String>,
+        caller_id: Uuid,
+        on_conflict: ConflictPolicy,
+    ) -> Result<File, DomainError> {
+        let (src_name, src_folder_id, src_mime): (String, Option<Uuid>, String) = sqlx::query_as(
+            "SELECT name, folder_id, mime_type
+                   FROM storage.files
+                  WHERE id = $1::uuid AND NOT is_trashed",
+        )
+        .bind(file_id)
+        .fetch_optional(self.pool.as_ref())
+        .await
+        .map_err(|e| {
+            DomainError::internal_error("FileBlobWrite", format!("move source lookup: {e}"))
+        })?
+        .ok_or_else(|| DomainError::not_found("File", file_id))?;
+
+        let Some(ref dst_str) = target_folder_id else {
+            return self.move_file(file_id, None, caller_id).await;
+        };
+
+        let dst_uuid = Uuid::parse_str(dst_str)
+            .map_err(|_| DomainError::not_found("Folder", dst_str.as_str()))?;
+        let dst_exists: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM storage.folders WHERE id = $1 AND NOT is_trashed)",
+        )
+        .bind(dst_uuid)
+        .fetch_one(self.pool.as_ref())
+        .await
+        .map_err(|e| {
+            DomainError::internal_error("FileBlobWrite", format!("move dest check: {e}"))
+        })?;
+        if !dst_exists {
+            return Err(DomainError::not_found("Folder", dst_str.as_str()));
+        }
+
+        if src_folder_id == Some(dst_uuid) {
+            return self.fetch_live_file_row(file_id).await;
+        }
+
+        match on_conflict {
+            ConflictPolicy::Fail => {
+                let mut conn = self.pool.acquire().await.map_err(|e| {
+                    DomainError::internal_error("FileBlobWrite", format!("acquire conn: {e}"))
+                })?;
+                if sibling_name_exists_in_other_table(
+                    &mut conn,
+                    dst_uuid,
+                    &src_name,
+                    NameKind::File,
+                )
+                .await
+                .map_err(|e| {
+                    DomainError::internal_error("FileBlobWrite", format!("cross-table: {e}"))
+                })? {
+                    return Err(DomainError::already_exists(
+                        "File",
+                        "destination already contains a folder with the same name".to_string(),
+                    ));
+                }
+                drop(conn);
+                self.move_file(file_id, target_folder_id, caller_id).await
+            }
+            ConflictPolicy::Rename => {
+                let elected = elect_and_insert_in_tx(
+                    self.pool.as_ref(),
+                    "files.move_on_conflict",
+                    "File",
+                    dst_uuid,
+                    &src_name,
+                    NameKind::File,
+                    |conn, candidate| {
+                        let file_id_owned = file_id.to_string();
+                        let mime_owned = src_mime.clone();
+                        Box::pin(async move {
+                            let cat_order = category_order_for(&candidate, &mime_owned);
+                            let row = sqlx::query_as::<
+                                _,
+                                (
+                                    String,
+                                    String,
+                                    Option<String>,
+                                    Option<String>,
+                                    i64,
+                                    String,
+                                    i64,
+                                    i64,
+                                    String,
+                                    Option<Uuid>,
+                                    Option<Uuid>,
+                                ),
+                            >(
+                                r#"
+                                WITH dest AS (
+                                    SELECT id, drive_id, path
+                                      FROM storage.folders
+                                     WHERE id = $1 AND NOT is_trashed
+                                )
+                                UPDATE storage.files f
+                                   SET folder_id = dest.id,
+                                       name = $4,
+                                       drive_id = dest.drive_id,
+                                       category_order = $5,
+                                       updated_at = NOW(),
+                                       updated_by = $3
+                                  FROM dest
+                                 WHERE f.id = $2::uuid AND NOT f.is_trashed
+                                RETURNING f.id::text, f.name, f.folder_id::text, dest.path,
+                                          f.size, f.mime_type,
+                                          EXTRACT(EPOCH FROM f.created_at)::bigint,
+                                          EXTRACT(EPOCH FROM f.content_modified_at)::bigint,
+                                          f.blob_hash, f.created_by, f.updated_by
+                                "#,
+                            )
+                            .bind(dst_uuid)
+                            .bind(&file_id_owned)
+                            .bind(caller_id)
+                            .bind(&candidate)
+                            .bind(cat_order)
+                            .fetch_optional(&mut *conn)
+                            .await?;
+
+                            match row {
+                                Some(r) => Ok(Some(r)),
+                                None => {
+                                    let folder_alive: bool = sqlx::query_scalar(
+                                        "SELECT EXISTS(SELECT 1 FROM storage.folders WHERE id = $1 AND NOT is_trashed)",
+                                    )
+                                    .bind(dst_uuid)
+                                    .fetch_one(&mut *conn)
+                                    .await?;
+                                    if !folder_alive {
+                                        Err(CandidateInsertError::ParentNotFound)
+                                    } else {
+                                        Ok(None)
+                                    }
+                                }
+                            }
+                        })
+                    },
+                )
+                .await?;
+
+                let Some(r) = elected else {
+                    return Err(DomainError::not_found("File", file_id));
+                };
+                Self::row_to_file(r.0, r.1, r.2, r.3, r.4, r.5, r.6, r.7, r.8, r.9, r.10)
+            }
+        }
+    }
+
+    async fn copy_file_on_conflict_impl(
+        &self,
+        file_id: &str,
+        target_folder_id: Option<String>,
+        new_name: Option<&str>,
+        caller_id: Uuid,
+        on_conflict: ConflictPolicy,
+    ) -> Result<File, DomainError> {
+        let (src_name, src_folder_id, src_mime): (String, Option<Uuid>, String) = sqlx::query_as(
+            "SELECT name, folder_id, mime_type
+                   FROM storage.files
+                  WHERE id = $1::uuid AND NOT is_trashed",
+        )
+        .bind(file_id)
+        .fetch_optional(self.pool.as_ref())
+        .await
+        .map_err(|e| {
+            DomainError::internal_error("FileBlobWrite", format!("copy source lookup: {e}"))
+        })?
+        .ok_or_else(|| DomainError::not_found("File", file_id))?;
+
+        let effective_parent_uuid = match target_folder_id.as_deref() {
+            Some(fid) => {
+                let dst =
+                    Uuid::parse_str(fid).map_err(|_| DomainError::not_found("Folder", fid))?;
+                let exists: bool = sqlx::query_scalar(
+                    "SELECT EXISTS(SELECT 1 FROM storage.folders WHERE id = $1 AND NOT is_trashed)",
+                )
+                .bind(dst)
+                .fetch_one(self.pool.as_ref())
+                .await
+                .map_err(|e| {
+                    DomainError::internal_error("FileBlobWrite", format!("copy dest check: {e}"))
+                })?;
+                if !exists {
+                    return Err(DomainError::not_found("Folder", fid));
+                }
+                dst
+            }
+            None => src_folder_id.ok_or_else(|| {
+                DomainError::validation_error("target folder cannot be determined for root file")
+            })?,
+        };
+
+        let base_name = new_name.map(normalize_storage_name).unwrap_or(src_name);
+
+        match on_conflict {
+            ConflictPolicy::Fail => {
+                let mut conn = self.pool.acquire().await.map_err(|e| {
+                    DomainError::internal_error("FileBlobWrite", format!("acquire conn: {e}"))
+                })?;
+                if sibling_name_exists_in_other_table(
+                    &mut conn,
+                    effective_parent_uuid,
+                    &base_name,
+                    NameKind::File,
+                )
+                .await
+                .map_err(|e| {
+                    DomainError::internal_error("FileBlobWrite", format!("cross-table: {e}"))
+                })? {
+                    return Err(DomainError::already_exists(
+                        "File",
+                        "destination already contains a folder with the same name".to_string(),
+                    ));
+                }
+                drop(conn);
+                self.copy_file(file_id, target_folder_id, new_name, caller_id)
+                    .await
+            }
+            ConflictPolicy::Rename => {
+                let elected = elect_and_insert_in_tx(
+                    self.pool.as_ref(),
+                    "files.copy_on_conflict",
+                    "File",
+                    effective_parent_uuid,
+                    &base_name,
+                    NameKind::File,
+                    |conn, candidate| {
+                        let file_id_owned = file_id.to_string();
+                        let mime_owned = src_mime.clone();
+                        Box::pin(async move {
+                            let cat_order = category_order_for(&candidate, &mime_owned);
+                            let row = sqlx::query_as::<
+                                _,
+                                (
+                                    String,
+                                    String,
+                                    Option<String>,
+                                    i64,
+                                    String,
+                                    i64,
+                                    i64,
+                                    String,
+                                    Option<Uuid>,
+                                    Option<Uuid>,
+                                ),
+                            >(
+                                r#"
+                                WITH src AS (
+                                    SELECT blob_hash, size, mime_type
+                                      FROM storage.files
+                                     WHERE id = $1::uuid AND NOT is_trashed
+                                ),
+                                dest_folder AS (
+                                    SELECT id, drive_id
+                                      FROM storage.folders
+                                     WHERE id = $2 AND NOT is_trashed
+                                ),
+                                new_file AS (
+                                    INSERT INTO storage.files
+                                        (name, folder_id, drive_id, blob_hash, size,
+                                         mime_type, category_order, created_by, updated_by)
+                                    SELECT $3,
+                                           dest_folder.id,
+                                           dest_folder.drive_id,
+                                           src.blob_hash,
+                                           src.size,
+                                           src.mime_type,
+                                           $4,
+                                           $5,
+                                           $5
+                                      FROM src, dest_folder
+                                    RETURNING id::text AS id_text,
+                                              name, folder_id::text, size, mime_type,
+                                              EXTRACT(EPOCH FROM created_at)::bigint AS created_at,
+                                              EXTRACT(EPOCH FROM content_modified_at)::bigint AS content_modified_at,
+                                              blob_hash,
+                                              created_by,
+                                              updated_by
+                                )
+                                SELECT id_text, name, folder_id, size, mime_type,
+                                       created_at, content_modified_at,
+                                       blob_hash, created_by, updated_by
+                                  FROM new_file
+                                "#,
+                            )
+                            .bind(&file_id_owned)
+                            .bind(effective_parent_uuid)
+                            .bind(&candidate)
+                            .bind(cat_order)
+                            .bind(caller_id)
+                            .fetch_optional(&mut *conn)
+                            .await?;
+
+                            let Some(r) = row else {
+                                return Err(CandidateInsertError::ParentNotFound);
+                            };
+
+                            sqlx::query(
+                                "SELECT storage.copy_file_satellites(ARRAY[$1::uuid], ARRAY[$2::uuid])",
+                            )
+                            .bind(&file_id_owned)
+                            .bind(&r.0)
+                            .execute(&mut *conn)
+                            .await?;
+
+                            Ok(r)
+                        })
+                    },
+                )
+                .await?;
+
+                let folder_path = self.lookup_folder_path(elected.2.as_deref()).await?;
+                Self::row_to_file(
+                    elected.0,
+                    elected.1,
+                    elected.2,
+                    folder_path,
+                    elected.3,
+                    elected.4,
+                    elected.5,
+                    elected.6,
+                    elected.7,
+                    elected.8,
+                    elected.9,
+                )
+            }
+        }
+    }
+
+    async fn copy_folder_tree_on_conflict_impl(
+        &self,
+        source_folder_id: &str,
+        target_parent_id: Option<String>,
+        dest_name: Option<String>,
+        on_conflict: ConflictPolicy,
+    ) -> Result<CopyFolderTreeResult, DomainError> {
+        let src_uuid = Uuid::parse_str(source_folder_id)
+            .map_err(|_| DomainError::not_found("Folder", source_folder_id))?;
+        let (src_name, src_parent_id): (String, Option<Uuid>) = sqlx::query_as(
+            "SELECT name, parent_id FROM storage.folders WHERE id = $1 AND NOT is_trashed",
+        )
+        .bind(src_uuid)
+        .fetch_optional(self.pool.as_ref())
+        .await
+        .map_err(|e| {
+            DomainError::internal_error("FileBlobWrite", format!("copy folder lookup: {e}"))
+        })?
+        .ok_or_else(|| DomainError::not_found("Folder", source_folder_id))?;
+
+        let dst_uuid_opt = if let Some(ref dst_str) = target_parent_id {
+            let dst_uuid = Uuid::parse_str(dst_str)
+                .map_err(|_| DomainError::not_found("Folder", dst_str.as_str()))?;
+            let dst_exists: bool = sqlx::query_scalar(
+                "SELECT EXISTS(SELECT 1 FROM storage.folders WHERE id = $1 AND NOT is_trashed)",
+            )
+            .bind(dst_uuid)
+            .fetch_one(self.pool.as_ref())
+            .await
+            .map_err(|e| {
+                DomainError::internal_error("FileBlobWrite", format!("copy folder dest: {e}"))
+            })?;
+            if !dst_exists {
+                return Err(DomainError::not_found("Folder", dst_str.as_str()));
+            }
+            let is_cycle: bool = sqlx::query_scalar(
+                "SELECT EXISTS(
+                    SELECT 1
+                      FROM storage.folders d
+                      JOIN storage.folders s ON s.id = $1 AND NOT s.is_trashed
+                     WHERE d.id = $2 AND NOT d.is_trashed AND d.lpath <@ s.lpath
+                 )",
+            )
+            .bind(src_uuid)
+            .bind(dst_uuid)
+            .fetch_one(self.pool.as_ref())
+            .await
+            .map_err(|e| {
+                DomainError::internal_error("FileBlobWrite", format!("copy folder cycle: {e}"))
+            })?;
+            if is_cycle {
+                return Err(DomainError::new(
+                    ErrorKind::InvalidInput,
+                    "Folder",
+                    "Cannot copy a folder into itself or one of its subfolders",
+                ));
+            }
+            Some(dst_uuid)
+        } else {
+            None
+        };
+
+        let effective_parent_opt = dst_uuid_opt.or(src_parent_id);
+        let base_name = dest_name
+            .as_deref()
+            .map(normalize_storage_name)
+            .unwrap_or(src_name);
+
+        match on_conflict {
+            ConflictPolicy::Fail => {
+                if let Some(parent_uuid) = effective_parent_opt {
+                    let mut conn = self.pool.acquire().await.map_err(|e| {
+                        DomainError::internal_error("FileBlobWrite", format!("acquire conn: {e}"))
+                    })?;
+                    if sibling_name_exists_in_other_table(
+                        &mut conn,
+                        parent_uuid,
+                        &base_name,
+                        NameKind::Folder,
+                    )
+                    .await
+                    .map_err(|e| {
+                        DomainError::internal_error("FileBlobWrite", format!("cross-table: {e}"))
+                    })? {
+                        return Err(DomainError::already_exists(
+                            "Folder",
+                            "destination already contains a file with the same name".to_string(),
+                        ));
+                    }
+                }
+                self.copy_folder_tree(source_folder_id, target_parent_id, dest_name)
+                    .await
+            }
+            ConflictPolicy::Rename => {
+                let effective_parent_uuid = effective_parent_opt.ok_or_else(|| {
+                    DomainError::operation_not_supported(
+                        "Folder",
+                        "cannot duplicate a drive root folder without a target folder",
+                    )
+                })?;
+                let row = elect_and_insert_in_tx(
+                    self.pool.as_ref(),
+                    "folders.copy_tree_on_conflict",
+                    "Folder",
+                    effective_parent_uuid,
+                    &base_name,
+                    NameKind::Folder,
+                    |conn, candidate| {
+                        Box::pin(async move {
+                            let res = sqlx::query_as::<_, (String, i64, i64)>(
+                                "SELECT new_root_id, folders_copied, files_copied \
+                                   FROM storage.copy_folder_tree($1, $2, $3)",
+                            )
+                            .bind(src_uuid)
+                            .bind(dst_uuid_opt)
+                            .bind(Some(candidate))
+                            .fetch_one(conn)
+                            .await?;
+                            Ok(res)
+                        })
+                    },
+                )
+                .await?;
+
+                Ok(CopyFolderTreeResult {
+                    new_root_folder_id: row.0,
+                    folders_copied: row.1,
+                    files_copied: row.2,
+                })
+            }
+        }
+    }
+
+    async fn replace_file_from_source_impl(
+        &self,
+        source_file_id: &str,
+        target_file_id: &str,
+        caller_id: Uuid,
+        expected_hash: Option<&str>,
+    ) -> Result<File, DomainError> {
+        let (src_hash, src_size, src_mtime): (String, i64, i64) = sqlx::query_as(
+            "SELECT blob_hash, size, EXTRACT(EPOCH FROM content_modified_at)::bigint
+               FROM storage.files
+              WHERE id = $1::uuid AND NOT is_trashed",
+        )
+        .bind(source_file_id)
+        .fetch_optional(self.pool.as_ref())
+        .await
+        .map_err(|e| {
+            DomainError::internal_error("FileBlobWrite", format!("replace source lookup: {e}"))
+        })?
+        .ok_or_else(|| DomainError::not_found("File", source_file_id))?;
+
+        if source_file_id == target_file_id {
+            if let Some(exp) = expected_hash
+                && src_hash != exp
+            {
+                return Err(DomainError::precondition_failed(
+                    "File",
+                    "content was modified concurrently",
+                ));
+            }
+            return self.fetch_live_file_row(target_file_id).await;
+        }
+
+        self.dedup.add_reference(&src_hash).await?;
+        self.update_file_content_with_blob(
+            target_file_id,
+            &src_hash,
+            src_size.max(0) as u64,
+            Some(src_mtime),
+            caller_id,
+            expected_hash,
+        )
+        .await?;
+
+        self.fetch_live_file_row(target_file_id).await
+    }
 }
 
 impl FileWritePort for FileBlobWriteRepository {
@@ -723,6 +1422,56 @@ impl FileWritePort for FileBlobWriteRepository {
             content_modified_at,
         )
         .await
+    }
+
+    async fn save_file_with_blob_on_conflict(
+        &self,
+        name: String,
+        folder_id: Option<String>,
+        content_type: String,
+        blob_hash: &str,
+        size: u64,
+        caller_id: Uuid,
+        content_modified_at: Option<i64>,
+        on_conflict: ConflictPolicy,
+    ) -> Result<File, DomainError> {
+        match on_conflict {
+            ConflictPolicy::Fail => {
+                self.save_file_with_blob_impl(
+                    name,
+                    folder_id,
+                    content_type,
+                    blob_hash,
+                    size,
+                    caller_id,
+                    content_modified_at,
+                )
+                .await
+            }
+            ConflictPolicy::Rename => {
+                self.save_file_with_blob_rename_impl(
+                    name,
+                    folder_id,
+                    content_type,
+                    blob_hash,
+                    size,
+                    caller_id,
+                    content_modified_at,
+                )
+                .await
+            }
+        }
+    }
+
+    async fn move_file_on_conflict(
+        &self,
+        file_id: &str,
+        target_folder_id: Option<String>,
+        caller_id: Uuid,
+        on_conflict: ConflictPolicy,
+    ) -> Result<File, DomainError> {
+        self.move_file_on_conflict_impl(file_id, target_folder_id, caller_id, on_conflict)
+            .await
     }
 
     async fn move_file(
@@ -1458,6 +2207,45 @@ impl FileWritePort for FileBlobWriteRepository {
             files_copied: row.2,
         })
     }
+
+    async fn copy_file_on_conflict(
+        &self,
+        file_id: &str,
+        target_folder_id: Option<String>,
+        new_name: Option<&str>,
+        caller_id: Uuid,
+        on_conflict: ConflictPolicy,
+    ) -> Result<File, DomainError> {
+        self.copy_file_on_conflict_impl(file_id, target_folder_id, new_name, caller_id, on_conflict)
+            .await
+    }
+
+    async fn copy_folder_tree_on_conflict(
+        &self,
+        source_folder_id: &str,
+        target_parent_id: Option<String>,
+        dest_name: Option<String>,
+        on_conflict: ConflictPolicy,
+    ) -> Result<CopyFolderTreeResult, DomainError> {
+        self.copy_folder_tree_on_conflict_impl(
+            source_folder_id,
+            target_parent_id,
+            dest_name,
+            on_conflict,
+        )
+        .await
+    }
+
+    async fn replace_file_from_source(
+        &self,
+        source_file_id: &str,
+        target_file_id: &str,
+        caller_id: Uuid,
+        expected_hash: Option<&str>,
+    ) -> Result<File, DomainError> {
+        self.replace_file_from_source_impl(source_file_id, target_file_id, caller_id, expected_hash)
+            .await
+    }
 }
 
 // Content provenance: `content_modified_by` and `storage.file_content_touches`
@@ -1943,5 +2731,349 @@ mod content_provenance_tests {
              window cannot be moved by a camera's clock (got {})",
             lanes[0].1
         );
+    }
+
+    #[tokio::test]
+    async fn save_file_on_conflict_rename_picks_next_free_candidate_and_skips_folders() {
+        let (pool, scope) = test_pool("rename").await;
+        let (folder, drive) = seeded_root(&pool).await;
+        let alice = user(&pool, &scope, "alice").await;
+        let r = repo(pool.clone());
+
+        let base_name = format!("{scope}report.pdf");
+        let first = r
+            .save_file_with_blob_on_conflict(
+                base_name.clone(),
+                Some(folder.to_string()),
+                "application/pdf".to_string(),
+                HASH_A,
+                10,
+                alice,
+                None,
+                ConflictPolicy::Rename,
+            )
+            .await
+            .expect("first save");
+        assert_eq!(first.name(), base_name);
+
+        // Create a folder occupying `report (2).pdf` to verify cross-table
+        // collision avoidance steps over to `report (3).pdf`.
+        let folder_clash = format!("{scope}report (2).pdf");
+        sqlx::query(
+            "INSERT INTO storage.folders (name, parent_id, drive_id, created_by, updated_by)
+             VALUES ($1, $2, $3, $4, $4)",
+        )
+        .bind(&folder_clash)
+        .bind(folder)
+        .bind(drive)
+        .bind(alice)
+        .execute(pool.as_ref())
+        .await
+        .expect("seed folder clash");
+
+        let second = r
+            .save_file_with_blob_on_conflict(
+                base_name.clone(),
+                Some(folder.to_string()),
+                "application/pdf".to_string(),
+                HASH_B,
+                20,
+                alice,
+                None,
+                ConflictPolicy::Rename,
+            )
+            .await
+            .expect("second save must step over both file and folder");
+        assert_eq!(second.name(), format!("{scope}report (3).pdf"));
+
+        sqlx::query("DELETE FROM storage.folders WHERE parent_id = $1 AND name = $2")
+            .bind(folder)
+            .bind(&folder_clash)
+            .execute(pool.as_ref())
+            .await
+            .expect("cleanup folder clash");
+    }
+
+    #[tokio::test]
+    async fn move_file_on_conflict_rename_and_cross_table_guard() {
+        let (pool, scope) = test_pool("mvconf").await;
+        let (folder, drive) = seeded_root(&pool).await;
+        let alice = user(&pool, &scope, "alice").await;
+        let r = repo(pool.clone());
+
+        let src_box: Uuid = sqlx::query_scalar(
+            "INSERT INTO storage.folders (name, parent_id, drive_id, created_by, updated_by)
+             VALUES ($1, $2, $3, $4, $4) RETURNING id",
+        )
+        .bind(format!("{scope}src"))
+        .bind(folder)
+        .bind(drive)
+        .bind(alice)
+        .fetch_one(pool.as_ref())
+        .await
+        .expect("src folder");
+
+        let dst_box: Uuid = sqlx::query_scalar(
+            "INSERT INTO storage.folders (name, parent_id, drive_id, created_by, updated_by)
+             VALUES ($1, $2, $3, $4, $4) RETURNING id",
+        )
+        .bind(format!("{scope}dst"))
+        .bind(folder)
+        .bind(drive)
+        .bind(alice)
+        .fetch_one(pool.as_ref())
+        .await
+        .expect("dst folder");
+
+        let _existing_dst_file =
+            file_authored_by(&pool, &scope, dst_box, drive, alice, "note.txt").await;
+        let folder_clash = format!("{scope}note (2).txt");
+        sqlx::query(
+            "INSERT INTO storage.folders (name, parent_id, drive_id, created_by, updated_by)
+             VALUES ($1, $2, $3, $4, $4)",
+        )
+        .bind(&folder_clash)
+        .bind(dst_box)
+        .bind(drive)
+        .bind(alice)
+        .execute(pool.as_ref())
+        .await
+        .expect("folder clash");
+
+        let moving = file_authored_by(&pool, &scope, src_box, drive, alice, "note.txt").await;
+
+        // Fail policy must reject with AlreadyExists on file collision.
+        let fail_err = r
+            .move_file_on_conflict(
+                &moving.to_string(),
+                Some(dst_box.to_string()),
+                alice,
+                ConflictPolicy::Fail,
+            )
+            .await
+            .expect_err("fail policy must reject");
+        assert_eq!(fail_err.kind, ErrorKind::AlreadyExists);
+
+        // Fail policy also rejects when colliding solely with a subfolder.
+        let folder_only_src =
+            file_authored_by(&pool, &scope, src_box, drive, alice, "note (2).txt").await;
+        let cross_err = r
+            .move_file_on_conflict(
+                &folder_only_src.to_string(),
+                Some(dst_box.to_string()),
+                alice,
+                ConflictPolicy::Fail,
+            )
+            .await
+            .expect_err("cross-table collision must fail");
+        assert_eq!(cross_err.kind, ErrorKind::AlreadyExists);
+
+        // Rename policy steps over existing file `note.txt` AND folder `note (2).txt` -> `note (3).txt`.
+        let moved = r
+            .move_file_on_conflict(
+                &moving.to_string(),
+                Some(dst_box.to_string()),
+                alice,
+                ConflictPolicy::Rename,
+            )
+            .await
+            .expect("rename move");
+        assert_eq!(moved.name(), format!("{scope}note (3).txt"));
+        assert_eq!(moved.folder_id(), Some(dst_box.to_string().as_str()));
+
+        sqlx::query("DELETE FROM storage.folders WHERE id IN ($1, $2)")
+            .bind(src_box)
+            .bind(dst_box)
+            .execute(pool.as_ref())
+            .await
+            .expect("cleanup");
+    }
+
+    #[tokio::test]
+    async fn copy_folder_tree_on_conflict_rename_and_cycle_guard() {
+        let (pool, scope) = test_pool("cptree").await;
+        let (folder, drive) = seeded_root(&pool).await;
+        let alice = user(&pool, &scope, "alice").await;
+        let r = repo(pool.clone());
+
+        let workspace: Uuid = sqlx::query_scalar(
+            "INSERT INTO storage.folders (name, parent_id, drive_id, created_by, updated_by)
+             VALUES ($1, $2, $3, $4, $4) RETURNING id",
+        )
+        .bind(format!("{scope}ws"))
+        .bind(folder)
+        .bind(drive)
+        .bind(alice)
+        .fetch_one(pool.as_ref())
+        .await
+        .expect("workspace");
+
+        let src_dir: Uuid = sqlx::query_scalar(
+            "INSERT INTO storage.folders (name, parent_id, drive_id, created_by, updated_by)
+             VALUES ($1, $2, $3, $4, $4) RETURNING id",
+        )
+        .bind("Docs")
+        .bind(workspace)
+        .bind(drive)
+        .bind(alice)
+        .fetch_one(pool.as_ref())
+        .await
+        .expect("src_dir");
+
+        let child_dir: Uuid = sqlx::query_scalar(
+            "INSERT INTO storage.folders (name, parent_id, drive_id, created_by, updated_by)
+             VALUES ($1, $2, $3, $4, $4) RETURNING id",
+        )
+        .bind("Nested")
+        .bind(src_dir)
+        .bind(drive)
+        .bind(alice)
+        .fetch_one(pool.as_ref())
+        .await
+        .expect("child_dir");
+
+        // Occupy `Docs (2)` with a file so duplicating `Docs` into `workspace` picks `Docs (3)`.
+        sqlx::query(
+            "INSERT INTO storage.files (name, folder_id, drive_id, blob_hash, size, mime_type, created_by, updated_by, content_modified_by)
+             VALUES ('Docs (2)', $1, $2, $3, 5, 'text/plain', $4, $4, $4)",
+        )
+        .bind(workspace)
+        .bind(drive)
+        .bind(HASH_A)
+        .bind(alice)
+        .execute(pool.as_ref())
+        .await
+        .expect("file clash");
+
+        // Descendant cycle must fail cleanly.
+        let cycle_err = r
+            .copy_folder_tree_on_conflict(
+                &src_dir.to_string(),
+                Some(child_dir.to_string()),
+                None,
+                ConflictPolicy::Rename,
+            )
+            .await
+            .expect_err("copy into child must reject");
+        assert_eq!(cycle_err.kind, ErrorKind::InvalidInput);
+
+        // Same-parent copy with Rename creates `Docs (3)`.
+        let copied = r
+            .copy_folder_tree_on_conflict(
+                &src_dir.to_string(),
+                Some(workspace.to_string()),
+                None,
+                ConflictPolicy::Rename,
+            )
+            .await
+            .expect("rename copy tree");
+        let new_name: String =
+            sqlx::query_scalar("SELECT name FROM storage.folders WHERE id = $1::uuid")
+                .bind(&copied.new_root_folder_id)
+                .fetch_one(pool.as_ref())
+                .await
+                .expect("new root name");
+        assert_eq!(new_name, "Docs (3)");
+
+        sqlx::query("DELETE FROM storage.folders WHERE id = $1")
+            .bind(workspace)
+            .execute(pool.as_ref())
+            .await
+            .expect("cleanup");
+    }
+
+    #[tokio::test]
+    async fn replace_file_from_source_enforces_cas_and_preserves_target_id() {
+        let (pool, scope) = test_pool("repfile").await;
+        let (folder, drive) = seeded_root(&pool).await;
+        let alice = user(&pool, &scope, "alice").await;
+        let bob = user(&pool, &scope, "bob").await;
+
+        let hash_src = format!("{:064x}", Uuid::new_v4().as_u128());
+        let hash_dst = format!("{:064x}", Uuid::new_v4().as_u128());
+
+        for (h, sz) in [(&hash_src, 12_i64), (&hash_dst, 7_i64)] {
+            sqlx::query(
+                "INSERT INTO storage.blobs (hash, size, ref_count) VALUES ($1, $2, 1)
+                 ON CONFLICT (hash) DO UPDATE SET ref_count = storage.blobs.ref_count + 1",
+            )
+            .bind(h)
+            .bind(sz)
+            .execute(pool.as_ref())
+            .await
+            .expect("seed blob");
+        }
+
+        let r = FileBlobWriteRepository::new(
+            pool.clone(),
+            Arc::new(BlobHandler::new_for_test(pool.clone())),
+            Cache::builder().max_capacity(64).build(),
+        );
+
+        let src_id: Uuid = sqlx::query_scalar(
+            "INSERT INTO storage.files (name, folder_id, drive_id, blob_hash, size, mime_type, created_by, updated_by, content_modified_by)
+             VALUES ($1, $2, $3, $4, 12, 'text/plain', $5, $5, $5) RETURNING id",
+        )
+        .bind(format!("{scope}src.txt"))
+        .bind(folder)
+        .bind(drive)
+        .bind(&hash_src)
+        .bind(alice)
+        .fetch_one(pool.as_ref())
+        .await
+        .expect("seed src file");
+
+        let dst_id: Uuid = sqlx::query_scalar(
+            "INSERT INTO storage.files (name, folder_id, drive_id, blob_hash, size, mime_type, created_by, updated_by, content_modified_by)
+             VALUES ($1, $2, $3, $4, 7, 'text/plain', $5, $5, $5) RETURNING id",
+        )
+        .bind(format!("{scope}dst.txt"))
+        .bind(folder)
+        .bind(drive)
+        .bind(&hash_dst)
+        .bind(alice)
+        .fetch_one(pool.as_ref())
+        .await
+        .expect("seed dst file");
+
+        // Stale CAS expected_hash must fail with PreconditionFailed and keep dst untouched.
+        let cas_err = r
+            .replace_file_from_source(
+                &src_id.to_string(),
+                &dst_id.to_string(),
+                bob,
+                Some("0000000000000000000000000000000000000000000000000000000000000000"),
+            )
+            .await
+            .expect_err("stale CAS must fail");
+        assert_eq!(cas_err.kind, ErrorKind::PreconditionFailed);
+
+        // Matching CAS replaces content while preserving target ID and name.
+        let replaced = r
+            .replace_file_from_source(
+                &src_id.to_string(),
+                &dst_id.to_string(),
+                bob,
+                Some(&hash_dst),
+            )
+            .await
+            .expect("matching CAS replace");
+        assert_eq!(replaced.id(), dst_id.to_string());
+        assert_eq!(replaced.name(), format!("{scope}dst.txt"));
+        assert_eq!(replaced.content_hash(), hash_src);
+        assert_eq!(replaced.size(), 12);
+
+        sqlx::query("DELETE FROM storage.files WHERE id IN ($1, $2)")
+            .bind(src_id)
+            .bind(dst_id)
+            .execute(pool.as_ref())
+            .await
+            .expect("cleanup files");
+        sqlx::query("DELETE FROM storage.blobs WHERE hash IN ($1, $2)")
+            .bind(&hash_src)
+            .bind(&hash_dst)
+            .execute(pool.as_ref())
+            .await
+            .expect("cleanup blobs");
     }
 }

@@ -80,11 +80,13 @@ use crate::interfaces::api::handlers::delta_upload_handler::{
 };
 use crate::interfaces::api::handlers::file_handler::{
     create_file_by_hash, delete_file, download_file, get_file_metadata, get_thumbnail,
-    list_files_query, move_file_simple, rename_file, upload_file_with_thumbnails, upload_thumbnail,
+    list_files_query, move_file_simple, rename_file, replace_file_content,
+    upload_file_with_thumbnails, upload_thumbnail,
 };
 use crate::interfaces::api::handlers::folder_handler::{
     create_folder, delete_folder_with_trash, download_folder_zip, get_folder, get_folder_ancestors,
-    list_folder_resources, list_root_folders, move_folder, rename_folder,
+    list_folder_resources, list_root_folders, move_folder, rename_folder, transfer_execute,
+    transfer_preflight, upload_preflight,
 };
 use crate::interfaces::api::handlers::i18n_handler::{
     get_locales, get_translations_by_locale, translate,
@@ -236,6 +238,9 @@ pub fn create_api_routes(app_state: &Arc<AppState>) -> Router<Arc<AppState>> {
         // on the /files client. Returns caller-visible parents (walk
         // stops at share/drive-membership boundary) + access_source.
         .route("/{id}/ancestors", get(get_folder_ancestors))
+        .route("/{id}/upload-preflight", post(upload_preflight))
+        .route("/{id}/transfer-preflight", post(transfer_preflight))
+        .route("/{id}/transfer", post(transfer_execute))
         .route("/{id}/rename", put(rename_folder))
         .route("/{id}/move", put(move_folder))
         .with_state(app_state.clone());
@@ -265,6 +270,7 @@ pub fn create_api_routes(app_state: &Arc<AppState>) -> Router<Arc<AppState>> {
         .route("/delta/download", post(delta_download_chunks))
         .route("/{id}/manifest", get(delta_file_manifest))
         .route("/{id}", get(download_file))
+        .route("/{id}/content", put(replace_file_content))
         .route(
             "/{id}/thumbnail/{size}",
             get(get_thumbnail).put(upload_thumbnail),

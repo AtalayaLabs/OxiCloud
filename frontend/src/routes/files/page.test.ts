@@ -54,6 +54,8 @@ vi.mock('$lib/composables/useFolderTopic.svelte', () => ({
 }));
 vi.mock('$lib/api/csrf', () => ({ getCsrfHeaders: () => ({}) }));
 vi.mock('$lib/api/endpoints/deltaUpload', () => ({
+	hashFilesPooled: vi.fn(),
+	instantReplaceOwned: vi.fn(),
 	instantUploadOwned: vi.fn(),
 	resolveOwnedHashes: vi.fn(),
 	tryDeltaUpload: vi.fn()
@@ -79,6 +81,7 @@ vi.mock('$lib/api/endpoints/files', () => ({
 	thumbSizeForView: () => 'preview' as const,
 	moveFile: vi.fn(),
 	renameFile: vi.fn(),
+	replaceFileContentWithProgress: vi.fn(),
 	uploadFile: vi.fn(),
 	uploadFileWithProgress: vi.fn()
 }));
@@ -99,12 +102,38 @@ vi.mock('$lib/api/endpoints/folders', () => ({
 	invalidateFolderCache: vi.fn(),
 	moveFolder: vi.fn(),
 	rememberFolderName: vi.fn(),
-	renameFolder: vi.fn()
+	renameFolder: vi.fn(),
+	uploadPreflight: vi.fn()
 }));
+vi.mock('$lib/api/endpoints/transfer', async (importOriginal) => {
+	const actual = await importOriginal<typeof import('$lib/api/endpoints/transfer')>();
+	return {
+		...actual,
+		transferPreflight: vi.fn(async () => ({
+			...actual.emptyTransferPreflight(),
+			supported: false
+		})),
+		executeTransfer: vi.fn()
+	};
+});
 
-import { fetchFolderPage, createFolder, deleteFolder } from '$lib/api/endpoints/folders';
-import { deleteFile, uploadFileWithProgress } from '$lib/api/endpoints/files';
-import { resolveOwnedHashes, tryDeltaUpload } from '$lib/api/endpoints/deltaUpload';
+import {
+	fetchFolderPage,
+	createFolder,
+	deleteFolder,
+	uploadPreflight
+} from '$lib/api/endpoints/folders';
+import { emptyTransferPreflight, transferPreflight } from '$lib/api/endpoints/transfer';
+import {
+	deleteFile,
+	replaceFileContentWithProgress,
+	uploadFileWithProgress
+} from '$lib/api/endpoints/files';
+import {
+	hashFilesPooled,
+	resolveOwnedHashes,
+	tryDeltaUpload
+} from '$lib/api/endpoints/deltaUpload';
 import { apiFetch } from '$lib/api/client';
 import { files as filesStore } from '$lib/stores/files.svelte';
 import FilesPage from './[...path]/+page.svelte';
@@ -161,6 +190,14 @@ function folderItem(id: string, name: string) {
 
 beforeEach(() => {
 	vi.clearAllMocks();
+	m(transferPreflight).mockResolvedValue({ ...emptyTransferPreflight(), supported: false });
+	m(uploadPreflight).mockResolvedValue({
+		supported: true,
+		existing_folders: [],
+		existing_files: [],
+		kind_conflicts: []
+	});
+	m(hashFilesPooled).mockResolvedValue(new Map());
 	m(resolveOwnedHashes).mockResolvedValue(new Map());
 	m(tryDeltaUpload).mockResolvedValue(null);
 	// A concrete folder in the path: bare `/files` now canonicalizes to
@@ -339,5 +376,119 @@ it('batch-favorites the selection via the favorites batch endpoint', async () =>
 			'/api/favorites/batch',
 			expect.objectContaining({ method: 'POST' })
 		)
+	);
+});
+
+it('auto-skips 100% identical files without opening the conflict modal or uploading bytes', async () => {
+	withListing();
+	const serverHash = 'b'.repeat(64);
+	m(uploadPreflight).mockResolvedValue({
+		supported: true,
+		existing_folders: [],
+		existing_files: [
+			{
+				relative_path: 'hello.txt',
+				id: 'f1',
+				folder_id: 'home',
+				name: 'hello.txt',
+				size: 5,
+				modified_at: '2024-01-01T00:00:00Z',
+				content_hash: serverHash,
+				can_update: true
+			}
+		],
+		kind_conflicts: []
+	});
+	const f = new File([new Uint8Array(5)], 'hello.txt', {
+		type: 'text/plain',
+		lastModified: 1_704_067_200_000
+	});
+	m(hashFilesPooled).mockResolvedValue(new Map([[f, serverHash]]));
+
+	render(FilesPage);
+	const input = await screen.findByTestId('files-upload-file-input');
+	await waitFor(() => expect(fetchFolderPage).toHaveBeenCalled());
+	Object.defineProperty(input, 'files', { configurable: true, value: [f] });
+
+	await fireEvent.change(input);
+
+	await waitFor(() =>
+		expect(ui.finishProgress).toHaveBeenCalledWith(1, expect.stringContaining('1'), 'info')
+	);
+	expect(screen.queryByTestId('upload-conflict-dialog')).toBeNull();
+	expect(uploadFileWithProgress).not.toHaveBeenCalled();
+	expect(replaceFileContentWithProgress).not.toHaveBeenCalled();
+});
+
+it('opens UploadConflictDialog on conflicts and routes replace (with CAS) and keep_both actions', async () => {
+	withListing();
+	m(uploadPreflight).mockResolvedValue({
+		supported: true,
+		existing_folders: [],
+		existing_files: [
+			{
+				relative_path: 'replace.txt',
+				id: 'id-replace',
+				folder_id: 'home',
+				name: 'replace.txt',
+				size: 100,
+				modified_at: '2024-01-01T00:00:00Z',
+				content_hash: 'c'.repeat(64),
+				can_update: true
+			},
+			{
+				relative_path: 'copy.txt',
+				id: 'id-copy',
+				folder_id: 'home',
+				name: 'copy.txt',
+				size: 200,
+				modified_at: '2024-01-01T00:00:00Z',
+				content_hash: 'd'.repeat(64),
+				can_update: true
+			}
+		],
+		kind_conflicts: []
+	});
+	m(replaceFileContentWithProgress).mockResolvedValue(undefined);
+	m(uploadFileWithProgress).mockResolvedValue(undefined);
+
+	render(FilesPage);
+	const input = await screen.findByTestId('files-upload-file-input');
+	await waitFor(() => expect(fetchFolderPage).toHaveBeenCalled());
+
+	const fReplace = new File([new Uint8Array(10)], 'replace.txt', {
+		type: 'text/plain',
+		lastModified: 1_704_067_210_000
+	});
+	const fKeepBoth = new File([new Uint8Array(10)], 'copy.txt', {
+		type: 'text/plain',
+		lastModified: 1_704_067_210_000
+	});
+	Object.defineProperty(input, 'files', { configurable: true, value: [fReplace, fKeepBoth] });
+
+	const changePromise = fireEvent.change(input);
+
+	await screen.findByTestId('upload-conflict-dialog');
+	const replaceButtons = await screen.findAllByTestId('upload-conflict-choice-replace');
+	const keepBothButtons = await screen.findAllByTestId('upload-conflict-choice-keep-both');
+	await fireEvent.click(replaceButtons[0]);
+	await fireEvent.click(keepBothButtons[1]);
+	await fireEvent.click(screen.getByTestId('upload-conflict-confirm'));
+
+	await changePromise;
+
+	expect(replaceFileContentWithProgress).toHaveBeenCalledWith(
+		'id-replace',
+		fReplace,
+		expect.any(Function),
+		expect.anything(),
+		{ expectedHash: 'c'.repeat(64) }
+	);
+	expect(uploadFileWithProgress).toHaveBeenCalledWith(
+		'home',
+		fKeepBoth,
+		expect.any(Function),
+		expect.anything(),
+		{ onConflict: 'rename' }
 	);
 });

@@ -3,6 +3,7 @@ import { uploadTransport } from '../upload-transport';
 import { ApiError, apiErrorFromResponse, apiFetch, withBase } from '$lib/api/client';
 import { getCsrfHeaders } from '$lib/api/csrf';
 import type { FileItem } from '$lib/api/types';
+import type { ConflictPolicy } from '$lib/api/generated/openapi/types.gen';
 
 /**
  * Thin upload-specific wrapper around `apiErrorFromResponse` — the shared
@@ -29,6 +30,8 @@ const JSON_HEADERS = { 'Content-Type': 'application/json' };
  * status so the caller can fall back to a plain upload on 404 (hash not owned).
  * Scoped to the caller's own content server-side (no cross-user probing).
  */
+export type UploadConflictPolicy = 'fail' | 'rename';
+
 export async function createFileByHash(
 	folderId: string,
 	name: string,
@@ -43,7 +46,8 @@ export async function createFileByHash(
 	 * falsy: `lastModified` is 0 for a synthesised `File`, and 0 would be
 	 * refused by the server's pre-2000 floor.
 	 */
-	sourceModifiedAt?: number
+	sourceModifiedAt?: number,
+	opts?: { onConflict?: UploadConflictPolicy }
 ): Promise<{ ok: boolean; status: number; data?: unknown; errorBody?: unknown }> {
 	const res = await apiFetch('/api/files/by-hash', {
 		method: 'POST',
@@ -53,7 +57,8 @@ export async function createFileByHash(
 			name,
 			folder_id: folderId,
 			hash,
-			...(sourceModifiedAt ? { source_modified_at: sourceModifiedAt } : {})
+			...(sourceModifiedAt ? { source_modified_at: sourceModifiedAt } : {}),
+			...(opts?.onConflict ? { on_conflict: opts.onConflict } : {})
 		})
 	});
 	if (res.ok) {
@@ -63,6 +68,36 @@ export async function createFileByHash(
 	// Preserve the error body so callers like `instantUploadOwned` can thread
 	// the server's `error_type` + `message` into the thrown `ApiError`,
 	// instead of swallowing it into a hardcoded "Storage quota exceeded".
+	const errorBody = await res.json().catch(() => undefined);
+	return { ok: false, status: res.status, errorBody };
+}
+
+/**
+ * Instant replace: overwrite an existing file's content by ID from a blob the
+ * caller already owns (`POST /api/files/by-hash` with `file_id`) — zero content
+ * bytes cross the wire. Optional `expectedHash` enforces CAS (`412`).
+ */
+export async function replaceFileByHash(
+	fileId: string,
+	hash: string,
+	sourceModifiedAt?: number,
+	expectedHash?: string
+): Promise<{ ok: boolean; status: number; data?: unknown; errorBody?: unknown }> {
+	const res = await apiFetch('/api/files/by-hash', {
+		method: 'POST',
+		credentials: 'same-origin',
+		headers: { ...JSON_HEADERS, ...getCsrfHeaders() },
+		body: JSON.stringify({
+			file_id: fileId,
+			hash,
+			...(sourceModifiedAt ? { source_modified_at: sourceModifiedAt } : {}),
+			...(expectedHash ? { expected_hash: expectedHash } : {})
+		})
+	});
+	if (res.ok) {
+		const data = await res.json().catch(() => undefined);
+		return { ok: true, status: res.status, data };
+	}
 	const errorBody = await res.json().catch(() => undefined);
 	return { ok: false, status: res.status, errorBody };
 }
@@ -114,9 +149,14 @@ function appendSourceMtime(form: FormData, file: File): void {
  * or to offer an undo) would otherwise have to re-list the folder to
  * find what they just made. Callers that don't care simply ignore it.
  */
-export async function uploadFile(folderId: string | null, file: File): Promise<FileItem | null> {
+export async function uploadFile(
+	folderId: string | null,
+	file: File,
+	opts?: { onConflict?: UploadConflictPolicy }
+): Promise<FileItem | null> {
 	const form = new FormData();
 	if (folderId) form.append('folder_id', folderId);
+	if (opts?.onConflict) form.append('on_conflict', opts.onConflict);
 	appendSourceMtime(form, file);
 	form.append('file', file);
 	const res = await apiFetch('/api/files/upload', {
@@ -142,10 +182,12 @@ export async function uploadFileWithProgress(
 	folderId: string | null,
 	file: File,
 	onProgress: (fraction: number) => void,
-	signal?: AbortSignal
+	signal?: AbortSignal,
+	opts?: { onConflict?: UploadConflictPolicy }
 ): Promise<void> {
 	const form = new FormData();
 	if (folderId) form.append('folder_id', folderId);
+	if (opts?.onConflict) form.append('on_conflict', opts.onConflict);
 	appendSourceMtime(form, file);
 	form.append('file', file);
 	const response = await apiFetch('/api/files/upload', {
@@ -159,6 +201,35 @@ export async function uploadFileWithProgress(
 	}
 }
 
+/**
+ * Overwrite an existing file's content by ID (`PUT /api/files/{id}/content`),
+ * preserving its file ID, shares/grants, and favorites. Metadata parts
+ * (`expected_hash`, `source_modified_at`) are appended BEFORE `file` because
+ * the server consumes the multipart stream once `file` arrives.
+ */
+export async function replaceFileContentWithProgress(
+	fileId: string,
+	file: File,
+	onProgress: (fraction: number) => void,
+	signal?: AbortSignal,
+	opts?: { expectedHash?: string }
+): Promise<void> {
+	const form = new FormData();
+	if (opts?.expectedHash) form.append('expected_hash', opts.expectedHash);
+	appendSourceMtime(form, file);
+	form.append('file', file);
+	const target = `/api/files/${fileId}/content`;
+	const response = await apiFetch(target, {
+		method: 'PUT',
+		body: form,
+		signal,
+		fetch: uploadTransport(form, onProgress)
+	});
+	if (!response.ok) {
+		throw await uploadErrorFromResponse(response, target);
+	}
+}
+
 export async function renameFile(fileId: string, name: string): Promise<void> {
 	const res = await apiFetch(`/api/files/${fileId}/rename`, {
 		method: 'PUT',
@@ -169,12 +240,19 @@ export async function renameFile(fileId: string, name: string): Promise<void> {
 	if (!res.ok) throw await apiErrorFromResponse(res);
 }
 
-export async function moveFile(fileId: string, targetFolderId: string | null): Promise<void> {
+export async function moveFile(
+	fileId: string,
+	targetFolderId: string | null,
+	opts?: { onConflict?: ConflictPolicy }
+): Promise<void> {
 	const res = await apiFetch(`/api/files/${fileId}/move`, {
 		method: 'PUT',
 		credentials: 'same-origin',
 		headers: { ...JSON_HEADERS, ...getCsrfHeaders() },
-		body: JSON.stringify({ folder_id: targetFolderId || null })
+		body: JSON.stringify({
+			folder_id: targetFolderId || null,
+			...(opts?.onConflict ? { on_conflict: opts.onConflict } : {})
+		})
 	});
 	if (!res.ok) throw await apiErrorFromResponse(res);
 }

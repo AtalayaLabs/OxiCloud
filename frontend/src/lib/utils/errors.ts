@@ -31,6 +31,11 @@ function messageForErrorType(errorType: string): string | null {
 		case 'AlreadyExists':
 		case 'Conflict':
 			return t('errors.conflict', 'An item with that name is already there.');
+		case 'PreconditionFailed':
+			return t(
+				'errors.precondition_failed',
+				'This file was modified by someone else. Refresh and try again.'
+			);
 		case 'TransientBackend':
 			return t('errors.transient_backend', 'Storage is temporarily unavailable. Try again.');
 		// Raised by `apiErrorFromSdkError` when the fetch never produced a

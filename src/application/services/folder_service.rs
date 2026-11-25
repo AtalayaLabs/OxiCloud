@@ -1,5 +1,6 @@
 use crate::application::dtos::cursor::PageCursor;
 use crate::application::dtos::drive_dto::DriveKindDto;
+use crate::application::dtos::favorites_dto::ItemKind;
 use crate::application::dtos::folder_dto::{
     AccessSourceDriveDto, AccessSourceDto, AccessSourceKind, AccessSourceSubjectDto,
     AccessSourceSubjectKind, CreateFolderDto, EffectiveLinkDto, FolderAncestorDto,
@@ -7,6 +8,12 @@ use crate::application::dtos::folder_dto::{
     ListResourcesOptions, MoveFolderDto, RenameFolderDto,
 };
 use crate::application::dtos::grant_dto::{GrantDto, RoleDto};
+use crate::application::dtos::timestamp_helpers::epoch_to_datetime;
+use crate::application::dtos::upload_preflight_dto::{
+    MAX_PREFLIGHT_DEPTH, MAX_PREFLIGHT_PATH_LEN, MAX_PREFLIGHT_PATHS, PreflightExistingFileDto,
+    PreflightExistingFolderDto, PreflightKindConflictDto, UploadPreflightRequest,
+    UploadPreflightResponse,
+};
 use crate::application::ports::authorization_ports::AuthorizationEngine;
 use crate::application::ports::external_mount_ports::MountEntry;
 use crate::application::ports::file_lifecycle::FileLifecycleHook;
@@ -23,7 +30,10 @@ use crate::domain::services::authorization::{
     Grant, Permission, Resource, ResourceKind, Role, Subject,
 };
 use crate::domain::services::external_mount_id::{NodeId, encode_child_id};
-use crate::domain::services::path_service::{StoragePath, validate_storage_name};
+use crate::domain::services::name_conflict::ConflictPolicy;
+use crate::domain::services::path_service::{
+    StoragePath, normalize_storage_name, validate_storage_name,
+};
 use crate::infrastructure::repositories::pg::folder_db_repository::FolderDbRepository;
 use crate::infrastructure::services::pg_acl_engine::PgAclEngine;
 use std::sync::Arc;
@@ -366,6 +376,11 @@ impl FolderUseCase for FolderService {
         match self.mount_router.classify(parent_id) {
             ResolvedId::Regular => {}
             ResolvedId::MountRoot { cfg } => {
+                if dto.on_conflict == ConflictPolicy::Rename {
+                    return Err(DomainError::validation_error(
+                        "on_conflict=rename is not supported on external mounts",
+                    ));
+                }
                 self.require_mount_perm(&cfg, Permission::Create, caller_id)
                     .await?;
                 let stat = cfg
@@ -376,6 +391,11 @@ impl FolderUseCase for FolderService {
                 return Ok(mount_folder_dto(&cfg, parent_id, &stat));
             }
             ResolvedId::MountChild { cfg, node_id } => {
+                if dto.on_conflict == ConflictPolicy::Rename {
+                    return Err(DomainError::validation_error(
+                        "on_conflict=rename is not supported on external mounts",
+                    ));
+                }
                 self.require_mount_perm(&cfg, Permission::Create, caller_id)
                     .await?;
                 let stat = cfg.provider.create_dir(&node_id, &dto.name).await?;
@@ -401,7 +421,7 @@ impl FolderUseCase for FolderService {
 
         let folder = self
             .folder_storage
-            .create_folder(dto.name, dto.parent_id, caller_id)
+            .create_folder_on_conflict(dto.name, dto.parent_id, caller_id, dto.on_conflict)
             .await?;
 
         // Publish AFTER commit — never before, never inside the write.
@@ -437,7 +457,10 @@ impl FolderUseCase for FolderService {
     /// Gets a folder by its ID
     async fn get_folder(&self, id: &str) -> Result<FolderDto, DomainError> {
         let folder = self.folder_storage.get_folder(id).await.map_err(|e| {
-            DomainError::internal_error(
+            // Preserve `e.kind` (e.g. `NotFound` when the folder was just
+            // deleted during merge) so callers receive 404 rather than 500.
+            DomainError::new(
+                e.kind,
                 "FolderStorage",
                 format!("Failed to get folder with ID: {}: {}", id, e),
             )
@@ -930,6 +953,12 @@ impl FolderUseCase for FolderService {
                 ));
             }
             ResolvedId::MountChild { cfg, node_id } => {
+                if dto.on_conflict == ConflictPolicy::Rename {
+                    return Err(DomainError::operation_not_supported(
+                        "Folder",
+                        "automatic conflict renaming is not supported on external mounts",
+                    ));
+                }
                 let dest = self.mount_dest_node(&cfg, dto.parent_id.as_deref())?;
                 self.require_mount_perm(&cfg, Permission::Update, caller_id)
                     .await?;
@@ -968,7 +997,6 @@ impl FolderUseCase for FolderService {
                     parent_resource,
                 )
                 .await?;
-            // TODO: full descendant-cycle check (moving a folder into one of its own descendants)
         }
 
         // D5 `forbid_cross_drive_move` + D6 `resource.moved_between_drives`
@@ -1040,7 +1068,7 @@ impl FolderUseCase for FolderService {
         let parent_ref = dto.parent_id.as_deref();
         let folder = self
             .folder_storage
-            .move_folder(id, parent_ref, caller_id)
+            .move_folder_on_conflict(id, parent_ref, caller_id, dto.on_conflict)
             .await
             .map_err(|e| {
                 // Same preservation as `rename_folder` above — a
@@ -1167,11 +1195,18 @@ impl FolderUseCase for FolderService {
             });
 
         self.folder_storage.delete_folder(id).await.map_err(|e| {
-            DomainError::internal_error(
+            DomainError::new(
+                e.kind,
                 "FolderStorage",
                 format!("Failed to delete folder with ID: {}: {}", id, e),
             )
         })?;
+
+        if let Ok(folder_uuid) = Uuid::parse_str(id) {
+            self.authz
+                .invalidate_owner_cache_for_resource(Resource::Folder(folder_uuid))
+                .await;
+        }
 
         for file_id in &cascaded_file_ids {
             self.file_lifecycle.on_file_deleted(file_id);
@@ -1655,6 +1690,263 @@ impl FolderService {
             cursor_name,
         ))
     }
+
+    /// Compare a batch of incoming relative file paths against the existing
+    /// subtree under `folder_id`.
+    ///
+    /// - Enforces `Permission::Create` on `folder_id` in the service layer.
+    /// - Returns `supported: false` for external mounts (`ext:` / mount root).
+    /// - Resolves existing folders, existing live files (with `content_hash`,
+    ///   `size`, `modified_at`, `can_update`), and file↔folder kind mismatches.
+    pub async fn upload_preflight_with_perms(
+        &self,
+        folder_id: &str,
+        caller_id: Uuid,
+        request: UploadPreflightRequest,
+    ) -> Result<UploadPreflightResponse, DomainError> {
+        use std::collections::{HashMap, HashSet};
+
+        if request.paths.len() > MAX_PREFLIGHT_PATHS {
+            return Err(DomainError::validation_error(format!(
+                "Too many paths in preflight request ({}; maximum {MAX_PREFLIGHT_PATHS})",
+                request.paths.len()
+            )));
+        }
+
+        let mut parsed_files: Vec<(String, String, String)> =
+            Vec::with_capacity(request.paths.len());
+        let mut seen_files: HashSet<String> = HashSet::new();
+        let mut relative_dirs_set: HashSet<String> = HashSet::new();
+        let mut relative_dirs: Vec<String> = Vec::new();
+
+        for raw in &request.paths {
+            let segs = normalize_and_validate_preflight_path(raw)?;
+            let rel_file = segs.join("/");
+            if !seen_files.insert(rel_file.clone()) {
+                continue;
+            }
+            for depth in 1..segs.len() {
+                let rel_dir = segs[..depth].join("/");
+                if relative_dirs_set.insert(rel_dir.clone()) {
+                    relative_dirs.push(rel_dir);
+                }
+            }
+            let file_name = segs.last().cloned().unwrap_or_default();
+            let parent_rel = if segs.len() > 1 {
+                segs[..segs.len() - 1].join("/")
+            } else {
+                String::new()
+            };
+            parsed_files.push((rel_file, parent_rel, file_name));
+        }
+
+        // AuthZ: caller must hold Create permission on the destination folder.
+        let resource = self
+            .mount_router
+            .folder_authz_resource(folder_id)
+            .ok_or_else(|| DomainError::not_found("Folder", folder_id))?;
+        self.authz
+            .require(Subject::User(caller_id), Permission::Create, resource)
+            .await?;
+
+        // External mounts have no PostgreSQL ltree / BLAKE3 index: signal
+        // unsupported cleanly so the SPA takes its fallback path.
+        if matches!(
+            self.mount_router.classify(folder_id),
+            ResolvedId::MountRoot { .. } | ResolvedId::MountChild { .. }
+        ) {
+            return Ok(UploadPreflightResponse {
+                supported: false,
+                existing_folders: Vec::new(),
+                existing_files: Vec::new(),
+                kind_conflicts: Vec::new(),
+            });
+        }
+
+        if parsed_files.is_empty() {
+            return Ok(UploadPreflightResponse {
+                supported: true,
+                existing_folders: Vec::new(),
+                existing_files: Vec::new(),
+                kind_conflicts: Vec::new(),
+            });
+        }
+
+        let root_uuid =
+            Uuid::parse_str(folder_id).map_err(|_| DomainError::not_found("Folder", folder_id))?;
+        let file_pairs: Vec<(String, String)> = parsed_files
+            .iter()
+            .map(|(_, parent_rel, file_name)| (parent_rel.clone(), file_name.clone()))
+            .collect();
+
+        let rows = self
+            .folder_storage
+            .preflight_lookup_subtree(root_uuid, &relative_dirs, &file_pairs)
+            .await?;
+
+        let folder_id_by_full_path: HashMap<&str, Uuid> = rows
+            .folders
+            .iter()
+            .map(|f| (f.path.as_str(), f.id))
+            .collect();
+
+        let full_path_for = |rel: &str| -> String {
+            if rel.is_empty() {
+                rows.root_path.clone()
+            } else if rows.root_path.is_empty() || rows.root_path == "/" {
+                rel.to_string()
+            } else {
+                format!("{}/{rel}", rows.root_path)
+            }
+        };
+
+        let mut existing_folders = Vec::new();
+        for rel_dir in &relative_dirs {
+            let full = full_path_for(rel_dir);
+            if let Some(&id) = folder_id_by_full_path.get(full.as_str()) {
+                existing_folders.push(PreflightExistingFolderDto {
+                    relative_path: rel_dir.clone(),
+                    id: id.to_string(),
+                });
+            }
+        }
+
+        let file_by_parent_name: HashMap<(Uuid, &str), &_> = rows
+            .files
+            .iter()
+            .map(|f| ((f.folder_id, f.name.as_str()), f))
+            .collect();
+
+        let folder_id_for_rel_parent = |parent_rel: &str| -> Option<Uuid> {
+            if parent_rel.is_empty() {
+                Some(root_uuid)
+            } else {
+                let full = full_path_for(parent_rel);
+                folder_id_by_full_path.get(full.as_str()).copied()
+            }
+        };
+
+        let mut kind_conflicts = Vec::new();
+        // 1. Incoming directories colliding with existing files.
+        for rel_dir in &relative_dirs {
+            let (parent_rel, dir_name) = match rel_dir.rsplit_once('/') {
+                Some((p, n)) => (p, n),
+                None => ("", rel_dir.as_str()),
+            };
+            if let Some(pid) = folder_id_for_rel_parent(parent_rel)
+                && let Some(existing_file) = file_by_parent_name.get(&(pid, dir_name))
+            {
+                kind_conflicts.push(PreflightKindConflictDto {
+                    relative_path: rel_dir.clone(),
+                    existing_kind: ItemKind::File,
+                    existing_id: existing_file.id.to_string(),
+                });
+            }
+        }
+
+        // 2. Incoming files colliding with existing folders OR existing files.
+        let mut matched_files = Vec::new();
+        for (rel_file, parent_rel, file_name) in &parsed_files {
+            let full_file = full_path_for(rel_file);
+            if let Some(&existing_folder_id) = folder_id_by_full_path.get(full_file.as_str()) {
+                kind_conflicts.push(PreflightKindConflictDto {
+                    relative_path: rel_file.clone(),
+                    existing_kind: ItemKind::Folder,
+                    existing_id: existing_folder_id.to_string(),
+                });
+                continue;
+            }
+            if let Some(pid) = folder_id_for_rel_parent(parent_rel)
+                && let Some(&row) = file_by_parent_name.get(&(pid, file_name.as_str()))
+            {
+                matched_files.push((rel_file, row));
+            }
+        }
+
+        let mut existing_files = Vec::with_capacity(matched_files.len());
+        if !matched_files.is_empty() {
+            // Evaluate folder-level Update once to avoid N+1 AuthZ checks on
+            // standard Editor/Owner folders; fall back per-file for
+            // Contributor roles or file-specific grants.
+            let root_can_update = self
+                .authz
+                .check(
+                    Subject::User(caller_id),
+                    Permission::Update,
+                    Resource::Folder(root_uuid),
+                )
+                .await?;
+
+            for (rel_file, row) in matched_files {
+                let can_update = if root_can_update {
+                    true
+                } else {
+                    self.authz
+                        .check(
+                            Subject::User(caller_id),
+                            Permission::Update,
+                            Resource::File(row.id),
+                        )
+                        .await?
+                };
+                existing_files.push(PreflightExistingFileDto {
+                    relative_path: rel_file.clone(),
+                    id: row.id.to_string(),
+                    folder_id: row.folder_id.to_string(),
+                    name: row.name.clone(),
+                    size: row.size.max(0) as u64,
+                    modified_at: epoch_to_datetime(row.modified_at.max(0) as u64),
+                    content_hash: row.blob_hash.clone(),
+                    can_update,
+                });
+            }
+        }
+
+        Ok(UploadPreflightResponse {
+            supported: true,
+            existing_folders,
+            existing_files,
+            kind_conflicts,
+        })
+    }
+}
+
+/// Validate and NFC-normalize one incoming relative path from
+/// [`UploadPreflightRequest`]. Rejects absolute paths, backslashes, empty
+/// segments (`//`), traversal segments (`.` / `..`), null bytes, and excessive
+/// depth or byte length.
+pub fn normalize_and_validate_preflight_path(raw: &str) -> Result<Vec<String>, DomainError> {
+    if raw.is_empty() {
+        return Err(DomainError::validation_error(
+            "Preflight path must not be empty",
+        ));
+    }
+    if raw.len() > MAX_PREFLIGHT_PATH_LEN {
+        return Err(DomainError::validation_error(format!(
+            "Preflight path exceeds {MAX_PREFLIGHT_PATH_LEN} bytes"
+        )));
+    }
+    if raw.starts_with('/') || raw.ends_with('/') || raw.contains('\\') || raw.contains('\0') {
+        return Err(DomainError::validation_error(format!(
+            "Invalid preflight relative path '{raw}'"
+        )));
+    }
+
+    let mut segments = Vec::new();
+    for seg in raw.split('/') {
+        if let Err(reason) = validate_storage_name(seg) {
+            return Err(DomainError::validation_error(format!(
+                "Invalid path segment '{seg}': {reason}"
+            )));
+        }
+        segments.push(normalize_storage_name(seg));
+        if segments.len() > MAX_PREFLIGHT_DEPTH {
+            return Err(DomainError::validation_error(format!(
+                "Preflight path exceeds maximum depth of {MAX_PREFLIGHT_DEPTH}"
+            )));
+        }
+    }
+    Ok(segments)
 }
 
 /// Filter, sort, and page a directory's worth of mount entries, returning the
@@ -2263,6 +2555,7 @@ mod mount_authz_integration {
                 CreateFolderDto {
                     name: "docs".into(),
                     parent_id: Some(mount_id.clone()),
+                    on_conflict: Default::default(),
                 },
                 owner,
             )
@@ -2279,6 +2572,7 @@ mod mount_authz_integration {
                 CreateFolderDto {
                     name: "evil".into(),
                     parent_id: Some(mount_id.clone()),
+                    on_conflict: Default::default(),
                 },
                 stranger,
             )
@@ -2531,7 +2825,14 @@ mod mount_authz_integration {
         // Moving a mount child to the user's native root (parent_id = None) is
         // a cross-backend move → UnsupportedOperation.
         let err = fs
-            .move_folder_with_perms(&child_id, MoveFolderDto { parent_id: None }, owner)
+            .move_folder_with_perms(
+                &child_id,
+                MoveFolderDto {
+                    parent_id: None,
+                    on_conflict: Default::default(),
+                },
+                owner,
+            )
             .await
             .expect_err("cross-boundary move must be forbidden");
         assert_eq!(
@@ -2545,6 +2846,7 @@ mod mount_authz_integration {
                 CreateFolderDto {
                     name: "n".into(),
                     parent_id: Some(mount_id.clone()),
+                    on_conflict: Default::default(),
                 },
                 owner,
             )
@@ -3087,5 +3389,47 @@ mod cascade_hook_integration_tests {
             captured.contains(&nested_file.to_string()),
             "expected on_file_deleted for nested file {nested_file}, got {captured:?}"
         );
+    }
+}
+
+#[cfg(test)]
+mod upload_preflight_unit_tests {
+    use super::normalize_and_validate_preflight_path;
+    use crate::application::dtos::upload_preflight_dto::MAX_PREFLIGHT_DEPTH;
+
+    #[test]
+    fn valid_relative_paths_split_and_nfc_normalize() {
+        assert_eq!(
+            normalize_and_validate_preflight_path("readme.txt").unwrap(),
+            vec!["readme.txt"]
+        );
+        assert_eq!(
+            normalize_and_validate_preflight_path("Photos/2026/cafe\u{0301}.jpg").unwrap(),
+            vec!["Photos", "2026", "café.jpg"]
+        );
+    }
+
+    #[test]
+    fn rejects_traversal_absolute_backslash_empty_and_overdeep_paths() {
+        for bad in [
+            "",
+            "/",
+            "/abs/file.txt",
+            "trailing/",
+            "a//b.txt",
+            "../secret",
+            "a/../b",
+            "a/./b",
+            "a\\b.txt",
+            "bad\0name",
+        ] {
+            assert!(
+                normalize_and_validate_preflight_path(bad).is_err(),
+                "expected '{bad}' to be rejected"
+            );
+        }
+
+        let deep = vec!["dir"; MAX_PREFLIGHT_DEPTH + 1].join("/");
+        assert!(normalize_and_validate_preflight_path(&deep).is_err());
     }
 }

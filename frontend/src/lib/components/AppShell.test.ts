@@ -19,6 +19,18 @@ vi.mock('$lib/api/endpoints/files', () => ({
 }));
 vi.mock('$lib/api/endpoints/folders', () => ({ deleteFolder: vi.fn(), moveFolder: vi.fn() }));
 vi.mock('$lib/api/endpoints/batch', () => ({ copyFiles: vi.fn(), copyFolders: vi.fn() }));
+vi.mock('$lib/api/endpoints/transfer', async (importOriginal) => {
+	const actual = await importOriginal<typeof import('$lib/api/endpoints/transfer')>();
+	return {
+		...actual,
+		transferPreflight: vi.fn(async () => ({
+			...actual.emptyTransferPreflight(),
+			supported: false
+		})),
+		executeTransfer: vi.fn()
+	};
+});
+vi.mock('$lib/stores/transferConflict.svelte', () => ({ promptTransferConflicts: vi.fn() }));
 vi.mock('$lib/api/endpoints/favorites', () => ({ addFavorite: vi.fn() }));
 
 // `AppShell` calls `useNotifications()` on mount, which fetches the bell's
@@ -103,6 +115,12 @@ import { logout } from '$lib/api/endpoints/auth';
 import { moveFile } from '$lib/api/endpoints/files';
 import { moveFolder } from '$lib/api/endpoints/folders';
 import { copyFiles, copyFolders } from '$lib/api/endpoints/batch';
+import {
+	emptyTransferPreflight,
+	executeTransfer,
+	transferPreflight
+} from '$lib/api/endpoints/transfer';
+import { promptTransferConflicts } from '$lib/stores/transferConflict.svelte';
 import { session } from '$lib/stores/session.svelte';
 import { serverConfig } from '$lib/stores/serverConfig.svelte';
 import AppShell from './AppShell.svelte';
@@ -142,6 +160,7 @@ function resetFeatures() {
 
 beforeEach(() => {
 	vi.clearAllMocks();
+	m(transferPreflight).mockResolvedValue({ ...emptyTransferPreflight(), supported: false });
 	pageState.url = new URL('http://localhost/files');
 	resetFeatures();
 	// Post the three-layer UserDto refactor, `session.user` is a
@@ -421,6 +440,53 @@ it('marks everything read from the bell, and offers it only when unread', async 
 	await fireEvent.click(screen.getByTestId('appshell-notif-bell-btn'));
 	await fireEvent.click(screen.getByTestId('appshell-notif-mark-all-read-btn'));
 	expect(markEverythingRead).toHaveBeenCalledOnce();
+});
+
+it('resolves drive drop conflicts via transferPreflight + executeTransfer without falling back', async () => {
+	m(transferPreflight).mockResolvedValueOnce({
+		...emptyTransferPreflight(),
+		folder_conflicts: [
+			{
+				source_id: 'd1',
+				source_name: 'sub',
+				relative_path: 'sub',
+				target_id: 'tgt-d1',
+				source_file_count: 2,
+				target_file_count: 1,
+				nested_conflict_count: 0,
+				nested_identical_count: 0,
+				source_has_shares: false,
+				can_delete_source: true
+			}
+		]
+	});
+	m(promptTransferConflicts).mockResolvedValueOnce([
+		{ source_id: 'd1', kind: 'folder', action: 'merge' }
+	]);
+	m(executeTransfer).mockResolvedValueOnce({
+		outcomes: [],
+		moved_count: 0,
+		copied_count: 0,
+		replaced_count: 0,
+		renamed_count: 0,
+		merged_count: 1,
+		skipped_count: 0,
+		failed_count: 0
+	});
+
+	render(AppShell, { props: { children } });
+	const row = await waitFor(() => screen.getByTestId('drive-picker-row-drive-b'));
+	dropOn(row, [{ id: 'd1', name: 'sub', kind: 'folder' }]);
+
+	await waitFor(() =>
+		expect(m(executeTransfer)).toHaveBeenCalledWith('root-b', {
+			operation: 'move',
+			fileIds: [],
+			folderIds: ['d1'],
+			decisions: [{ source_id: 'd1', kind: 'folder', action: 'merge' }]
+		})
+	);
+	expect(m(moveFolder)).not.toHaveBeenCalled();
 });
 
 it('offers no mark-all-read when nothing is unread', async () => {
