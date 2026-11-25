@@ -16,10 +16,14 @@ document — see the two § Required sections.
 
 ## Status
 
-**PR 1 is DONE.** All four folded gates are declarations, the engine
-enforces them, and the OpenAPI spec is a projection of the same table.
-One optional item remains (§ PR 1 — status 4-xix). Step-by-step state is
-that section; this table is the coarse view. Keep both current.
+**PR 1 is DONE and VERIFIED.** All four folded gates are declarations, the
+engine enforces them, the spec is a projection of the same table, and one
+`GatedRouter` owns everything under `/api`. Green on `gate_matrix`, `auth`,
+`app_passwords`, `device_auth`, `external_users` and
+`admin_role_hierarchy` after the final restructure — which mattered,
+because that commit moved every `/api` mount and so every layer stack
+with it. Step-by-step state is § PR 1 — status; this table is the coarse
+view. Keep both current.
 
 | item | status |
 |---|---|
@@ -2148,7 +2152,7 @@ Landing them together means PR 2's risk rides in on PR 1's green suite.
 | 4-xvi | a bare `Router` cannot enter the API tree | **done** — `497908491`; `nest` and `.policy()` take only a `GatedRouter`, no escape hatch |
 | 4-xvii | `into_router()` / `into_policies()` instead of `.0`/`.1` | **done** — `6d1f60582` |
 | 4-xviii | `transfer_ownership`: declare `Owner` at its route, drop the service check | **done** — `7dc03cfb7`; `policy_declarations.rs` now holds nothing with a route |
-| 4-xix | one `GatedRouter` owns everything under `/api` | **done** — `0e382ef84` · `02901745f`; `ApiSubRouters::new` is the only constructor list and `main_api_router` the only prefix list, so `main.rs` and the generator cannot see different tables. **Needs a matrix run.** Two feature-gated `/api` surfaces stay outside it — `/api/rt/ws` and `/api/wopi`, neither in the spec (§ Between PR 1 and PR 2) |
+| 4-xix | one `GatedRouter` owns everything under `/api` | **done** — `0e382ef84` · `02901745f`; `ApiSubRouters::new` is the only constructor list and `main_api_router` the only prefix list, so `main.rs` and the generator cannot see different tables. Matrix green across `gate_matrix auth app_passwords device_auth external_users admin_role_hierarchy`. Two feature-gated `/api` surfaces stay outside it — `/api/rt/ws` and `/api/wopi`, neither in the spec (§ Between PR 1 and PR 2) |
 
 Step 1 landed as `CurrentCaller.kind: CallerKind`, not the `is_external`
 bool this section first called for: the bool could express three states
