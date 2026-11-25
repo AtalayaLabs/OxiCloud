@@ -660,6 +660,7 @@ HURL_FILES=( \
   "$API_DIR/dedup_instant_upload_quota.hurl" \
   "$API_DIR/duplicate_name_conflict.hurl" \
   "$API_DIR/upload_conflict_resolution.hurl" \
+  "$API_DIR/transfer_conflict_resolution.hurl" \
   "$API_DIR/trash_restore_duplicate.hurl" \
   "$API_DIR/trash_restore_quota.hurl" \
   "$API_DIR/trash_per_drive.hurl" \
