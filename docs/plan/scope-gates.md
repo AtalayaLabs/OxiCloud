@@ -2139,9 +2139,13 @@ Landing them together means PR 2's risk rides in on PR 1's green suite.
 | 4-xi | REMOVE `require_admin` | **done** — `b80c1a12b`, needs a matrix run |
 | 4-xii-a | spec markers derived from the table (§ engine → spec) | **done** — `0159fb215` · `7fbf0a6b6` |
 | 4-xii-b | REMOVE `anonymous_allowlist_layer` + the constant | **done** — `0a76b9dcd`; all four gates now retired |
-| 4-xiv | declare `public()` on the 21 public operations | not started — `just openapi` lists them |
-| 4-xv | delete the 232 `security(...)` annotations | not started — after 4-xiv goes green |
 | 4-xiii | collapse `music_create` / `contacts_create` | **done** — `eaa3c1974`, fell out of per-verb policies |
+| 4-xiv | declare `public()` on the 21 public operations | **done** — `54aa3bcc5` · `4d46a842d` · `acb85814d`; the validator agrees on every operation |
+| 4-xv | delete the hand-written `security(...)` annotations | **done** — `8f6aaa73c`; 231 gone, `openapi.json` byte-identical |
+| 4-xvi | a bare `Router` cannot enter the API tree | **done** — `497908491`; `nest` and `.policy()` take only a `GatedRouter`, no escape hatch |
+| 4-xvii | `into_router()` / `into_policies()` instead of `.0`/`.1` | **done** — `6d1f60582` |
+| **4-xviii** | `transfer_ownership`: declare `Owner` at its route, drop the service check | **not started** — the last central declaration that HAS a route, now possible since `admin_routes` is a `GatedRouter` |
+| **4-xix** | gate `main.rs`'s `/api/*` assembly | **not started** — optional; `auth_protected_routes` mounts there, so the type guard does not reach it |
 
 Step 1 landed as `CurrentCaller.kind: CallerKind`, not the `is_external`
 bool this section first called for: the bool could express three states
@@ -2174,6 +2178,17 @@ reaches the inner layer. The fold reshuffles exactly that stack, so the
 ordering guarantee has to survive it, or the gate becomes
 pass-through-on-missing-caller. A compiled policy has no such arm:
 `MinPrincipal::satisfied_by(None)` is true only for `Public`.
+
+**The acceptance was met behaviourally, not by a dump diff — say so.**
+This section asks for the compiled table to be identical before and after
+the fold. The dump exists (`PolicyTable::render`) but no before-snapshot
+was ever taken: by the time it could have been, the comparison would have
+been between two hand-written tables, which § 4a already argues proves
+nothing about the layers. What was used instead is
+`tests/api/gate_matrix.hurl` plus the existing suites, run green at every
+shadow step with BOTH enforcing, and again after each removal. That is the
+stronger check, and it is the one that caught the visitor-DELETE hole the
+dump could not have.
 
 **Step 3 must ship the table DUMP, not just the table.** This section's
 acceptance — the compiled table identical before and after the fold — is
