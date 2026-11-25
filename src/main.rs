@@ -1003,15 +1003,15 @@ async fn run(config: common::config::AppConfig) -> Result<(), Box<dyn std::error
         // The access-log target moves onto the decoration rather than the
         // mount, so each sub-router keeps the target it had — the mounts
         // are no longer `main.rs`'s to label.
-        let mut subs = oxicloud::interfaces::api::routes::ApiSubRouters::new(&app_state);
-        subs.login = subs
+        let mut api_subs = oxicloud::interfaces::api::routes::ApiSubRouters::new(&app_state);
+        api_subs.login = api_subs
             .login
             .layer(axum::middleware::from_fn_with_state(
                 login_limiter.clone(),
                 rate_limit_login,
             ))
             .layer(access_log!("http::api::auth"));
-        subs.register = subs
+        api_subs.register = api_subs
             .register
             .layer(axum::middleware::from_fn_with_state(
                 register_limiter.clone(),
@@ -1027,7 +1027,7 @@ async fn run(config: common::config::AppConfig) -> Result<(), Box<dyn std::error
         // caller who fails proof-of-possession never reaches the replay
         // decision and so cannot revoke the real user's token family.
         // `docs/plan/refresh-token-grace.md` Gate 4.
-        subs.refresh = subs
+        api_subs.refresh = api_subs
             .refresh
             .layer(axum::middleware::from_fn_with_state(
                 app_state.clone(),
@@ -1042,9 +1042,9 @@ async fn run(config: common::config::AppConfig) -> Result<(), Box<dyn std::error
         // Declarations are owned by `api_router_and_policies`, so the
         // registry is identical for the server and for spec generation.
         // Here we only need the router.
-        subs.auth_public = subs.auth_public.layer(access_log!("http::api::auth"));
+        api_subs.auth_public = api_subs.auth_public.layer(access_log!("http::api::auth"));
         // Protected auth routes (/me, /change-password, /logout) — require auth + CSRF
-        subs.auth_protected = subs
+        api_subs.auth_protected = api_subs
             .auth_protected
             .layer(axum::middleware::from_fn_with_state(
                 app_state.clone(),
@@ -1061,7 +1061,7 @@ async fn run(config: common::config::AppConfig) -> Result<(), Box<dyn std::error
             ))
             .layer(access_log!("http::api::auth"));
         // App password management routes — require auth + CSRF
-        subs.app_passwords = subs
+        api_subs.app_passwords = api_subs
             .app_passwords
             .layer(axum::middleware::from_fn_with_state(
                 app_state.clone(),
@@ -1087,7 +1087,7 @@ async fn run(config: common::config::AppConfig) -> Result<(), Box<dyn std::error
         // isn't wired (mode=off / password auth disabled); the mode
         // gate lives in the DI factory, so mounting unconditionally
         // is safe.
-        subs.opaque_register = subs
+        api_subs.opaque_register = api_subs
             .opaque_register
             .layer(axum::middleware::from_fn_with_state(
                 app_state.clone(),
@@ -1103,7 +1103,7 @@ async fn run(config: common::config::AppConfig) -> Result<(), Box<dyn std::error
                 auth_middleware,
             ))
             .layer(access_log!("http::api::auth"));
-        subs.opaque_login = subs
+        api_subs.opaque_login = api_subs
             .opaque_login
             .layer(axum::middleware::from_fn_with_state(
                 login_limiter.clone(),
@@ -1113,9 +1113,9 @@ async fn run(config: common::config::AppConfig) -> Result<(), Box<dyn std::error
         // OPAQUE aPAKE — public params (KSF + ciphersuite) — GET,
         // no rate limit, SPA fetches once at page load. Distinct
         // mount so no login limiter attaches to a non-login read.
-        subs.opaque_params = subs.opaque_params.layer(access_log!("http::api::auth"));
+        api_subs.opaque_params = api_subs.opaque_params.layer(access_log!("http::api::auth"));
         // One-time setup route — public, rate-limited like register
-        subs.setup = subs
+        api_subs.setup = api_subs
             .setup
             .layer(axum::middleware::from_fn_with_state(
                 register_limiter.clone(),
@@ -1125,9 +1125,9 @@ async fn run(config: common::config::AppConfig) -> Result<(), Box<dyn std::error
 
         // Device Authorization Grant (RFC 8628)
         // Public endpoints: /api/auth/device/authorize + /api/auth/device/token
-        subs.device_public = subs.device_public.layer(access_log!("http::api::auth"));
+        api_subs.device_public = api_subs.device_public.layer(access_log!("http::api::auth"));
         // Protected endpoints: /api/auth/device/verify, /api/auth/device/devices
-        subs.device_protected = subs
+        api_subs.device_protected = api_subs
             .device_protected
             .layer(axum::middleware::from_fn_with_state(
                 app_state.clone(),
@@ -1145,7 +1145,7 @@ async fn run(config: common::config::AppConfig) -> Result<(), Box<dyn std::error
             .layer(access_log!("http::api::auth"));
 
         // Protected API routes — require valid JWT token
-        subs.protected = subs
+        api_subs.protected = api_subs
             .protected
             // The compiled policy is the ONLY thing confining a
             // public-share visitor now: `visitor_allowed()` is declared
@@ -1312,7 +1312,7 @@ async fn run(config: common::config::AppConfig) -> Result<(), Box<dyn std::error
             // is the same wiring with thirteen fewer clones.
             .nest(
                 "/api",
-                oxicloud::interfaces::api::routes::main_api_router(subs)
+                oxicloud::interfaces::api::routes::main_api_router(api_subs)
                     .into_router()
                     .with_state(app_state.clone()),
             );
