@@ -24,6 +24,32 @@
 #   plain user on /carddav         → contacts.hurl   (carddav_bob,
 #                                    role=user, 4 PROPFINDs)
 #
+# ─── The four axes, and where each is pinned
+#
+#   a visitor REACHES its allowed routes
+#       → anonymous_share_session.hurl: GET /api/files/{id},
+#         /metadata, /thumbnail, /api/folders/{id} all 200 from a ring
+#   a visitor is REFUSED everything else — four directions, because
+#   each is a different way a declaration can leak:
+#       same path, other verb   → DELETE /api/files/{id}        403
+#       upward, the collection  → GET /api/folders              403
+#       downward, a subpath     → GET /api/files/{id}/manifest  403
+#       sibling user-only reads → /api/auth/me, /api/groups/search,
+#                                 /api/address-books            403
+#       the role ladder         → GET /api/admin/users          403
+#       the DAV surfaces        → /webdav, /caldav, /carddav     401
+#   ADMIN required
+#       → this file: plain user on GET /api/admin/users         403
+#       → admin_role_hierarchy.hurl: the full ladder
+#   OWNER required
+#       → admin_role_hierarchy.hurl: four transfer-ownership
+#         requests — admin refused 403, owner 200
+#
+#   No separate owner-vs-visitor row exists, and should not:
+#   transfer-ownership is the only Owner-gated operation and sits
+#   under `/api/admin`, whose nest declares `role(Admin)`. A visitor
+#   is refused there before Owner is evaluated.
+#
 # ─── What was MISSING, and is therefore all this file does
 #
 #   1. /webdav — nothing in tests/api ever PROPFINDs it, so
