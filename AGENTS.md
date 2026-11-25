@@ -347,6 +347,24 @@ Two traps, both of which produced real holes on `feat/scopes`:
   the create route, with the layer on it — so the gate is per-method while
   looking per-path.
 
+**Which routers must be gated: the ones in the OpenAPI spec.** Anything
+nested INTO the API tree must be a `GatedRouter` — `GatedRouter::nest` and
+`.policy()` accept nothing else, so a bare `Router::new()` there does not
+compile. Anything mounted BESIDE it on `main.rs`'s plain router need not
+be, and should not pretend to:
+
+| plain `Router` is correct | why |
+|---|---|
+| `/metrics`, the web pages, `magic/v1/*` | not in the spec; no operation to project a policy onto |
+| WebDAV, CalDAV, CardDAV, WOPI, `/remote.php/*` | mounted beside `/api`; DAV declares by `(area, access)` in `policy_declarations` instead |
+| inner routers merged into an already-gated parent | the parent carries the declaration |
+| tests, benches | throwaway routers |
+
+The test is the spec, not the path: if an operation appears in
+`resources/gen/openapi.json`, a policy can be projected onto it and
+`just openapi` will police it. If it does not, the engine is silent about
+it by construction.
+
 **Do not write `security(...)` in `#[utoipa::path]`.** The engine derives
 the spec's auth markers from the operation's policy — `x-oxicloud-minrole`,
 `x-oxicloud-principal`, `x-oxicloud-scope`, and the `security` array itself.
