@@ -2315,6 +2315,45 @@ It is independent of the policy engine and belongs in its own diff: each
 site is a judgement call that is either a fix or a regression, and folding
 them into a rename or into step 4 hides them from review.
 
+### Between PR 1 and PR 2 — WOPI
+
+WOPI has TWO surfaces that authenticate differently, and only one of them
+belongs to the engine.
+
+| surface | auth | in the spec? | action |
+|---|---|---|---|
+| `/api/wopi/*` | `auth_middleware` + CSRF, so a `CurrentCaller` exists | **no** | make it a `GatedRouter` AND document it with `#[utoipa::path]` |
+| `/wopi/*` | `?access_token=`, validated in the handler (`wopi_handler.rs`) | **no** | leave it a plain `Router` |
+
+**`/wopi/*` must NOT be gated.** It carries no `CurrentCaller`, so the
+gate axes have nothing to read: `evaluate` would see `None`, the default
+policy demands a user, and every Office client would get a 401. Its
+CREDENTIAL should be `files`-scoped, which is the scope axis on a token —
+PR 2's business, not a gate on a route.
+
+**`/api/wopi/*` is the real gap, and it is a documentation gap first.**
+Neither surface has a single `#[utoipa::path]`, so neither appears in
+`openapi.json` — and by § Which routers must be gated the engine is
+therefore silent about both. That silence hides the operation
+`src/AGENTS.md` singles out as dangerous: `GET /api/wopi/editor-url`
+returns a token usable for `POST /wopi/files/{id}/contents`, a
+credential-minting GET.
+
+So the two halves are independent and only the second has value on its
+own:
+
+1. `/api/wopi` → `GatedRouter`, which makes a per-verb declaration
+   possible but changes nothing observable while the routes are
+   undocumented;
+2. document `/api/wopi/*`, which is what brings it under
+   `just openapi`'s validator — and forces the question of what
+   `editor-url` should require. A session is today's answer; a
+   token-minting GET arguably wants `files:rw` once scopes exist.
+
+Sequenced here rather than inside PR 1 because PR 1 is a FOLD — it retires
+four existing gates without changing what any operation requires — while
+this ADDS coverage to a surface that had none.
+
 ### PR 2 — a new route must not be silently scopeless
 
 The two axes have opposite defaults, and only one of them is safe:
