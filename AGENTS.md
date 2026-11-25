@@ -91,10 +91,18 @@ cargo clippy --all-features --all-targets -- -D warnings  # Lint (zero warnings 
 cargo fmt --all --check                            # Format check
 cargo fmt --all                                    # Auto-format
 RUST_LOG=debug cargo run --features dev            # Run with debug logging
-cargo run --features dev --bin generate-openapi    # Regenerate resources/gen/openapi.json
+just gen-openapi                                   # Regenerate the spec AND the committed TS SDK
 ```
 
-A `justfile` is available for common tasks (`just --list` to see all). Key recipes: `just check` (fmt + clippy), `just test`, `just openapi`.
+A `justfile` is available for common tasks (`just --list` to see all). Key recipes: `just check` (fmt + clippy), `just test`, `just gen-openapi`.
+
+**`just gen-openapi`, not `cargo run --bin generate-openapi`.** Two
+artefacts are committed and generated from the same source: the spec
+(`resources/gen/openapi.json`) and the TypeScript SDK
+(`frontend/src/lib/api/generated/openapi/`). The bare cargo command
+regenerates only the first, so the SDK is left stale and a reviewer
+commits the other half by hand. `just check-openapi-gen` is the gate that
+catches it.
 
 **Keep one feature set locally: `--features dev`** (= `plugins` + `dev_tools` +
 `test_utils`). Every feature of this package — even an empty marker — is part
@@ -362,13 +370,13 @@ be, and should not pretend to:
 
 The test is the spec, not the path: if an operation appears in
 `resources/gen/openapi.json`, a policy can be projected onto it and
-`just openapi` will police it. If it does not, the engine is silent about
+`just gen-openapi` will police it. If it does not, the engine is silent about
 it by construction.
 
 **Do not write `security(...)` in `#[utoipa::path]`.** The engine derives
 the spec's auth markers from the operation's policy — `x-oxicloud-minrole`,
 `x-oxicloud-principal`, `x-oxicloud-scope`, and the `security` array itself.
-A hand-written one can only agree or be wrong, and `just openapi` reports
+A hand-written one can only agree or be wrong, and `just gen-openapi` reports
 every disagreement.
 
 The engine is in `docs/architecture/authorization-axes.md` (concepts) and
