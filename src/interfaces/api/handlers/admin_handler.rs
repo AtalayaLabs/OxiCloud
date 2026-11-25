@@ -28,6 +28,7 @@ use crate::application::ports::plugin_ports::{LogQuery, PluginManagementPort, Pl
 // JobStoreProvider is used only by the storage-migration shims below,
 // but the compiler needs the trait in scope for method resolution on
 // the concrete `PgJobStoreProvider` that lives on `AppState`.
+use crate::application::ports::scope_ports::{Condition, MinRole};
 use crate::common::di::AppState;
 use crate::domain::repositories::drive_repository::DriveRepository;
 use crate::domain::services::authorization::{Resource, Subject};
@@ -36,7 +37,7 @@ use crate::interfaces::api::handlers::dedup_handler::{
     admin_check_hash, get_stats, recalculate_stats,
 };
 use crate::interfaces::api::handlers::search_handler::clear_search_cache;
-use crate::interfaces::api::policy_router::GatedRouter;
+use crate::interfaces::api::policy_router::{GatedRouter, post as policy_post};
 use crate::interfaces::errors::AppError;
 use crate::interfaces::middleware::auth::AuthUser;
 use std::sync::Arc;
@@ -164,7 +165,19 @@ pub fn admin_routes(app_state: &Arc<AppState>) -> GatedRouter<Arc<AppState>> {
         // Ownership transfer. Not under /users/{id} because it mutates TWO
         // rows — the caller is demoted as the target is promoted — so it
         // reads as an instance-level operation, not a user edit.
-        .route("/transfer-ownership", post(transfer_ownership))
+        // The only OWNER-gated operation. Declared per VERB, tightening
+        // the `[role(Admin)]` on the `/api/admin` nest — the chain folds
+        // to Owner by `max`, and declaring something weaker here would be
+        // a boot error rather than a silent discard.
+        //
+        // This replaced a hand-rolled `caller.role != UserRole::Owner` in
+        // `auth_application_service`: a GATE sitting in the grant layer,
+        // with exactly one door (AGENTS.md § Grant vs scope on counting
+        // them), so one declaration leaves nothing uncovered.
+        .route(
+            "/transfer-ownership",
+            policy_post(transfer_ownership).policy([Condition::role(MinRole::Owner)]),
+        )
         // Registration control
         .route("/settings/registration", put(set_registration_setting))
         // Plugin management

@@ -4521,29 +4521,18 @@ impl AuthApplicationService {
     /// Deliberately NOT gated by `require_can_modify`: that asks "do you
     /// outrank them?", and the answer here is yes for every valid target,
     /// which is not the question. The question is "are you the owner?".
+    ///
+    /// And that question is answered by the POLICY, declared per verb on
+    /// the route in `admin_handler` as `[role(MinRole::Owner)]`. It used
+    /// to be a hand-rolled `caller.role != UserRole::Owner` here — a GATE
+    /// in the grant layer, where a role check names no resource. One door
+    /// reaches this method (AGENTS.md § Grant vs scope on counting them),
+    /// so one declaration leaves nothing uncovered.
     pub async fn transfer_ownership(
         &self,
         caller_id: Uuid,
         new_owner_id: Uuid,
     ) -> Result<(), DomainError> {
-        let caller = self.get_user_flags(caller_id).await?;
-        if caller.role != UserRole::Owner {
-            tracing::info!(
-                target: "audit",
-                event = "server_owner.transfer_rejected",
-                reason = "caller_not_owner",
-                caller_id = %caller_id,
-                caller_role = %caller.role,
-                target_id = %new_owner_id,
-                "👮🏻‍♂️ ownership transfer refused: caller is not the owner",
-            );
-            return Err(DomainError::new(
-                ErrorKind::AccessDenied,
-                "User",
-                "Only the server owner can transfer ownership.",
-            ));
-        }
-
         if caller_id == new_owner_id {
             return Err(DomainError::new(
                 ErrorKind::InvalidInput,

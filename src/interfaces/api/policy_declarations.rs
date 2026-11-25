@@ -96,7 +96,6 @@ fn segment_prefix(path: &str, prefix: &str) -> bool {
 /// here. Three of those paths also serve a write, which no visitor may
 /// reach.
 const INTERNAL_ONLY: [Condition; 1] = [Condition::role(MinRole::Internal)];
-const OWNER_ONLY: [Condition; 1] = [Condition::role(MinRole::Owner)];
 
 /// Everything the four folded gates say, in one place.
 ///
@@ -136,20 +135,10 @@ pub fn declarations() -> PolicyRegistry {
     // What stays here is what has no route to declare against: the DAV
     // operations, and the per-METHOD gates below.
 
-    // ── the hand-rolled owner check in transfer_ownership ──
-    //
-    // `auth_application_service::transfer_ownership`:
-    // `if caller.role != UserRole::Owner`. Verified to have exactly ONE
-    // door (`admin_handler.rs`), so one declaration leaves nothing
-    // uncovered — see AGENTS.md § Grant vs scope on counting doors.
-    //
-    // This TIGHTENS the `/api/admin` prefix above: the chain folds to
-    // `Owner` by `max`. Declaring `Internal` here instead would be a boot
-    // error rather than a silent discard.
-    reg.declare(
-        Site::RestPrefix("/api/admin/transfer-ownership"),
-        OWNER_ONLY.to_vec(),
-    );
+    // `transfer-ownership`'s OWNER declaration is NOT here: it is
+    // declared per verb at its route in `admin_handler`, tightening the
+    // admin nest. Nothing in this file has a route any more — only the
+    // DAV operations, which have none.
 
     // The seven share-visitor GETs are NOT declared here any more:
     // each is `policy_get(handler).policy([visitor_allowed()])` at its
@@ -255,7 +244,6 @@ mod tests {
         // compile fails for an unrelated reason.
         let mut ops = dav_ops();
         ops.extend([
-            Op::Rest("POST", "/api/admin/transfer-ownership"),
             Op::Rest("GET", "/api/folders"),
             // The three non-DAV internal-user sites, plus the GET
             // siblings that must stay OPEN.
@@ -276,16 +264,6 @@ mod tests {
         // the real router could see it — and that needs a full
         // `AppState`. `admin_role_hierarchy.hurl` covers it instead,
         // which is the right layer for production wiring.
-
-        // the owner check, TIGHTENING the admin prefix rather than
-        // replacing it
-        assert_eq!(
-            table
-                .get(&Op::Rest("POST", "/api/admin/transfer-ownership"))
-                .unwrap()
-                .role,
-            Some(MinRole::Owner)
-        );
 
         // The visitor declarations are no longer here — they are at their
         // routes. `policy_router`'s non-leak test covers the shape and

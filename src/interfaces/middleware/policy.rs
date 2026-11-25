@@ -328,10 +328,8 @@ mod tests {
         // transfer-ownership declaration below is still here, because a
         // per-METHOD gate cannot be written as `.policy()`.
 
-        let transfer = registry()
-            .compile_one(Op::Rest("POST", "/api/admin/transfer-ownership"))
-            .expect("compiles");
-        assert_eq!(transfer.role, Some(MinRole::Owner));
+        // `transfer-ownership` is declared at its route now, so it is not
+        // in the fallback table a unit test sees.
 
         // The visitor declarations live at their routes now, so the
         // fallback table a unit test sees does not hold them.
@@ -505,13 +503,41 @@ mod tests {
             next.run(request).await
         }
 
-        // `/api/admin/transfer-ownership` is declared `MinRole::Owner`,
-        // so a plain user must be refused. Using a path the fallback
-        // table declares keeps this a test of PREFIX HANDLING rather
-        // than of production wiring.
-        let admin: Router<()> = Router::new()
-            .route("/transfer-ownership", get(ok))
-            .route_layer(axum::middleware::from_fn(gate_without_state));
+        // A LOCAL registry, because nothing with a REST path is declared
+        // centrally any more — the fallback table holds only the DAV
+        // operations. That keeps this a test of PREFIX HANDLING rather
+        // than of production wiring, which is what it was always for.
+        let mut local = crate::application::services::scope_table::PolicyRegistry::new();
+        local.declare(
+            crate::application::services::scope_table::Site::RestPrefix("/api/admin"),
+            vec![crate::application::ports::scope_ports::Condition::role(
+                MinRole::Admin,
+            )],
+        );
+        let local = Arc::new(local);
+
+        let admin: Router<()> =
+            Router::new()
+                .route("/sessions", get(ok))
+                .route_layer(axum::middleware::from_fn(
+                    move |request: Request, next: Next| {
+                        let registry = Arc::clone(&local);
+                        async move {
+                            let Some(op) = op_for(&request) else {
+                                return next.run(request).await;
+                            };
+                            let policy = registry.compile_one(op).expect("compiles");
+                            let kind = request
+                                .extensions()
+                                .get::<Arc<CurrentCaller>>()
+                                .map(|c| c.kind);
+                            match evaluate(&policy, kind, None) {
+                                Ok(()) => next.run(request).await,
+                                Err(d) => deny(d),
+                            }
+                        }
+                    },
+                ));
         let api: Router<()> = Router::new().nest("/admin", admin);
         let app: Router<()> = Router::new()
             .nest("/api", api)
@@ -520,7 +546,7 @@ mod tests {
         let res = app
             .oneshot(
                 Request::builder()
-                    .uri("/api/admin/transfer-ownership")
+                    .uri("/api/admin/sessions")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -530,9 +556,9 @@ mod tests {
         assert_eq!(
             res.status(),
             StatusCode::FORBIDDEN,
-            "a plain user must be refused at \
-             /api/admin/transfer-ownership — a 200 here means the nest \
-             prefixes were lost and the declaration never matched"
+            "a plain user must be refused at /api/admin/sessions — a 200 \
+             here means the nest prefixes were lost and the `/api/admin` \
+             declaration never matched"
         );
     }
 
