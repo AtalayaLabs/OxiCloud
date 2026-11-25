@@ -5,7 +5,6 @@ use axum::{
         IntoResponse,
         sse::{Event, KeepAlive, Sse},
     },
-    routing::{delete, get, post, put},
 };
 
 use crate::application::dtos::drive_dto::DriveDto;
@@ -37,7 +36,7 @@ use crate::interfaces::api::handlers::dedup_handler::{
     admin_check_hash, get_stats, recalculate_stats,
 };
 use crate::interfaces::api::handlers::search_handler::clear_search_cache;
-use crate::interfaces::api::policy_router::{GatedRouter, post as policy_post};
+use crate::interfaces::api::policy_router::{GatedRouter, delete, get, patch, post, put};
 use crate::interfaces::errors::AppError;
 use crate::interfaces::middleware::auth::AuthUser;
 use std::sync::Arc;
@@ -78,10 +77,8 @@ pub fn admin_routes(app_state: &Arc<AppState>) -> GatedRouter<Arc<AppState>> {
     // FE mirrors via `serverConfig.features.external_mounts`.
     if app_state.core.config.features.enable_external_mounts {
         router = router
-            .route(
-                "/external-mounts",
-                get(ext_mounts::list_external_mounts).post(ext_mounts::create_external_mount),
-            )
+            .route("/external-mounts", get(ext_mounts::list_external_mounts))
+            .route("/external-mounts", post(ext_mounts::create_external_mount))
             .route(
                 "/external-mounts/{id}",
                 delete(ext_mounts::delete_external_mount),
@@ -112,20 +109,16 @@ pub fn admin_routes(app_state: &Arc<AppState>) -> GatedRouter<Arc<AppState>> {
         // see the handler docs. GET inspects, POST acquires, DELETE
         // releases any variant (admin escape hatch for stuck
         // migrations).
-        .route(
-            "/storage/write-lock",
-            get(get_backend_write_lock)
-                .post(acquire_backend_write_lock)
-                .delete(release_backend_write_lock),
-        )
+        .route("/storage/write-lock", get(get_backend_write_lock))
+        .route("/storage/write-lock", post(acquire_backend_write_lock))
+        .route("/storage/write-lock", delete(release_backend_write_lock))
         // Operator-driven banner messages — CRUD on the list +
         // per-id update/delete. See the handler docs on each
         // function.
-        .route("/banners", get(list_ops_banners).post(create_ops_banner))
-        .route(
-            "/banners/{id}",
-            axum::routing::put(update_ops_banner).delete(delete_ops_banner),
-        )
+        .route("/banners", get(list_ops_banners))
+        .route("/banners", post(create_ops_banner))
+        .route("/banners/{id}", put(update_ops_banner))
+        .route("/banners/{id}", delete(delete_ops_banner))
         // K3 (storage-key-rotation): per-entry rotate trigger.
         // Normalises every blob on the named entry to its head-pair
         // format (legacy → v1, plaintext ↔ encrypted, old-key →
@@ -176,7 +169,7 @@ pub fn admin_routes(app_state: &Arc<AppState>) -> GatedRouter<Arc<AppState>> {
         // them), so one declaration leaves nothing uncovered.
         .route(
             "/transfer-ownership",
-            policy_post(transfer_ownership).policy([Condition::role(MinRole::Owner)]),
+            post(transfer_ownership).policy([Condition::role(MinRole::Owner)]),
         )
         // Registration control
         .route("/settings/registration", put(set_registration_setting))
@@ -274,20 +267,26 @@ pub fn admin_routes(app_state: &Arc<AppState>) -> GatedRouter<Arc<AppState>> {
         // per-drive endpoint keeps its documented handler-layer deviation.
         .route(
             "/drive-policies/defaults/{kind}",
-            get(get_drive_policy_defaults).put(set_drive_policy_defaults),
+            get(get_drive_policy_defaults),
+        )
+        .route(
+            "/drive-policies/defaults/{kind}",
+            put(set_drive_policy_defaults),
         )
         .route("/drive-policies/drift", get(get_drive_policy_drift))
         // Drives — admin-wide view (distinct from `/api/drives` which
         // is filtered to the caller's role grants).
         .route("/drives", get(list_all_drives))
         .route("/drives/{id}", delete(delete_drive_admin))
+        .route("/drives/{id}/members", get(list_drive_members_admin))
+        .route("/drives/{id}/members", post(add_drive_member_admin))
         .route(
-            "/drives/{id}/members",
-            get(list_drive_members_admin).post(add_drive_member_admin),
+            "/drives/{id}/members/{kind}/{sid}",
+            patch(update_drive_member_admin),
         )
         .route(
             "/drives/{id}/members/{kind}/{sid}",
-            axum::routing::patch(update_drive_member_admin).delete(remove_drive_member_admin),
+            delete(remove_drive_member_admin),
         );
 
     router

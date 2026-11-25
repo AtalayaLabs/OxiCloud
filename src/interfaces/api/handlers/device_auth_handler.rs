@@ -12,7 +12,6 @@ use axum::{
     extract::{ConnectInfo, Json, Path, Query, State},
     http::{HeaderMap, StatusCode},
     response::IntoResponse,
-    routing::{delete, get, post},
 };
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -23,7 +22,7 @@ use crate::application::ports::scope_ports::Condition;
 use crate::application::services::device_auth_service::{DeviceAuthService, DeviceInfoDto};
 
 use crate::common::di::AppState;
-use crate::interfaces::api::policy_router::{GatedRouter, post as policy_post};
+use crate::interfaces::api::policy_router::{GatedRouter, delete, get, post};
 
 /// No credential at all.
 const PUBLIC: [Condition; 1] = [Condition::public()];
@@ -39,8 +38,8 @@ pub fn device_auth_public_routes() -> GatedRouter<Arc<AppState>> {
     GatedRouter::new()
         // Client-facing endpoints: no credential exists yet — acquiring
         // one is what they are for.
-        .route("/authorize", policy_post(device_authorize).policy(PUBLIC))
-        .route("/token", policy_post(device_token).policy(PUBLIC))
+        .route("/authorize", post(device_authorize).policy(PUBLIC))
+        .route("/token", post(device_token).policy(PUBLIC))
 }
 
 pub fn device_auth_protected_routes() -> GatedRouter<Arc<AppState>> {

@@ -2,7 +2,6 @@ use axum::{
     extract::{ConnectInfo, Json, Query, State},
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Redirect, Response},
-    routing::{get, post, put},
 };
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -18,7 +17,7 @@ use crate::application::services::auth_application_service::{OidcCallbackResult,
 use crate::application::services::registration_policy::domain_allowed;
 use crate::common::di::AppState;
 use crate::interfaces::api::cookie_auth;
-use crate::interfaces::api::policy_router::{GatedRouter, get as policy_get, post as policy_post};
+use crate::interfaces::api::policy_router::{GatedRouter, get, post, put};
 
 /// No credential at all. The spec turns this into `security: []`, which is
 /// the only honest way to document an endpoint that needs none.
@@ -52,21 +51,18 @@ pub fn auth_public_routes() -> GatedRouter<Arc<AppState>> {
         // at `/oidc/providers`; it was retired on feat/registration —
         // the same payload (plus `password`/`magic_link`/`registration`
         // sibling blocks) is now carried by `GET /api/config.auth.oidc`.
-        .route("/oidc/authorize", policy_get(oidc_authorize).policy(PUBLIC))
-        .route("/oidc/callback", policy_get(oidc_callback).policy(PUBLIC))
-        .route("/oidc/exchange", policy_post(oidc_exchange).policy(PUBLIC))
+        .route("/oidc/authorize", get(oidc_authorize).policy(PUBLIC))
+        .route("/oidc/callback", get(oidc_callback).policy(PUBLIC))
+        .route("/oidc/exchange", post(oidc_exchange).policy(PUBLIC))
         // OIDC Back-Channel Logout 1.0 — public (server-to-server call
         // from the IdP with a signed logout_token; no cookies, no CSRF).
         .route(
             "/oidc/backchannel-logout",
-            policy_post(oidc_backchannel_logout).policy(PUBLIC),
+            post(oidc_backchannel_logout).policy(PUBLIC),
         )
         // Login-via-email — sends a magic-link to the user's email so
         // accounts with no other login credential can sign in.
-        .route(
-            "/magic-link/send",
-            policy_post(send_magic_link).policy(PUBLIC),
-        )
+        .route("/magic-link/send", post(send_magic_link).policy(PUBLIC))
 }
 
 /// Protected auth routes, require authentication (auth + CSRF middleware
@@ -100,20 +96,20 @@ pub fn auth_protected_routes() -> GatedRouter<Arc<AppState>> {
 /// Rate-limited auth routes, split out so main.rs can apply per-endpoint
 /// rate limiting middleware independently.
 pub fn login_route() -> GatedRouter<Arc<AppState>> {
-    GatedRouter::new().route("/login", policy_post(login).policy(PUBLIC))
+    GatedRouter::new().route("/login", post(login).policy(PUBLIC))
 }
 
 pub fn register_route() -> GatedRouter<Arc<AppState>> {
-    GatedRouter::new().route("/register", policy_post(register).policy(PUBLIC))
+    GatedRouter::new().route("/register", post(register).policy(PUBLIC))
 }
 
 pub fn refresh_route() -> GatedRouter<Arc<AppState>> {
-    GatedRouter::new().route("/refresh", policy_post(refresh_token).policy(PUBLIC))
+    GatedRouter::new().route("/refresh", post(refresh_token).policy(PUBLIC))
 }
 
 /// Public setup route, only active before the first admin is created.
 pub fn setup_route() -> GatedRouter<Arc<AppState>> {
-    GatedRouter::new().route("/setup", policy_post(setup_admin).policy(PUBLIC))
+    GatedRouter::new().route("/setup", post(setup_admin).policy(PUBLIC))
 }
 
 /// `OXICLOUD_REGISTRATION_ALLOWED_EMAIL_DOMAINS` gate, shared by the two

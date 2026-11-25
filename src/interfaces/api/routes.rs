@@ -2,9 +2,7 @@ use crate::application::ports::scope_ports::{Condition, MinRole};
 use crate::application::services::batch_operations::BatchOperationService;
 use crate::application::services::scope_table::PolicyRegistry;
 use crate::common::di::AppState;
-use crate::interfaces::api::policy_router::{
-    GatedRouter, Policied, get as policy_get, post as policy_post,
-};
+use crate::interfaces::api::policy_router::{GatedRouter, Policied, delete, get, patch, post, put};
 
 /// The seven share-visitor-reachable GETs all carry this one condition.
 /// Declared per VERB: three of their paths also serve a write, which no
@@ -20,7 +18,7 @@ use axum::{
     extract::{DefaultBodyLimit, State},
     http::StatusCode,
     response::{IntoResponse, Json as AxumJson, Response},
-    routing::{any, delete, get, patch, post, put},
+    routing::any,
 };
 use serde_json::json;
 use std::sync::Arc;
@@ -113,8 +111,8 @@ use crate::interfaces::api::handlers::trash_handler;
 /// - `GET /ready`  — readiness probe, pings DB pool, returns 503 if unreachable.
 pub fn create_health_routes(app_state: &Arc<AppState>) -> Router<Arc<AppState>> {
     Router::new()
-        .route("/health", get(health))
-        .route("/ready", get(ready))
+        .route("/health", axum::routing::get(health))
+        .route("/ready", axum::routing::get(ready))
         .with_state(app_state.clone())
 }
 
@@ -157,12 +155,12 @@ pub fn create_public_api_routes(app_state: &Arc<AppState>) -> GatedRouter<Arc<Ap
         let public_share_router = GatedRouter::new()
             .route(
                 "/{token}",
-                policy_get(share_handler::access_shared_item).policy(PUBLIC),
+                get(share_handler::access_shared_item).policy(PUBLIC),
             )
             .route(
                 "/{token}/verify",
                 // A rate limit is not a policy: the two coexist.
-                policy_post(share_handler::verify_shared_item_password)
+                post(share_handler::verify_shared_item_password)
                     .policy(PUBLIC)
                     .layer(axum::middleware::from_fn_with_state(
                         verify_limiter,
@@ -188,21 +186,29 @@ pub fn create_public_api_routes(app_state: &Arc<AppState>) -> GatedRouter<Arc<Ap
 
     // i18n routes — no auth required (localization should be available before login)
     if let Some(i18n_service) = i18n_service {
+        // One SUBTREE declaration rather than three identical per-route
+        // ones. `.policy()` on a `GatedRouter` declares
+        // `Site::RestPrefix("/")`, which `nest` rebases to `/api/i18n`.
+        //
+        // Sound here because every route in this router is a public GET.
+        // Note what it costs: a prefix declaration covers every METHOD on
+        // every path beneath it, so a write endpoint added here later
+        // would inherit `PUBLIC` silently. Per-route declarations do not
+        // have that property — see AGENTS.md § Declare the policy where
+        // the route is.
         let i18n_router = GatedRouter::new()
-            .route("/locales", policy_get(get_locales).policy(PUBLIC))
-            .route("/translate", policy_get(translate).policy(PUBLIC))
-            .route(
-                "/locales/{locale_code}",
-                policy_get(get_translations_by_locale).policy(PUBLIC),
-            )
+            .policy(PUBLIC)
+            .route("/locales", get(get_locales))
+            .route("/translate", get(translate))
+            .route("/locales/{locale_code}", get(get_translations_by_locale))
             .with_state(i18n_service);
 
         router = router.nest("/i18n", i18n_router);
     }
 
     // Version endpoint — public, no auth required
-    router = router.route("/version", policy_get(get_version).policy(PUBLIC));
-    router = router.route("/openapi.json", policy_get(get_openapi_spec).policy(PUBLIC));
+    router = router.route("/version", get(get_version).policy(PUBLIC));
+    router = router.route("/openapi.json", get(get_openapi_spec).policy(PUBLIC));
 
     // Server-configuration discovery endpoint — public, unauthenticated.
     // Returns feature flags, version, and a snapshot of the server-status
@@ -210,7 +216,7 @@ pub fn create_public_api_routes(app_state: &Arc<AppState>) -> GatedRouter<Arc<Ap
     // `handlers/config_handler.rs` for the DTO shape and rationale.
     router = router.route(
         "/config",
-        policy_get(crate::interfaces::api::handlers::config_handler::get_config)
+        get(crate::interfaces::api::handlers::config_handler::get_config)
             .policy(PUBLIC)
             .with_state(app_state.clone()),
     );
@@ -286,7 +292,7 @@ pub fn create_api_routes(app_state: &Arc<AppState>) -> GatedRouter<Arc<AppState>
         // Reachable by a public-share VISITOR, per verb: the GET only.
         .route(
             "/{id}/resources",
-            policy_get(list_folder_resources).policy(VISITOR),
+            get(list_folder_resources).policy(VISITOR),
         )
         .with_state(folder_service.clone());
 
@@ -296,15 +302,12 @@ pub fn create_api_routes(app_state: &Arc<AppState>) -> GatedRouter<Arc<AppState>
     // `state.favorites_service`, so the full `AppState` is required.
     let folders_crud_router = GatedRouter::new()
         .route("/", post(create_folder))
-        .route("/{id}", policy_get(get_folder).policy(VISITOR))
+        .route("/{id}", get(get_folder).policy(VISITOR))
         // Ancestor chain for the shared breadcrumb component — one
         // round-trip vs the pre-2026-07-26 per-segment `getFolder` walk
         // on the /files client. Returns caller-visible parents (walk
         // stops at share/drive-membership boundary) + access_source.
-        .route(
-            "/{id}/ancestors",
-            policy_get(get_folder_ancestors).policy(VISITOR),
-        )
+        .route("/{id}/ancestors", get(get_folder_ancestors).policy(VISITOR))
         .route("/{id}/upload-preflight", post(upload_preflight))
         .route("/{id}/rename", put(rename_folder))
         .route("/{id}/move", put(move_folder))
@@ -312,10 +315,7 @@ pub fn create_api_routes(app_state: &Arc<AppState>) -> GatedRouter<Arc<AppState>
 
     // Special route for ZIP download that requires AppState instead of just FolderService
     let folder_zip_router = GatedRouter::new()
-        .route(
-            "/{id}/download",
-            policy_get(download_folder_zip).policy(VISITOR),
-        )
+        .route("/{id}/download", get(download_folder_zip).policy(VISITOR))
         .with_state(app_state.clone());
 
     // Create folder operations that use trash (requires full AppState)
@@ -340,20 +340,14 @@ pub fn create_api_routes(app_state: &Arc<AppState>) -> GatedRouter<Arc<AppState>
         .route("/{id}/content", put(replace_file_content))
         // Visitor-reachable, GET only — the DELETE on this same path
         // must NOT be, which is why the declaration names the verb.
-        .route("/{id}", policy_get(download_file).policy(VISITOR))
+        .route("/{id}", get(download_file).policy(VISITOR))
         // Split rather than chained (`get(..).put(..)`), so the GET can
         // be visitor-reachable while the PUT is not. Two `route()` calls
         // on one path with DIFFERENT verbs merge; axum panics only on a
         // duplicate SAME method.
-        .route(
-            "/{id}/thumbnail/{size}",
-            policy_get(get_thumbnail).policy(VISITOR),
-        )
+        .route("/{id}/thumbnail/{size}", get(get_thumbnail).policy(VISITOR))
         .route("/{id}/thumbnail/{size}", put(upload_thumbnail))
-        .route(
-            "/{id}/metadata",
-            policy_get(get_file_metadata).policy(VISITOR),
-        )
+        .route("/{id}/metadata", get(get_file_metadata).policy(VISITOR))
         .layer(DefaultBodyLimit::max({
             // Use architecture-appropriate body limit: 10 GB on 64-bit, 1 GB on 32-bit
             #[cfg(target_pointer_width = "64")]
@@ -394,7 +388,7 @@ pub fn create_api_routes(app_state: &Arc<AppState>) -> GatedRouter<Arc<AppState>
                     "/recent-changes",
                     // Internal users only: a feed of colleagues' activity
                     // aggregates more than a guest's invitation implied.
-                    policy_get(recent_changes_handler::list_recent_changes)
+                    get(recent_changes_handler::list_recent_changes)
                         .policy([Condition::role(MinRole::Internal)]),
                 )
                 .with_state(app_state.clone()),
@@ -621,24 +615,23 @@ pub fn create_api_routes(app_state: &Arc<AppState>) -> GatedRouter<Arc<AppState>
         use crate::interfaces::api::handlers::drive_handler;
 
         let drives_router = GatedRouter::new()
-            .route(
-                "/",
-                get(drive_handler::list_drives).post(drive_handler::create_drive),
-            )
+            .route("/", get(drive_handler::list_drives))
+            .route("/", post(drive_handler::create_drive))
             .route("/{id}", axum::routing::delete(drive_handler::delete_drive))
             .route(
                 "/{id}/policies",
                 patch(drive_handler::update_drive_policies),
             )
             .route("/{id}/quota", patch(drive_handler::update_drive_quota))
+            .route("/{id}/members", get(drive_handler::list_drive_members))
+            .route("/{id}/members", post(drive_handler::add_drive_member))
             .route(
-                "/{id}/members",
-                get(drive_handler::list_drive_members).post(drive_handler::add_drive_member),
+                "/{id}/members/{kind}/{sid}",
+                patch(drive_handler::update_drive_member),
             )
             .route(
                 "/{id}/members/{kind}/{sid}",
-                patch(drive_handler::update_drive_member)
-                    .delete(drive_handler::remove_drive_member),
+                delete(drive_handler::remove_drive_member),
             )
             .with_state(app_state.clone());
 
@@ -715,8 +708,7 @@ pub fn create_api_routes(app_state: &Arc<AppState>) -> GatedRouter<Arc<AppState>
             // needs a router of its own just to carry a layer.
             .route(
                 "/",
-                policy_post(music_handler::create_playlist)
-                    .policy([Condition::role(MinRole::Internal)]),
+                post(music_handler::create_playlist).policy([Condition::role(MinRole::Internal)]),
             )
             .route("/", get(music_handler::list_playlists))
             .route("/{playlist_id}", get(music_handler::get_playlist))
@@ -801,39 +793,50 @@ pub fn create_api_routes(app_state: &Arc<AppState>) -> GatedRouter<Arc<AppState>
             // cut guests off from books shared with them.
             .route(
                 "/",
-                policy_post(contacts_handler::create_address_book)
+                post(contacts_handler::create_address_book)
                     .policy([Condition::role(MinRole::Internal)]),
             )
             .route("/", get(contacts_handler::list_address_books))
-            .route(
-                "/{book_id}",
-                put(contacts_handler::update_address_book)
-                    .delete(contacts_handler::delete_address_book),
-            )
+            .route("/{book_id}", put(contacts_handler::update_address_book))
+            .route("/{book_id}", delete(contacts_handler::delete_address_book))
+            .route("/{book_id}/contacts", get(contacts_handler::list_contacts))
             .route(
                 "/{book_id}/contacts",
-                get(contacts_handler::list_contacts).post(contacts_handler::create_contact),
+                post(contacts_handler::create_contact),
             )
             .route(
                 "/{book_id}/contacts/{contact_id}",
-                get(contacts_handler::get_contact)
-                    .put(contacts_handler::update_contact)
-                    .delete(contacts_handler::delete_contact),
+                get(contacts_handler::get_contact),
             )
             .route(
-                "/{book_id}/groups",
-                get(contacts_handler::list_groups).post(contacts_handler::create_group),
+                "/{book_id}/contacts/{contact_id}",
+                put(contacts_handler::update_contact),
+            )
+            .route(
+                "/{book_id}/contacts/{contact_id}",
+                delete(contacts_handler::delete_contact),
+            )
+            .route("/{book_id}/groups", get(contacts_handler::list_groups))
+            .route("/{book_id}/groups", post(contacts_handler::create_group))
+            .route(
+                "/{book_id}/groups/{group_id}",
+                get(contacts_handler::get_group),
             )
             .route(
                 "/{book_id}/groups/{group_id}",
-                get(contacts_handler::get_group)
-                    .put(contacts_handler::update_group)
-                    .delete(contacts_handler::delete_group),
+                put(contacts_handler::update_group),
+            )
+            .route(
+                "/{book_id}/groups/{group_id}",
+                delete(contacts_handler::delete_group),
             )
             .route(
                 "/{book_id}/groups/{group_id}/contacts",
-                get(contacts_handler::list_contacts_in_group)
-                    .post(contacts_handler::add_contact_to_group),
+                get(contacts_handler::list_contacts_in_group),
+            )
+            .route(
+                "/{book_id}/groups/{group_id}/contacts",
+                post(contacts_handler::add_contact_to_group),
             )
             .route(
                 "/{book_id}/groups/{group_id}/contacts/{contact_id}",
@@ -861,21 +864,22 @@ pub fn create_api_routes(app_state: &Arc<AppState>) -> GatedRouter<Arc<AppState>
         use crate::interfaces::api::handlers::calendar_handler::{self, CalendarApiState};
 
         let calendar_router = GatedRouter::new()
-            .route(
-                "/",
-                get(calendar_handler::list_calendars).post(calendar_handler::create_calendar),
-            )
-            .route(
-                "/{calendar_id}",
-                put(calendar_handler::update_calendar).delete(calendar_handler::delete_calendar),
-            )
+            .route("/", get(calendar_handler::list_calendars))
+            .route("/", post(calendar_handler::create_calendar))
+            .route("/{calendar_id}", put(calendar_handler::update_calendar))
+            .route("/{calendar_id}", delete(calendar_handler::delete_calendar))
+            .route("/{calendar_id}/events", get(calendar_handler::list_events))
             .route(
                 "/{calendar_id}/events",
-                get(calendar_handler::list_events).post(calendar_handler::create_event),
+                post(calendar_handler::create_event),
             )
             .route(
                 "/{calendar_id}/events/{event_id}",
-                put(calendar_handler::update_event).delete(calendar_handler::delete_event),
+                put(calendar_handler::update_event),
+            )
+            .route(
+                "/{calendar_id}/events/{event_id}",
+                delete(calendar_handler::delete_event),
             )
             .with_state(CalendarApiState { calendar_service });
 

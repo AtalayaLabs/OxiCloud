@@ -65,7 +65,6 @@ use std::sync::Arc;
 use axum::extract::{Json, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
-use axum::routing::post;
 use base64::Engine as _;
 use base64::engine::general_purpose::{
     STANDARD as B64_STANDARD, URL_SAFE_NO_PAD as B64_URL_NO_PAD,
@@ -106,7 +105,7 @@ use crate::application::dtos::user_dto::AuthResponseDto;
 use crate::application::ports::scope_ports::Condition;
 
 use crate::common::di::AppState;
-use crate::interfaces::api::policy_router::{GatedRouter, get as policy_get, post as policy_post};
+use crate::interfaces::api::policy_router::{GatedRouter, get, post};
 
 /// No credential at all — these ARE the login handshake.
 const PUBLIC: [Condition; 1] = [Condition::public()];
@@ -147,9 +146,9 @@ pub fn opaque_register_routes() -> GatedRouter<Arc<AppState>> {
 /// limit closes the secondary "how fast can I ask" leak.
 pub fn opaque_login_routes() -> GatedRouter<Arc<AppState>> {
     GatedRouter::new()
-        .route("/lookup", policy_post(login_lookup).policy(PUBLIC))
-        .route("/ke1", policy_post(login_ke1).policy(PUBLIC))
-        .route("/ke3", policy_post(login_ke3).policy(PUBLIC))
+        .route("/lookup", post(login_lookup).policy(PUBLIC))
+        .route("/ke1", post(login_ke1).policy(PUBLIC))
+        .route("/ke3", post(login_ke3).policy(PUBLIC))
 }
 
 /// Public config-publish endpoint. Mount under `/api/auth/opaque`
@@ -158,7 +157,7 @@ pub fn opaque_login_routes() -> GatedRouter<Arc<AppState>> {
 /// login mount to avoid layering the login rate limiter on a read
 /// that isn't a login attempt.
 pub fn opaque_params_routes() -> GatedRouter<Arc<AppState>> {
-    GatedRouter::new().route("/params", policy_get(opaque_params).policy(PUBLIC))
+    GatedRouter::new().route("/params", get(opaque_params).policy(PUBLIC))
 }
 
 /// Client → server on register KE1. `registrationRequest` is the
