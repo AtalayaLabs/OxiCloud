@@ -2402,6 +2402,56 @@ Sequenced here rather than inside PR 1 because PR 1 is a FOLD — it retires
 four existing gates without changing what any operation requires — while
 this ADDS coverage to a surface that had none.
 
+#### PR 2 — status
+
+Ordered so that each step is either INERT or verifiable on its own, the
+way PR 1 was. Two orderings are load-bearing rather than tidy:
+
+- **the area declarations must precede the boot refusal.** `ScopeReq`
+  defaults to `Undefined` and `Undefined` is a boot error, so switching
+  the check on before every operation is classified refuses to start —
+  and would do it in CI first, where `generate-openapi` compiles all of
+  them.
+- **the JWT claim must precede enforcement.** Tokens minted before the
+  claim existed carry no scopes, and the rule for them is "absent claim ⇒
+  every scope `:rw`" (precedent: `sid`). Enforce first and every token in
+  flight is refused.
+
+| # | step | state |
+|--:|---|---|
+| 1 | `ScopeReq { Undefined, None, Area(Scope, Access) }`; `Policy::scope: ScopeReq`, `Default = Undefined`. Boot check OFF | not started — inert, a type change only |
+| 2 | `Condition::scope(area, access)` and `Condition::scopeless()` | not started — inert |
+| 3 | the ~10 AREA-PREFIX declarations (§ Areas, not protocols), plus `scopeless()` on the login/public/ops routes (§ Deliberately scopeless) | not started — inert; the acceptance is mechanical, see below |
+| 4 | the `Undefined` BOOT refusal in `compile_all` | not started — first step that can fail a deploy; `just gen-openapi` is the local proof |
+| 5 | `auth.app_passwords.scopes` column + backfill `files,calendar,contacts`; WIDEN existing `device_codes` rows with `account` | not started — migration; the widening is not optional (§ Defaults) |
+| 6 | the wire parser → `ScopeSet`: namespaced, both delimiters, `effective = (requested ?? type_default) ∩ type_maximum`, empty REJECTED, `mail` REJECTED | not started |
+| 7 | mint: the scope set into the JWT claim; absent claim ⇒ every scope `:rw` | not started — must precede 9 |
+| 8 | `CurrentCaller` carries the `ScopeSet` | not started |
+| 9 | SHADOW: pass the scopes to `evaluate` and LOG what would be denied, enforcing nothing | not started — the step that found PR 1's visitor-DELETE hole |
+| 10 | ENFORCE: the gate refuses on `authz.scope_denied` / `scope_not_granted` | not started |
+| 11 | Hurl pins: an app-password credential refused OUTSIDE its areas and allowed INSIDE; a device credential likewise; an interactive session unaffected | not started |
+
+**Step 3 has a mechanical acceptance, which is why it is worth doing
+before the boot refusal rather than alongside it.** Every operation
+publishes its policy since `3302841c3`, so once the areas are declared:
+
+```
+jq '[.. | objects | select(has("x-oxicloud-policy")) |
+     .["x-oxicloud-policy"].scope] | map(select(. == null)) | length' \
+  resources/gen/openapi.json     # must be 0
+```
+
+A `null` there means an operation nobody classified — the same thing the
+boot refusal will reject, but visible as a diff before it can fail a
+deploy, and attributable to a path rather than to a startup log line.
+
+**What is NOT in PR 2**, recorded so it is not assumed: the consent
+screen rendering resolved access ("Files — read and write") is UI work
+that § Defaults requires but this PR does not ship, and the four
+credential populations in § Defaults are only as correct as the ceiling
+table — a new credential type added later gets `security` withheld by
+construction, which is the intended failure direction.
+
 ### PR 2 — a new route must not be silently scopeless
 
 The two axes have opposite defaults, and only one of them is safe:
