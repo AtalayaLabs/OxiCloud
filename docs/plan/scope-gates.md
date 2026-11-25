@@ -681,19 +681,41 @@ for the same reason.
 
 | scope (shown without the `oxicloud:` prefix) | routes it opens (non-exhaustive) |
 |---|---|
-| `files` | `/webdav`, `/remote.php/dav/files`, `/wopi`, `/api/files`, `/api/folders`, `/api/uploads`, `/api/batch`, `/api/trash`, `/api/favorites`, `/api/recent`, `/api/dedup`, `/api/drives` |
+| `files` | `/webdav`, `/remote.php/dav/files`, `/wopi`, `/api/files`, `/api/folders`, `/api/uploads`, `/api/batch`, `/api/trash`, `/api/favorites`, `/api/recent`, `/api/dedup`, `/api/drives`, `/api/photos/*`, `/api/playlists/*` (except its sharing routes) |
 | `calendar` | `/caldav`, `/.well-known/caldav`, `/api/calendars` (#853) |
 | `contacts` | `/carddav`, `/.well-known/carddav`, `/api/address-books`, `/api/contacts` |
-| `photos` | `/api/photos`, `/api/photos/geo` (Places), `/api/people` (faces) |
-| `music` | `/api/playlists` |
+| `faces` | `/api/people/*` — the BIOMETRIC index only |
 | `account` | `/api/auth/me`, `/me/profile`, `/me/image` — **enumerated, never the `/api/auth/*` prefix** — `/api/notifications`, `/remote.php/dav/avatars` |
 | `security` | `/api/auth/change-password`, `/oidc/link/start`, `/oidc/unlink`, `/upgrade-to-internal`, `/opaque/register/*`, `/app-passwords`, `/device/devices`, `/device/verify` |
-| `sharing` | `/api/grants`, `/api/shares`, `/api/s`, OCS sharing, and recipient lookup: `/api/users/{id}`, `/api/groups/search` |
+| `sharing` | `/api/grants`, `/api/shares`, `/api/s`, OCS sharing, and recipient lookup: `/api/users/{id}`, `/api/groups/search`, and `/api/playlists/{id}/share*` |
 | `mail` | **reserved** — no mailbox exists; the parser REJECTS it, since a name that parses but guards nothing is the device-flow bug again |
 
 Non-exhaustive by design: a new route under an existing area inherits
 its scope. A route fitting no row means a scope is missing, which is a
 decision rather than a lookup.
+
+**Photos and music are not areas — they are ways to DISPLAY files.** A
+scope names a data area, and the test is whether withholding it withholds
+something. It does not here: `/api/photos/resources` is a timeline
+projection of image files and `/api/photos/geo` reads EXIF GPS out of the
+file bytes, both of which a `files:ro` credential already reaches through
+`/api/files`. The reverse direction confirms it — a "photos-only"
+credential cannot fetch image bytes or thumbnails, which live under
+`/api/files`, so the scope would be useless alone while implying it
+protected something. Same for playlists: a playlist-only credential
+cannot stream audio.
+
+Two consequences, and they pull in opposite directions, which is why the
+line is drawn between them rather than around "media":
+
+- **`/api/playlists/{id}/share*` is `sharing`, not `files`.** Those three
+  routes create and list grants to other users. A file-sync credential
+  has no business sharing your playlists.
+- **`/api/people/*` is its OWN scope, `faces`.** It is the one media
+  surface that passes the test: a face index is biometric data NOT
+  derivable from the file bytes, and `merge`/`recluster` mutate it. So
+  the app-password default (`files,calendar,contacts`) withholds
+  biometrics by construction — the same reason `enable_faces` is opt-in.
 
 Three naming traps:
 
@@ -706,10 +728,12 @@ Three naming traps:
   capability, one scope. Splitting them breaks the share picker while
   protecting nothing, since either half reveals the roster.
 
-`photos` covers Places and People because both are derived from the
-photos — EXIF coordinates, pixel analysis. A separate scope would
-protect nothing while implying it did. That is the test a scope must
-pass: withholding it has to withhold something.
+Places is in `files` for the same reason the rest of photos is: EXIF
+coordinates are IN the file bytes, so a `files` credential reads them
+whether or not `/api/photos/geo` exists. Faces is not, because pixel
+analysis produces data the bytes do not contain. The test a scope must
+pass is whether withholding it withholds something — Places fails it,
+faces passes.
 
 Deliberately absent: `/api/admin/*` and `/api/groups` mutations are
 `MinRole::Admin`; `/api/search` and `/api/rt/ws` read across areas and are
