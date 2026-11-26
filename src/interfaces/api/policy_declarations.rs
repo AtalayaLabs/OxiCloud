@@ -95,9 +95,23 @@ pub fn declarations() -> PolicyRegistry {
     // Six declarations, not thirty-six: the method contributes exactly
     // one authorization-relevant bit (read or write), and the gate is the
     // same for every area.
+    // Both axes, and the SCOPE one writes itself: `Op::Dav` already
+    // carries the area and the access, so the declaration is the
+    // operation's own identity restated as a requirement. Nothing to
+    // choose and nothing to get wrong.
+    //
+    // These are the operations the scope axis exists for. `/webdav`,
+    // `/caldav` and `/carddav` are what app passwords and device codes
+    // are issued for, so a credential scoped to `calendar` reaching
+    // `/webdav` is the concrete bug § The feature is half-built
+    // describes. Until this declaration they were `ScopeReq::Undefined`,
+    // and invisible to the generation check for want of a spec entry —
+    // which is why `undefined_scopes` takes `dav_ops()` explicitly.
     for (area, _) in DAV_AREAS {
         for access in [Access::ReadOnly, Access::ReadWrite] {
-            reg.declare(Site::Exact(Op::Dav(area, access)), INTERNAL_ONLY.to_vec());
+            let mut conds = INTERNAL_ONLY.to_vec();
+            conds.push(Condition::scope(area, access));
+            reg.declare(Site::Exact(Op::Dav(area, access)), conds);
         }
     }
 
@@ -230,6 +244,47 @@ mod tests {
 
     /// Spot-check the four gates against the layers they transcribe. A
     /// reviewer can read these four assertions instead of the whole dump.
+    /// Every DAV operation declares a SCOPE, not just the role gate.
+    ///
+    /// They were `ScopeReq::Undefined` until PR 2 step 4, and invisible
+    /// to the generation check because they appear in no spec — so this
+    /// pins both halves: the declaration exists, and it matches the
+    /// operation's own identity. `/webdav`, `/caldav` and `/carddav` are
+    /// what app passwords and device codes are issued for, so an
+    /// unclassified DAV operation is the exact shape of the bug the scope
+    /// axis exists to fix.
+    #[test]
+    fn every_dav_operation_declares_its_own_area_and_access() {
+        // The WOPI operation has to be named too: it is declared in this
+        // module (because `/api/wopi` is mounted outside
+        // `main_api_router`), so the orphan check fires on any op list
+        // that omits it.
+        let mut ops = dav_ops();
+        ops.push(Op::Rest("GET", "/api/wopi/editor-url"));
+        let table = declarations()
+            .compile_all(&ops)
+            .expect("the DAV declarations compile");
+
+        for op in dav_ops() {
+            let Op::Dav(area, access) = op else {
+                panic!("dav_ops() yielded a non-DAV op: {op:?}");
+            };
+            let p = table.get(&op).expect("every DAV op is in the table");
+
+            let required = p
+                .scope
+                .areas()
+                .unwrap_or_else(|| panic!("{op} declares no scope — it would fail generation"));
+            assert!(
+                required.allows(area, access),
+                "{op} must require its OWN area and access, got {:?}",
+                p.scope
+            );
+            // And the role gate is still there — the two axes coexist.
+            assert_eq!(p.role, Some(MinRole::Internal), "{op} lost its role gate");
+        }
+    }
+
     #[test]
     fn each_folded_gate_lands_where_its_layer_was() {
         // Every DECLARED operation has to be in the list, or the orphan

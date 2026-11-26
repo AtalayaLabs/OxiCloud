@@ -948,6 +948,68 @@ pub fn compile_failures(
     out
 }
 
+/// Every operation whose compiled scope is [`ScopeReq::Undefined`] —
+/// nobody classified it.
+///
+/// PR 2 step 4. `Undefined` is the DEFAULT on the scope axis, and it is
+/// unsatisfiable: the gate axis can default to a real requirement
+/// (`MinPrincipal::User`) while scope has no such candidate, since "no
+/// scope required" would be fail-open. So the absence is made
+/// unrepresentable by refusing it here.
+///
+/// GENERATION time, not boot. The operation list comes from the specs
+/// while a feature-gated router only exists when its feature is on, so a
+/// boot check would make a deployment with `enable_photos=false` refuse
+/// to start over a feature the operator turned off.
+///
+/// `extra` carries the operations that are in NO spec and so cannot be
+/// enumerated from one — the six `Op::Dav` pairs. Without them the check
+/// would pass over `/webdav`, `/caldav` and `/carddav`, which is the
+/// worst possible omission: those are what app passwords and device
+/// codes exist for.
+#[must_use]
+pub fn undefined_scopes(
+    openapi: &utoipa::openapi::OpenApi,
+    registry: &crate::application::services::scope_table::PolicyRegistry,
+    extra: &[crate::application::ports::scope_ports::Op],
+) -> Vec<String> {
+    use crate::application::ports::scope_ports::{Op, ScopeReq};
+    let mut out = Vec::new();
+
+    for (path, item) in openapi.paths.paths.iter() {
+        let path_static: &'static str = Box::leak(path.clone().into_boxed_str());
+        for (method, present) in [
+            ("GET", item.get.is_some()),
+            ("POST", item.post.is_some()),
+            ("PUT", item.put.is_some()),
+            ("DELETE", item.delete.is_some()),
+            ("PATCH", item.patch.is_some()),
+            ("HEAD", item.head.is_some()),
+            ("OPTIONS", item.options.is_some()),
+        ] {
+            if !present {
+                continue;
+            }
+            if let Ok(p) = registry.compile_one(Op::Rest(method, path_static))
+                && p.scope == ScopeReq::Undefined
+            {
+                out.push(format!("{method} {path}"));
+            }
+        }
+    }
+
+    for &op in extra {
+        if let Ok(p) = registry.compile_one(op)
+            && p.scope == ScopeReq::Undefined
+        {
+            out.push(format!("{op}"));
+        }
+    }
+
+    out.sort();
+    out
+}
+
 pub fn audit_declared_security(
     openapi: &utoipa::openapi::OpenApi,
     registry: &crate::application::services::scope_table::PolicyRegistry,

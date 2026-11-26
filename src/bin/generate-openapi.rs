@@ -117,6 +117,29 @@ async fn main() {
     // derived from the policy, so an annotation that disagrees is stale or
     // a declaration is missing. Reported, not fatal, while the two are
     // being reconciled.
+    // Step 4 of PR 2: an operation nobody classified on the scope axis.
+    // Reported over the REST operations in the spec PLUS the DAV pairs,
+    // which are in no spec at all — see `undefined_scopes`.
+    let unclassified = oxicloud::interfaces::api::undefined_scopes(
+        &openapi,
+        &registry,
+        &oxicloud::interfaces::api::policy_declarations::dav_ops(),
+    );
+    if !unclassified.is_empty() {
+        eprintln!(
+            "\n{} operation(s) declare no scope (ScopeReq::Undefined):\n",
+            unclassified.len()
+        );
+        for op in &unclassified {
+            eprintln!("  {op}");
+        }
+        eprintln!(
+            "\nDeclare an area with `scope_by_verb(..)`, or state \
+             `scopeless()` deliberately.\n"
+        );
+        std::process::exit(1);
+    }
+
     // Step 4 of PR 2: a declaration that cannot COMPILE is reported here,
     // not swallowed. `mark_policies` skips such an operation, which made a
     // broken declaration look identical to a missing one in the spec.
