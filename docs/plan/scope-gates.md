@@ -919,9 +919,16 @@ only what its row names. A new type added without thought about
 
 | credential | default when omitted | maximum (allowlist) |
 |---|---|---|
-| App password | `files,calendar,contacts` (`:rw`) | same — **no `security`**, **no `account`**, **no `admin`** (§ Credential-kind gating) |
+| App password | `files,calendar,contacts` (`:rw`) **+ `account:ro`** | same — **no `security`**, **no `admin`**, and `account` is READ-only (§ Credential-kind gating) |
 | Device flow | `files,calendar,contacts` (`:rw`) — today's `webdav,caldav,carddav`, namespaced | `files,calendar,contacts,account` — **no `security`**, **no `admin`** |
 | Interactive web session | n/a — never requests scopes | every scope `:rw`, `security` included |
+
+**`account:ro` is in the app-password ceiling for one concrete reason:**
+`/remote.php/dav/avatars/{user}/{size}` is a profile image, so it is the
+`account` area — and NC desktop fetches it. Without `account:ro` a sync
+client would lose avatars, which is a visible regression for no security
+gain: an avatar is already visible to anyone who can see the user. READ
+only, so an app password still cannot change a profile.
 
 App password is not `files` alone: `app_password_handler` describes
 these as credentials for "DAV / NC-Basic clients (DAVx⁵, Thunderbird,

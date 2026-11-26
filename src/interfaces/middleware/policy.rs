@@ -358,20 +358,57 @@ mod tests {
         }
     }
 
-    /// The NextCloud DAV doors resolve as REST, NOT as a DAV area. They
-    /// reach the same files area, but no folded layer covers
-    /// `/remote.php/*` — so giving them the DAV declaration would ADD a
-    /// gate they do not have, which is a behaviour change rather than a
-    /// fold. Pinned so a later "tidy-up" cannot quietly make PR 1 do it.
+    /// The NextCloud DAV doors resolve to the SAME `Op::Dav` as native
+    /// `/webdav`, so one declaration covers both protocols.
+    ///
+    /// This test previously asserted the opposite, and deliberately: PR 1
+    /// was a fold, and giving these doors the DAV declaration would have
+    /// ADDED a gate they did not have — a behaviour change wearing a
+    /// transcription's clothes. The pin existed so a tidy-up could not
+    /// make PR 1 do it quietly.
+    ///
+    /// PR 2 does it openly, because the scope axis is useless otherwise:
+    /// `/remote.php/dav/files` is where an app password actually GOES, so
+    /// leaving it unmapped would enforce the `files` ceiling on the
+    /// browser API and ignore it on the sync surface. That also resolves
+    /// the asymmetry `DAV_AREAS` documents — native `/webdav` refused an
+    /// external user and the NC mirror did not.
+    ///
+    /// Mapped by LEAF, not by `/remote.php/dav`: a bare prefix would
+    /// capture `/remote.php/dav/avatars`, and an avatar is a profile
+    /// image — `account`, not `files`.
     #[test]
-    fn the_nextcloud_dav_doors_are_not_folded_by_pr_1() {
+    fn the_nextcloud_dav_doors_map_to_the_same_dav_operations() {
+        use crate::application::ports::scope_ports::Scope;
+
+        // The files mirror, read and write.
         assert_eq!(
             resolve("PROPFIND", "/remote.php/dav/files/{user}"),
-            Some(Op::Rest("PROPFIND", "/remote.php/dav/files/{user}")),
+            Some(Op::Dav(Scope::Files, Access::ReadOnly)),
         );
         assert_eq!(
             resolve("GET", "/remote.php/webdav/{*subpath}"),
-            Some(Op::Rest("GET", "/remote.php/webdav/{*subpath}")),
+            Some(Op::Dav(Scope::Files, Access::ReadOnly)),
+        );
+        assert_eq!(
+            resolve("PUT", "/remote.php/dav/files/{user}/{*subpath}"),
+            Some(Op::Dav(Scope::Files, Access::ReadWrite)),
+        );
+        // Trash and chunked uploads are files too.
+        assert_eq!(
+            resolve("DELETE", "/remote.php/dav/trashbin/{user}/{*subpath}"),
+            Some(Op::Dav(Scope::Files, Access::ReadWrite)),
+        );
+        assert_eq!(
+            resolve("PUT", "/remote.php/dav/uploads/{user}/{upload_id}"),
+            Some(Op::Dav(Scope::Files, Access::ReadWrite)),
+        );
+
+        // And the one that must NOT be files: an avatar is a profile
+        // image. A bare `/remote.php/dav` prefix would have swallowed it.
+        assert_eq!(
+            resolve("GET", "/remote.php/dav/avatars/{user}/{size}"),
+            Some(Op::Dav(Scope::Account, Access::ReadOnly)),
         );
     }
 

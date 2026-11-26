@@ -39,10 +39,36 @@ use crate::application::services::scope_table::{PolicyRegistry, Site};
 /// The asymmetry it exposes is real and wants its own diff: native
 /// `/webdav` refuses an external user and `/remote.php/dav/files` appears
 /// not to. See the plan, § Fold in.
-pub const DAV_AREAS: [(Scope, &[&str]); 3] = [
-    (Scope::Files, &["/webdav"]),
+/// The NextCloud mirror is listed HERE rather than given a mechanism of
+/// its own, which is § Areas, not protocols paying off: `/webdav` and
+/// `/remote.php/dav/files` are the same area reached by two protocols, so
+/// they map to the SAME `Op::Dav(Files, access)` and need no second
+/// declaration. That is also what closes the hole — those NC paths are
+/// where an app password actually goes, and until they were listed the
+/// scope axis never ran on them.
+///
+/// Note what is NOT here: a bare `/remote.php/dav`. It would capture
+/// `/remote.php/dav/avatars` by segment prefix, and an avatar is a
+/// profile image — `account`, not `files`. Listing the leaves explicitly
+/// is what keeps that distinction.
+pub const DAV_AREAS: [(Scope, &[&str]); 4] = [
+    (
+        Scope::Files,
+        &[
+            "/webdav",
+            "/remote.php/webdav",
+            "/remote.php/dav/files",
+            "/remote.php/dav/trashbin",
+            "/remote.php/dav/uploads",
+        ],
+    ),
     (Scope::Calendar, &["/caldav"]),
     (Scope::Contacts, &["/carddav"]),
+    // Avatars are profile images, so `account` — and `account:ro` is in
+    // the app-password ceiling for exactly this reason: NC desktop
+    // fetches them, and a sync client losing avatars is a visible
+    // regression for no security gain.
+    (Scope::Account, &["/remote.php/dav/avatars"]),
 ];
 
 /// The area a DAV path belongs to, or `None` if it is not a DAV path.
