@@ -919,16 +919,24 @@ only what its row names. A new type added without thought about
 
 | credential | default when omitted | maximum (allowlist) |
 |---|---|---|
-| App password | `files,calendar,contacts` (`:rw`) **+ `account:ro`** | same — **no `security`**, **no `admin`**, and `account` is READ-only (§ Credential-kind gating) |
+| App password | `files,calendar,contacts` (`:rw`) | same — **no `security`**, **no `account`**, **no `admin`**, **no `sharing`** (§ Credential-kind gating) |
 | Device flow | `files,calendar,contacts` (`:rw`) — today's `webdav,caldav,carddav`, namespaced | `files,calendar,contacts,account` — **no `security`**, **no `admin`** |
 | Interactive web session | n/a — never requests scopes | every scope `:rw`, `security` included |
 
-**`account:ro` is in the app-password ceiling for one concrete reason:**
-`/remote.php/dav/avatars/{user}/{size}` is a profile image, so it is the
-`account` area — and NC desktop fetches it. Without `account:ro` a sync
-client would lose avatars, which is a visible regression for no security
-gain: an avatar is already visible to anyone who can see the user. READ
-only, so an app password still cannot change a profile.
+**No `account`, and avatars are why that is safe.** The ceiling briefly
+included `account:ro` so NC desktop could fetch
+`/remote.php/dav/avatars/{user}/{size}`. It does not need to: that route
+is keyed by `{user}` rather than being the caller's own profile, and
+`avatar_handler` falls through to SVG initials for ANY username — so it
+enumerates nothing, confirms nothing, and is declared SCOPELESS. With
+that settled, no sync client needs a profile grant at all.
+
+**No `sharing` either**, which is a real trade rather than a free one. It
+governs `/ocs/…/sharees`, the share-recipient picker, so an app-password
+client loses autocomplete in the NC share dialog — sharing itself still
+works in the web UI, and no OCS share-CREATION endpoint exists. Kept out
+because the asymmetry is one-way: widening a ceiling later is safe,
+narrowing one breaks clients already in the field.
 
 App password is not `files` alone: `app_password_handler` describes
 these as credentials for "DAV / NC-Basic clients (DAVx⁵, Thunderbird,

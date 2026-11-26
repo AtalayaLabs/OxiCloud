@@ -449,11 +449,18 @@ mod tests {
             Some(Op::Dav(Scope::Files, Access::ReadWrite)),
         );
 
-        // And the one that must NOT be files: an avatar is a profile
-        // image. A bare `/remote.php/dav` prefix would have swallowed it.
+        // And the one that must NOT be files: avatars resolve to a plain
+        // REST op, because they are SCOPELESS rather than an area.
+        //
+        // A bare `/remote.php/dav` prefix would have swallowed them into
+        // `files` — listing the leaves is what prevents that. They were
+        // briefly mapped to `Op::Dav(Account, …)`, which was wrong twice:
+        // `account` is the caller's OWN profile and this is keyed by
+        // `{user}`, and `sharing` protects ENUMERATION while
+        // `avatar_handler` serves initials for any username at all.
         assert_eq!(
             resolve("GET", "/remote.php/dav/avatars/{user}/{size}"),
-            Some(Op::Dav(Scope::Account, Access::ReadOnly)),
+            Some(Op::Rest("GET", "/remote.php/dav/avatars/{user}/{size}")),
         );
     }
 

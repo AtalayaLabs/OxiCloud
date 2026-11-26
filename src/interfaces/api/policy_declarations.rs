@@ -48,10 +48,10 @@ use crate::application::services::scope_table::{PolicyRegistry, Site};
 /// scope axis never ran on them.
 ///
 /// Note what is NOT here: a bare `/remote.php/dav`. It would capture
-/// `/remote.php/dav/avatars` by segment prefix, and an avatar is a
-/// profile image — `account`, not `files`. Listing the leaves explicitly
-/// is what keeps that distinction.
-pub const DAV_AREAS: [(Scope, &[&str]); 4] = [
+/// `/remote.php/dav/avatars` by segment prefix, and avatars are
+/// SCOPELESS — declared as such below. Listing the leaves explicitly is
+/// what keeps that distinction.
+pub const DAV_AREAS: [(Scope, &[&str]); 3] = [
     (
         Scope::Files,
         &[
@@ -64,11 +64,6 @@ pub const DAV_AREAS: [(Scope, &[&str]); 4] = [
     ),
     (Scope::Calendar, &["/caldav"]),
     (Scope::Contacts, &["/carddav"]),
-    // Avatars are profile images, so `account` — and `account:ro` is in
-    // the app-password ceiling for exactly this reason: NC desktop
-    // fetches them, and a sync client losing avatars is a visible
-    // regression for no security gain.
-    (Scope::Account, &["/remote.php/dav/avatars"]),
 ];
 
 /// The area a DAV path belongs to, or `None` if it is not a DAV path.
@@ -164,6 +159,37 @@ pub fn declarations() -> PolicyRegistry {
     // write, and a path-level declaration handed a visitor the DELETE.
     //
     // `GET /api/files/recent-changes` moved for the same reason.
+
+    // ── Avatars: SCOPELESS, and the reasoning is the plan's own test ──
+    //
+    // `/remote.php/dav/avatars/{user}/{size}` and its `/index.php`
+    // sibling serve a 128px picture of a named user. They were briefly
+    // mapped to `account`, which was wrong twice over: `account` is the
+    // CALLER's own profile (§ Areas), and these are keyed by `{user}`.
+    // `sharing` is wrong too, because that area exists to protect
+    // ENUMERATION — and `avatar_handler` falls through to SVG initials
+    // for ANY username, with no existence check. So the endpoint
+    // enumerates nothing and confirms nothing: you must already know the
+    // username, and an unknown one gets initials exactly like a known
+    // one.
+    //
+    // Withholding it therefore withholds a picture of someone whose name
+    // you already have, which fails "withholding it has to withhold
+    // something". Scopeless, stated rather than left `Undefined`.
+    //
+    // This is also what removed the only widening from
+    // `20261126000000_credential_scopes_to_areas`: with avatars
+    // scopeless, no sync client needs `account`, so the migration is a
+    // pure vocabulary translation.
+    for (method, path) in [
+        ("GET", "/remote.php/dav/avatars/{user}/{size}"),
+        ("GET", "/index.php/avatar/{user}/{size}"),
+    ] {
+        reg.declare(
+            Site::Exact(Op::Rest(method, path)),
+            vec![Condition::scopeless()],
+        );
+    }
 
     // ── The NextCloud OCS surface ─────────────────────────────────────
     //
@@ -300,6 +326,8 @@ mod tests {
     fn non_spec_ops() -> Vec<Op> {
         vec![
             Op::Rest("GET", "/api/wopi/editor-url"),
+            Op::Rest("GET", "/remote.php/dav/avatars/{user}/{size}"),
+            Op::Rest("GET", "/index.php/avatar/{user}/{size}"),
             Op::Rest("GET", "/ocs/v1.php/cloud/user"),
             Op::Rest("GET", "/ocs/v2.php/cloud/user"),
             Op::Rest("GET", "/ocs/v1.php/cloud/users/{userid}"),
