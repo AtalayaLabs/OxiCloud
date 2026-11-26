@@ -165,6 +165,90 @@ pub fn declarations() -> PolicyRegistry {
     //
     // `GET /api/files/recent-changes` moved for the same reason.
 
+    // ── The NextCloud OCS surface ─────────────────────────────────────
+    //
+    // Declared HERE rather than at the routes, for the same reason as
+    // `/api/wopi/editor-url`: `interfaces/nextcloud/routes.rs` builds
+    // plain `Router`s merged at the app root, so there is no
+    // `GatedRouter` to carry a `.policy()`.
+    //
+    // They have to be declared at all because the policy gate now runs on
+    // that router (PR 2 step 4b). Eleven of them sit inside it, and
+    // without a declaration each compiles to `ScopeReq::Undefined` —
+    // harmless while the runtime treats that as "no requirement", and a
+    // 403 the moment step 10 makes it a denial. The generation check
+    // cannot catch it either: `/ocs/*` is in no spec.
+    //
+    // `scope_by_verb` is NOT used. OCS does not follow the verb: `POST
+    // …/notifications/push` registers a push subscription (a write to the
+    // caller's own notification settings), while the GETs are reads. Each
+    // one states its access.
+    for (method, path, conds) in [
+        // The caller's own metadata — § Deliberately scopeless names it a
+        // probe: any credential may ask who it belongs to.
+        ("GET", "/ocs/v1.php/cloud/user", Condition::scopeless()),
+        ("GET", "/ocs/v2.php/cloud/user", Condition::scopeless()),
+        // ANOTHER user's metadata, and the share-recipient picker. Both
+        // reveal the roster, which § Areas calls one capability.
+        (
+            "GET",
+            "/ocs/v1.php/cloud/users/{userid}",
+            Condition::scope(Scope::Sharing, Access::ReadOnly),
+        ),
+        (
+            "GET",
+            "/ocs/v2.php/cloud/users/{userid}",
+            Condition::scope(Scope::Sharing, Access::ReadOnly),
+        ),
+        (
+            "GET",
+            "/ocs/v2.php/apps/files_sharing/api/v1/sharees",
+            Condition::scope(Scope::Sharing, Access::ReadOnly),
+        ),
+        // **The one that matters most.** NC's own app-password endpoint:
+        // deleting it revokes a CREDENTIAL. `security`, which no
+        // non-interactive ceiling grants — so an app password cannot
+        // reach the NC credential surface any more than it can reach
+        // `/api/auth/app-passwords`. Without this it was `Undefined`, and
+        // an app password could revoke another one.
+        (
+            "DELETE",
+            "/ocs/v2.php/core/apppassword",
+            Condition::scope(Scope::Security, Access::ReadWrite),
+        ),
+        // The caller's own notifications.
+        (
+            "GET",
+            "/ocs/v2.php/apps/notifications/api/v2/notifications",
+            Condition::scope(Scope::Account, Access::ReadOnly),
+        ),
+        // A POST that WRITES: registering a push subscription changes the
+        // caller's own notification settings.
+        (
+            "POST",
+            "/ocs/v2.php/apps/notifications/api/v2/push",
+            Condition::scope(Scope::Account, Access::ReadWrite),
+        ),
+        // Recommendations and search read files.
+        (
+            "GET",
+            "/ocs/v2.php/apps/recommendations/api/v1/recommendations",
+            Condition::scope(Scope::Files, Access::ReadOnly),
+        ),
+        (
+            "GET",
+            "/ocs/v2.php/search/providers",
+            Condition::scope(Scope::Files, Access::ReadOnly),
+        ),
+        (
+            "GET",
+            "/ocs/v2.php/search/providers/{provider_id}/search",
+            Condition::scope(Scope::Files, Access::ReadOnly),
+        ),
+    ] {
+        reg.declare(Site::Exact(Op::Rest(method, path)), vec![conds]);
+    }
+
     // `GET /api/wopi/editor-url` — declared HERE, not at its route,
     // because `/api/wopi` is mounted separately in `main.rs` rather than
     // nested into `main_api_router`, so a declaration made on its router
@@ -206,6 +290,33 @@ mod tests {
     /// operations. This is the cross-check § 2b asks for — it is what
     /// catches a declaration for a path that was renamed, since axum
     /// cannot be asked which paths exist.
+    /// The operations declared in this module that appear in no spec.
+    ///
+    /// `/api/wopi/editor-url` is mounted outside `main_api_router`, and
+    /// the OCS routes are plain axum `Router`s merged at the app root —
+    /// so neither can carry a `.policy()` at its route, and neither is in
+    /// `openapi.json` for `all_ops()` to find. One list, used by both
+    /// tests, so they cannot drift apart.
+    fn non_spec_ops() -> Vec<Op> {
+        vec![
+            Op::Rest("GET", "/api/wopi/editor-url"),
+            Op::Rest("GET", "/ocs/v1.php/cloud/user"),
+            Op::Rest("GET", "/ocs/v2.php/cloud/user"),
+            Op::Rest("GET", "/ocs/v1.php/cloud/users/{userid}"),
+            Op::Rest("GET", "/ocs/v2.php/cloud/users/{userid}"),
+            Op::Rest("GET", "/ocs/v2.php/apps/files_sharing/api/v1/sharees"),
+            Op::Rest("DELETE", "/ocs/v2.php/core/apppassword"),
+            Op::Rest("GET", "/ocs/v2.php/apps/notifications/api/v2/notifications"),
+            Op::Rest("POST", "/ocs/v2.php/apps/notifications/api/v2/push"),
+            Op::Rest(
+                "GET",
+                "/ocs/v2.php/apps/recommendations/api/v1/recommendations",
+            ),
+            Op::Rest("GET", "/ocs/v2.php/search/providers"),
+            Op::Rest("GET", "/ocs/v2.php/search/providers/{provider_id}/search"),
+        ]
+    }
+
     fn all_ops() -> Vec<(String, String)> {
         let spec = std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),
@@ -247,6 +358,13 @@ mod tests {
             .map(|(m, p)| Op::Rest(leak(m), leak(p)))
             .collect();
         ops.extend(dav_ops());
+        // Plus the operations this module declares that appear in NO
+        // spec, so `all_ops()` cannot find them: `/api/wopi/editor-url`
+        // (mounted outside `main_api_router`) and the gated OCS routes.
+        // Without them the orphan check fires on our own declarations —
+        // which it did, and correctly: a declaration naming no live
+        // operation is exactly what it exists to catch.
+        ops.extend(non_spec_ops());
 
         match declarations().compile_all(&ops) {
             Ok(table) => assert!(table.len() > 200),
@@ -286,7 +404,7 @@ mod tests {
         // `main_api_router`), so the orphan check fires on any op list
         // that omits it.
         let mut ops = dav_ops();
-        ops.push(Op::Rest("GET", "/api/wopi/editor-url"));
+        ops.extend(non_spec_ops());
         let table = declarations()
             .compile_all(&ops)
             .expect("the DAV declarations compile");
@@ -317,15 +435,11 @@ mod tests {
         // check fires on the ones this test does not name and the
         // compile fails for an unrelated reason.
         let mut ops = dav_ops();
+        // Everything this module declares that is in no spec — one
+        // shared list, so the two tests cannot drift apart.
+        ops.extend(non_spec_ops());
         ops.extend([
             Op::Rest("GET", "/api/folders"),
-            // `/api/wopi/editor-url` is declared here rather than at its
-            // route, because `/api/wopi` is mounted outside
-            // `main_api_router` — so it has to be named here too, or the
-            // orphan check fires on it. That it DID fire is the check
-            // working: a declaration naming no live operation is exactly
-            // what it exists to catch.
-            Op::Rest("GET", "/api/wopi/editor-url"),
             // The three non-DAV internal-user sites, plus the GET
             // siblings that must stay OPEN.
         ]);
