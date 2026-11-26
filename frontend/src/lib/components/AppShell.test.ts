@@ -256,10 +256,8 @@ it('drops a nav group whose every link was flagged away, and leaves no heading',
 	// each reads `group.links[0].href`, so `links[0]` being undefined is a
 	// TypeError that takes the WHOLE sidebar down, on every page.
 	//
-	// Sharing is the group that can actually empty today: both its links
-	// are behind `features.sharing`, and `/contacts` behind
-	// `features.contacts`. Turn both off and it has no links at all.
-	serverConfig.features = { ...serverConfig.features, sharing: false, contacts: false };
+	// Turning off sharing alone must empty Sharing, even with Contacts enabled.
+	serverConfig.features = { ...serverConfig.features, sharing: false };
 	render(AppShell, { props: { children } });
 
 	// The sidebar still rendered — this is the assertion that would have
@@ -272,6 +270,15 @@ it('drops a nav group whose every link was flagged away, and leaves no heading',
 	// Neighbouring group headings are untouched — the regression to guard
 	// against is a filter that over-matches and drops populated groups.
 	expect(screen.queryByText('Library')).toBeTruthy();
+	expect(screen.queryByTestId('appshell-nav-contacts-link')).toBeTruthy();
+});
+
+it('puts Contacts under Library rather than Sharing', () => {
+	render(AppShell, { props: { children } });
+
+	// Contacts used to live under Sharing rather than with the other Library apps.
+	const library = screen.getByText('Library').closest('.nav-group');
+	expect(library?.contains(screen.getByTestId('appshell-nav-contacts-link'))).toBe(true);
 });
 
 it('hides /photos when features.photos is false', () => {

@@ -156,6 +156,17 @@
 				section: 'calendars'
 			});
 		}
+		// `features.contacts`, NOT `features.carddav`: that flag governs the
+		// DAV sync endpoint, this one governs `/api/contacts` + this page,
+		// and a deployment may want either without the other.
+		if (serverConfig.features.contacts) {
+			library.push({
+				href: '/contacts',
+				label: t('nav.contacts', 'Contacts'),
+				icon: 'id-card',
+				section: 'contacts'
+			});
+		}
 
 		const sharing: NavLink[] = [];
 		if (serverConfig.features.sharing) {
@@ -174,17 +185,6 @@
 				}
 			);
 		}
-		// `features.contacts`, NOT `features.carddav`: that flag governs the
-		// DAV sync endpoint, this one governs `/api/contacts` + this page,
-		// and a deployment may want either without the other.
-		if (serverConfig.features.contacts) {
-			sharing.push({
-				href: '/contacts',
-				label: t('nav.contacts', 'Contacts'),
-				icon: 'id-card',
-				section: 'contacts'
-			});
-		}
 
 		const groups: NavGroup[] = [
 			{
@@ -195,13 +195,8 @@
 			},
 			{ label: t('nav.section_library', 'Library'), nested: true, links: library }
 		];
-		// Pushed unconditionally — the `filter` at the end of this block is
-		// what drops it when `features.sharing` and `features.contacts` are
-		// both off. This used to carry its own `if (sharing.length > 0)`
-		// guard, which made the emptiness rule exist in two places: here
-		// by hand, and there structurally. One enforcement point means a
-		// new group cannot forget it, and it keeps the filter load-bearing
-		// rather than belt-and-braces that no test can reach.
+		// Pushed unconditionally — the filter below drops empty groups,
+		// including Sharing when `features.sharing` is off.
 		groups.push({
 			label: t('nav.section_sharing', 'Sharing'),
 			nested: true,
@@ -253,13 +248,7 @@
 		// This is not cosmetic. The render keys the group list on
 		// `group.links[0].href`, so an empty group makes `links[0]`
 		// undefined and that dereference a TypeError — which takes the
-		// whole sidebar down on every page, not just the affected
-		// section. `Sharing` empties for real whenever `features.sharing`
-		// and `features.contacts` are both off; `Library` survives only
-		// because `/recent` and `/favorites` are unconditional while
-		// Photos and Music are flagged, which is luck rather than design
-		// and stops being true the day either gets a flag (see the
-		// `features.calendars` note above for how often that happens).
+		// whole sidebar down on every page, not just the affected section.
 		return groups.filter((g) => g.links.length > 0);
 	});
 
