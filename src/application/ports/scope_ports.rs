@@ -275,6 +275,19 @@ impl Access {
     /// classifies a DAV request's method at the gate. The DAV side had its
     /// own copy of this list until the two were found to be the same five
     /// methods.
+    /// The wire token: `ro` or `rw`.
+    ///
+    /// One spelling, shared by [`ScopeSet::to_wire`] and the audit lines,
+    /// so a log field and a scope string never disagree about what this
+    /// access is called.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::ReadOnly => "ro",
+            Self::ReadWrite => "rw",
+        }
+    }
+
     #[must_use]
     pub const fn from_method(method: &str) -> Self {
         match method.as_bytes() {
@@ -875,13 +888,7 @@ impl ScopeSet {
     #[must_use]
     pub fn to_wire(self) -> String {
         self.iter()
-            .map(|(s, a)| {
-                let access = match a {
-                    Access::ReadOnly => "ro",
-                    Access::ReadWrite => "rw",
-                };
-                format!("oxicloud:{}:{access}", s.name())
-            })
+            .map(|(s, a)| format!("oxicloud:{}:{}", s.name(), a.as_str()))
             .collect::<Vec<_>>()
             .join(",")
     }

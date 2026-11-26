@@ -306,9 +306,50 @@ pub async fn policy_gate_layer(
     let caller = request.extensions().get::<Arc<CurrentCaller>>().cloned();
     let kind = caller.as_ref().map(|c| c.kind);
 
-    // `None` scopes: no credential carries a scope set yet, and absent
-    // grandfathers to FULL (§ Absent means FULL, everywhere). PR 2 reads
-    // the credential's real set here.
+    // ── SHADOW: the scope axis, measured but not enforced ────────────
+    //
+    // Evaluate with the caller's REAL set and log what step 10 would
+    // refuse. The authoritative call below still passes `None`, so no
+    // request is denied on scope yet — this exists to find misdeclared
+    // areas against live traffic, which is what caught the visitor
+    // `DELETE` hole when PR 1 shadowed the role axis the same way.
+    //
+    // **A `ScopeNotGranted` result proves the other two axes passed**, so
+    // no second call is needed to isolate the scope axis: `evaluate`
+    // checks principal, then role, then scope, returning early each time.
+    // Matching the variant IS the isolation. An earlier draft of this
+    // called `evaluate(&policy, kind, None)` again to confirm the request
+    // passes today — provably redundant, and it would have doubled the
+    // cost of the shadow on the hot path.
+    if let Some(granted) = caller.as_ref().map(|c| c.scopes)
+        && let Err(crate::application::services::scope_policy::Denial::ScopeNotGranted {
+            scope,
+            access,
+        }) = evaluate(&policy, kind, Some(granted))
+    {
+        // WARN, not the `info!` denials use: this is a finding an
+        // operator must act on BEFORE enforcement lands, not a refusal
+        // that already happened. Same level as `authz.scope_undeclared`
+        // for the same reason.
+        tracing::warn!(
+            target: "audit",
+            event = "authz.scope_would_deny",
+            reason = "shadow_not_enforced",
+            op = %op,
+            // The area and access as the wire spells them, so this line
+            // can be compared with a credential's `scopes` column by eye.
+            required_area = scope.name(),
+            required_access = access.as_str(),
+            granted = %granted.to_wire(),
+            "👮🏻‍♂️ scope shadow: this credential lacks the area and WOULD be \
+             refused once enforcement lands — widen the credential or fix \
+             the declaration",
+        );
+    }
+
+    // `None` scopes: the shadow above measures the real set; this call
+    // stays grandfathered to FULL so step 9 enforces nothing. Step 10
+    // swaps this `None` for the caller's set and deletes the shadow.
     if let Err(denial) = evaluate(&policy, kind, None) {
         let (event, reason) = denial.audit();
         tracing::info!(
@@ -648,20 +689,6 @@ mod tests {
              how a misordering announces itself rather than hiding"
         );
     }
-
-    /// **`MatchedPath` includes NEST prefixes, and every declaration
-    /// depends on it.** `/api/admin` is declared as a prefix while the
-    /// admin router is nested at `/admin` inside one nested at `/api`, so
-    /// if `MatchedPath` reported only `/users` the lookup would miss and
-    /// every admin route would silently fall back to the default policy.
-    ///
-    /// In shadow that is masked — `require_admin` still refuses — which
-    /// is exactly why it needs a test rather than a matrix run: the gate
-    /// would be doing nothing and everything would still be green.
-    ///
-    /// A plain user against a nested `/api/admin/users` must be REFUSED.
-    /// If the prefix were lost, the policy would be the default
-    /// (`principal = User`) and this would pass with 200.
     #[tokio::test]
     async fn the_matched_path_carries_nest_prefixes() {
         use axum::body::Body;
