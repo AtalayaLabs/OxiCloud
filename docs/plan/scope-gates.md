@@ -749,6 +749,51 @@ filtered by what the caller already holds; credential management and
 account-security routes are in `security`; login, public and ops routes
 are scopeless (§ Deliberately scopeless).
 
+### Access follows the VERB — `scope_by_verb`, with an override where it lies
+
+A declaration names an area and lets the ACCESS follow the method:
+
+```rust
+.policy([Condition::scope_by_verb(Scope::Files)])         // ro on GETs, rw on writes
+.policy([Condition::scope(Scope::Files, Access::ReadWrite)])  // override, where the verb lies
+```
+
+Named for the MECHANISM — "by verb", not "auto" — because the call site
+should say where the access came from. A separate constructor rather than
+a third `Access` variant, and that is a typing decision rather than a
+convenience: `Access` is also what a CREDENTIAL carries, so a `ByVerb`
+variant there would make `ScopeSet::allows(area, ByVerb)` type-check and
+mean nothing. Verb-derivation is a property of the DECLARATION, so it
+lives on `Condition` (`ScopeByVerb(Scope)`) and `Access` stays two-state
+everywhere a request is actually checked.
+
+`scope_by_verb` resolves at COMPILE time, not per request: `Op::Rest` carries the
+method, so one prefix declaration yields `files:ro` for the GETs beneath
+it and `files:rw` for the writes. The compiled `ScopeReq::Area(Scope,
+Access)` stays two-state — nothing is inferred while serving a request,
+which is the property § 2 depends on. Without this, every prefix would
+need splitting per verb and the ten declarations would become thirty.
+
+**But the verb is a heuristic, and here it lies in both directions.** The
+over-restrictive direction is a nuisance; the other is an escalation:
+
+| operation | `scope_by_verb` gives | truth | consequence |
+|---|---|---|---|
+| `GET /api/wopi/editor-url` | `files:ro` | **mints a WOPI token usable for `POST /wopi/files/{id}/contents`** | a READ-ONLY credential obtains write capability. Must declare `files:rw` explicitly |
+| `POST /api/batch/files/get`, `/api/batch/folders/get`, `/api/batch/download`, `/api/dedup/check-batch` | `files:rw` | reads, with the id list in the body | a read-only credential cannot do a batch read. Should declare `ro` explicitly |
+
+So `scope_by_verb` is what a prefix declares, and an explicit
+`scope(area, ReadOnly | ReadWrite)` at the route overrides it. The
+rule for implementors is one line: **if the method does not describe the
+EFFECT, state the access.** A credential-minting GET is the case to watch,
+because the verb reads as harmless precisely when it is not.
+
+The cost of `scope_by_verb` is that the access stops being visible at the
+declaration site — a reader of `scope_by_verb(Files)` on a nest cannot see
+which operations become `rw`. That is why the dump renders the RESOLVED
+access per operation, and why the spec publishes it: the answer is
+inspectable, just not local.
+
 ### Read-only is multiplied, not orthogonal
 
 A global `readonly` flag cannot express asymmetry — "sync my files
@@ -2485,7 +2530,7 @@ way PR 1 was. Two orderings are load-bearing rather than tidy:
 | # | step | state |
 |--:|---|---|
 | 1 | `ScopeReq { Undefined, None, Area(Scope, Access) }`; `Policy::scope: ScopeReq`, `Default = Undefined`. Refusal OFF | **done** — `24d130c73`; inert. The spec renders `Undefined` as `null` so the step-3 query below means something: **250 of 250** unclassified today. The dump renders `?` for it, distinct from `-` for a declared none |
-| 2 | `Condition::scope(area, access)` and `Condition::scopeless()` | not started — inert |
+| 2 | `Condition::scope_by_verb(area)`, `Condition::scope(area, access)` and `Condition::scopeless()` | not started — inert. `scope_by_verb` resolves at compile time from `Op`'s method; § Access is derived from the VERB names the two places it lies |
 | 3 | the ~10 AREA-PREFIX declarations (§ Areas, not protocols), plus `scopeless()` on the login/public/ops routes (§ Deliberately scopeless) | not started — inert; the acceptance is mechanical, see below |
 | 4 | the `Undefined` refusal at GENERATION time (`generate-openapi` exits non-zero), over REST **plus the six DAV operations** (in no spec, so the spec-driven list misses them), plus a runtime deny as defence in depth | not started — gates merges via CI's `openapi-spec-drift`; `just gen-openapi` is the local proof. NOT a boot check: feature-gated routers would make a stock deployment refuse to start |
 | 5 | `auth.app_passwords.scopes` column + backfill `files,calendar,contacts`; WIDEN existing `device_codes` rows with `account` | not started — migration; the widening is not optional (§ Defaults) |
