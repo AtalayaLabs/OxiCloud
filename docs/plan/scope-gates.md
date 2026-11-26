@@ -2024,6 +2024,29 @@ axis: `effective = (requested ?? type_default) ∩ type_maximum` already
 decides, once, what each credential type can reach. A condition would be a
 second implementation of the same decision, and the two would drift.
 
+**Likely future direction: refuse app passwords on `/api` outright.** Ed's
+position, recorded because it is a different argument from the one below
+rather than a contradiction of it. The reasoning here is about
+CAPABILITY — an app password with `files` can read the same bytes through
+`/api/files` or `/webdav`, so refusing one door changes nothing an
+attacker can do. Ed's is about BLAST RADIUS: an app password is a
+long-lived secret that gets pasted into config files, mailed to oneself
+and committed by accident, and the number of doors such a credential may
+knock on should be minimal regardless of what it can do once inside. On
+that reading the REST surface is simply not what the credential is for.
+
+**App passwords exist only because clients cannot do OIDC** — DAVx⁵,
+Thunderbird, rclone, the NC desktop client. They are a compatibility
+anomaly, not a first-class credential, and a feature that exists for
+legacy clients has no business reaching the surface the first-class
+clients use.
+
+What that needs before it can ship is evidence about who would break: the
+test suite's Basic-auth usage is entirely on `/remote.php/dav/*`, and
+`docs/guide/dav-client-setup.md` frames app passwords as DAV-only, so
+nothing KNOWN depends on Basic on `/api`. An audit of real deployments,
+and a deprecation window, is the missing piece — not a design decision.
+
 What scope genuinely cannot express is a PROTOCOL distinction —
 `/api/files` and `/webdav` both need `files`, so no scope admits an app
 password to the sync door while refusing it on the browser API. That is
