@@ -46,7 +46,7 @@ use axum::response::{IntoResponse, Response};
 use std::sync::Arc;
 
 use crate::application::dtos::user_dto::CurrentCaller;
-use crate::application::ports::scope_ports::{Access, Op};
+use crate::application::ports::scope_ports::{Access, Op, ScopeReq};
 use crate::application::services::scope_policy::{Denial, evaluate};
 use crate::application::services::scope_table::PolicyRegistry;
 use crate::common::di::AppState;
@@ -188,6 +188,23 @@ fn leak(s: &str) -> &'static str {
     leaked
 }
 
+/// Has this operation not been reported yet?
+///
+/// A read-mostly set, like `leak`'s interner and for the same reason: an
+/// unclassified operation is hit on every request to it, and the warning
+/// is useful once. `RwLock` so the common path — already reported — is a
+/// shared read.
+fn first_sighting(op: Op) -> bool {
+    use std::collections::HashSet;
+    use std::sync::RwLock;
+    static SEEN: LazyLock<RwLock<HashSet<Op>>> = LazyLock::new(|| RwLock::new(HashSet::new()));
+
+    if SEEN.read().expect("poisoned").contains(&op) {
+        return false;
+    }
+    SEEN.write().expect("poisoned").insert(op)
+}
+
 /// Map a [`Denial`] to its HTTP shape.
 ///
 /// `AppError` lives here rather than in the application layer, which is
@@ -257,6 +274,34 @@ pub async fn policy_gate_layer(
             return deny(Denial::AuthenticationRequired);
         }
     };
+
+    // An operation nobody classified on the scope axis, reaching the gate.
+    //
+    // `undefined_scopes` catches these at generation time — but only for
+    // operations a SPEC lists. The surfaces mounted outside the API tree
+    // are invisible to it: `/ocs/*` and `/api/wopi/editor-url` are in no
+    // spec, so their declarations live in `policy_declarations` and the
+    // check's op list is a HAND-MAINTAINED `non_spec_ops()`. Nothing
+    // proves that list is complete, and both gaps found so far —
+    // the six DAV pairs, then eleven OCS routes — were in exactly that
+    // blind spot.
+    //
+    // So the runtime says it. Once per operation, because a flood would
+    // bury it, and at WARN because an unclassified gated route becomes a
+    // 403 when PR 2 step 10 turns `Undefined` into a denial. Until then
+    // the request proceeds: refusing now would 403 whatever this finds,
+    // which is the opposite of useful while the list is still being
+    // completed.
+    if policy.scope == ScopeReq::Undefined && first_sighting(op) {
+        tracing::warn!(
+            target: "audit",
+            event = "authz.scope_undeclared",
+            reason = "scope_undefined",
+            op = %op,
+            "👮🏻‍♂️ gated operation declares no scope — it will be REFUSED once \
+             the runtime deny lands; add it to the area map",
+        );
+    }
 
     let caller = request.extensions().get::<Arc<CurrentCaller>>().cloned();
     let kind = caller.as_ref().map(|c| c.kind);
