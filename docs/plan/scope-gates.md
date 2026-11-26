@@ -2607,6 +2607,67 @@ credential populations in § Defaults are only as correct as the ceiling
 table — a new credential type added later gets `security` withheld by
 construction, which is the intended failure direction.
 
+### The two surfaces with no caller: WOPI and the message bus
+
+Both are outside the gate, both for the same reason, and neither is fixed
+by a declaration. **Where there is no `CurrentCaller`, the scope must be
+FROZEN INTO THE TOKEN at mint** — which is § Freezing at mint applied
+where it is not optional.
+
+#### `/wopi/*` — the scope rides in the WOPI token
+
+`/wopi/files/{id}`, `/contents` and `/edit/{id}` are called by the Office
+server, authenticated by `?access_token=` validated inside each handler.
+There is no caller for the axes to read, so gating the subtree would 401
+every Collabora request. That is settled (§ Between PR 1 and PR 2) and is
+not revisited here.
+
+What IS missing: `GET /api/wopi/editor-url` requires `files:rw` and
+derives the token's `can_write` from the caller's real Update permission
+(`resolve_mint_target`) — but NOT from the caller's SCOPE. So a
+credential holding `files:ro` can still be issued a write-capable WOPI
+token if its owner has Update rights, and that token then writes through
+`POST /wopi/files/{id}/contents` where no scope check runs.
+
+The fix is one intersection at mint: `can_write &= caller carries
+files:rw`. Then `/wopi/*` needs no gate at all, because the token it
+honours cannot exceed the scope of the credential that asked for it.
+
+**Blocked on step 8** — `CurrentCaller` does not carry a `ScopeSet` yet,
+so there is nothing to intersect with.
+
+#### `/api/rt/ws` — per TOPIC, not per method
+
+The message bus is subscription-based: `rt.subscribe { topic }`, where a
+topic is `folder:{id}`, `collab:{file_id}` or `user:{id}:authz`. The
+session auto-subscribes to its own authz topic.
+
+**`Op::Ws(&str)` is keyed by the METHOD, and that is the wrong shape for
+this axis.** One `rt.subscribe` covers every topic class, so no
+per-method declaration can say "`folder:` topics need `files`". The gate
+cannot answer a question whose subject arrives in the frame body.
+
+So the check belongs INSIDE the subscribe handler, against the scope set
+frozen into the ticket at `/api/rt/ticket` — which is scopeless by design
+(§ Deliberately scopeless), because the ticket is the credential-bearing
+step and the socket is not. What it needs:
+
+- a TOPIC CLASS → area map: `folder:` and `collab:` are `files`,
+  `user:{id}:authz` is `account`, a job topic would be `admin`;
+- the ticket to carry the minting credential's `ScopeSet`, so a
+  `files`-only app password cannot receive calendar events through a
+  socket;
+- a refusal shape that fits the protocol — `rt.error` on the subscribe,
+  not an HTTP status, since there is no response to give one.
+
+Long-lived sessions make this sharper than a request-scoped check: a
+scope frozen at mint governs the whole socket, so a credential narrowed
+AFTER the socket opened keeps its subscriptions until it reconnects. That
+is the same trade § Freezing at mint already accepts, but the window is
+minutes rather than milliseconds.
+
+**Blocked on step 8** for the same reason as WOPI.
+
 ### PR 2 — a new route must not be silently scopeless
 
 The two axes reach safety by opposite routes, and that asymmetry is the
