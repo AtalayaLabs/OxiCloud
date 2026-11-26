@@ -2588,7 +2588,7 @@ way PR 1 was. Two orderings are load-bearing rather than tidy:
 | 4b | the NextCloud surface joins the axis | **done** — `315664d1d`; `/remote.php/{webdav,dav/files,dav/trashbin,dav/uploads}` map onto the SAME `Op::Dav` as native `/webdav`, avatars to `Op::Dav(Account, …)`, and the gate is applied INSIDE `basic_auth_middleware`. `/ocs/*` remains — its POSTs do not follow the verb, so it needs an area per path | — gates merges via CI's `openapi-spec-drift`; `just gen-openapi` is the local proof. NOT a boot check: feature-gated routers would make a stock deployment refuse to start |
 | 5 | `auth.app_passwords.scopes` column + backfill `files,calendar,contacts`; WIDEN existing `device_codes` rows with `account` | not started — migration; the widening is not optional (§ Defaults) |
 | 6 | the wire parser → `ScopeSet`: namespaced, both delimiters, `effective = (requested ?? type_default) ∩ type_maximum`, empty REJECTED, `mail` REJECTED | not started |
-| 7 | mint: the scope set into the JWT claim; absent claim ⇒ every scope `:rw` | not started — must precede 9 |
+| 7 | mint: the scope set into the JWT claim; absent claim ⇒ every scope `:rw`. **Store AND echo the EFFECTIVE set, not the requested one** | not started — must precede 9 |
 | 8 | `CurrentCaller` carries the `ScopeSet` | not started |
 | 8b | the message bus, per TOPIC: a topic-class → area map, the `/api/rt/ticket` mint carrying the credential's `ScopeSet`, `rt.error` as the refusal | not started — DECIDED design, § The two surfaces with no caller |
 | 8c | WOPI: intersect the minted token's `can_write` with the caller's scope, so `/wopi/*` needs no gate | not started — after 8b, per Ed |
