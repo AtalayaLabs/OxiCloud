@@ -1243,8 +1243,29 @@ operation (`/admin/sessions/*` needs it, most routes do not) and where
 
 **The password-change layer is not a Gate-axis condition at all** — it is a SCOPE
 narrowing, so it never needed a condition. Admission narrows a forced-reset
-session to `{security}`; anything outside that scope is refused, and the
-FE redirects to password settings rather than showing an error.
+session; anything outside that scope is refused, and the FE redirects to
+password settings rather than showing an error.
+
+**The narrowing is `{security:rw, account:ro}`, not `{security}`.** Check it
+against the layer's actual allowlist, which is three operations and not
+one area:
+
+| allowlisted today | area | needs |
+|---|---|---|
+| `PUT /api/auth/change-password` | `security` | `security:rw` |
+| `GET /api/auth/me` | `account` | `account:ro` |
+| `POST /api/auth/logout` | — | nothing; § Deliberately scopeless |
+
+`{security}` alone would refuse `GET /api/auth/me`, which is how the SPA
+discovers it is jailed and loads its shell at all — so the narrowing would
+break the very screen it exists to force. And `{security, account}`
+unqualified would WIDEN today's behaviour, because `account:rw` admits
+`PUT /me/profile`, which the layer refuses now.
+
+`{security:rw, account:ro}` reproduces the current allowlist exactly, and
+it is the clearest case in this document for § Read-only is multiplied,
+not orthogonal: a global `readonly` flag could not express "write my
+password but only read my profile".
 
 Hence the order, with no cycle:
 
