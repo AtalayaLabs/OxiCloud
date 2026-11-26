@@ -41,6 +41,7 @@ pub mod share_service;
 pub mod storage_settings_service;
 pub mod storage_usage_service;
 pub mod subject_group_service;
+pub mod sync_collection_engine;
 pub mod trash_service;
 pub mod user_lifecycle_service;
 pub mod wopi_lock_service;

@@ -79,6 +79,7 @@ pub mod share_ring;
 pub mod share_unlock_cookie;
 pub mod smtp_email_sender;
 pub mod swappable_blob_backend;
+pub mod sync_log_retention_service;
 pub mod thumb_attached_import_service;
 pub mod thumb_derived_import_service;
 pub mod thumbnail_service;

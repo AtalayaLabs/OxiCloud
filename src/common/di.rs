@@ -1449,6 +1449,47 @@ impl AppServiceFactory {
         tracing::info!("Tree-ETag flush service initialized");
     }
 
+    /// Registers the RFC 6578 `sync-collection` change-log retention sweep
+    /// with the periodic-job scheduler (requires database). Always on
+    /// (WebDAV isn't an optional feature in this server, so its sync-log
+    /// housekeeping isn't either). Uses its own repository instance bound
+    /// to `maintenance_pool` so the periodic DELETE never competes with
+    /// request-path queries on the primary pool.
+    async fn start_sync_log_retention_job(
+        &self,
+        maintenance_pool: &Arc<PgPool>,
+        core: &CoreServices,
+    ) {
+        let folder_change_log = Arc::new(
+            crate::infrastructure::repositories::pg::FolderSyncChangePgRepository::new(
+                maintenance_pool.clone(),
+            ),
+        );
+        let calendar_change_log = Arc::new(
+            crate::infrastructure::repositories::pg::CalendarSyncChangePgRepository::new(
+                maintenance_pool.clone(),
+            ),
+        );
+        let contact_change_log = Arc::new(
+            crate::infrastructure::repositories::pg::ContactSyncChangePgRepository::new(
+                maintenance_pool.clone(),
+            ),
+        );
+        Arc::new(
+            crate::infrastructure::services::sync_log_retention_service::SyncLogRetentionService::new(
+                folder_change_log,
+                calendar_change_log,
+                contact_change_log,
+                self.config.storage.sync_log_retention_days,
+                self.config.storage.sync_log_retention_sweep_interval_hours,
+                self.config.storage.sync_log_max_rows_per_collection,
+            ),
+        )
+        .register(&core.job_registry)
+        .await;
+        tracing::info!("Sync-log retention service registered");
+    }
+
     /// Start the primary-pool saturation watchdog (Finding #3). Logs a WARN as
     /// the user-facing pool approaches exhaustion — the early signal for raising
     /// `max_connections` or chasing a slow query before tail latency cliffs.
@@ -2247,6 +2288,8 @@ impl AppServiceFactory {
             // once every 24h on the maintenance pool.
             let _ = self
                 .create_session_cleanup_service(&maintenance_pool, &core)
+                .await;
+            self.start_sync_log_retention_job(&maintenance_pool, &core)
                 .await;
 
             self.start_db_pool_monitor(&pool);

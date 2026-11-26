@@ -77,6 +77,12 @@ pub enum ErrorKind {
     /// is only revealed to someone who already proved possession of
     /// the credential. Maps to HTTP 403.
     AccountDeactivated,
+    /// A `sync-token` (RFC 6578) the change log can no longer answer —
+    /// it predates the retention window or is ahead of the log — so the
+    /// client must discard local state and restart with a fresh initial
+    /// sync. Maps to the uniform `DAV:valid-sync-token` 403
+    /// (`AppError::invalid_sync_token`).
+    SyncTokenExpired,
 }
 
 impl ErrorKind {
@@ -108,6 +114,7 @@ impl ErrorKind {
             ErrorKind::Conflict => "Conflict",
             ErrorKind::PreconditionFailed => "PreconditionFailed",
             ErrorKind::AccountDeactivated => "AccountDeactivated",
+            ErrorKind::SyncTokenExpired => "SyncTokenExpired",
         }
     }
 
@@ -135,6 +142,7 @@ impl ErrorKind {
             // Wire value — SPA switches on `error_type`, so this string
             // is the contract that `+page.svelte` branches against.
             ErrorKind::AccountDeactivated => "Account Deactivated",
+            ErrorKind::SyncTokenExpired => "Sync Token Expired",
         }
     }
 }
@@ -307,6 +315,18 @@ impl DomainError {
     pub fn precondition_failed<S: Into<String>>(entity_type: &'static str, message: S) -> Self {
         Self {
             kind: ErrorKind::PreconditionFailed,
+            entity_type,
+            entity_id: None,
+            message: message.into(),
+            source: None,
+        }
+    }
+
+    /// Creates a sync-token-expired error (RFC 6578 §3.6 — client's
+    /// token predates the change-log retention window).
+    pub fn sync_token_expired<S: Into<String>>(entity_type: &'static str, message: S) -> Self {
+        Self {
+            kind: ErrorKind::SyncTokenExpired,
             entity_type,
             entity_id: None,
             message: message.into(),

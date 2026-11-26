@@ -185,6 +185,12 @@ pub const KNOWN: &[(&str, &str)] = &[
     ("storage", "OXICLOUD_STORAGE_RETRY_MAX_BACKOFF_MS"),
     ("storage", "OXICLOUD_STORAGE_RETRY_MAX_RETRIES"),
     ("storage", "OXICLOUD_STORAGE_USAGE_RECONCILE_SECS"),
+    ("storage", "OXICLOUD_SYNC_LOG_MAX_ROWS_PER_COLLECTION"),
+    ("storage", "OXICLOUD_SYNC_LOG_RETENTION_DAYS"),
+    (
+        "storage",
+        "OXICLOUD_SYNC_LOG_RETENTION_SWEEP_INTERVAL_HOURS",
+    ),
     // ── [features] ─────────────────────────────────────────────────────────
     ("features", "OXICLOUD_CONTENT_INDEX_DIR"),
     ("features", "OXICLOUD_CONTENT_INDEX_FLUSH_MS"),
