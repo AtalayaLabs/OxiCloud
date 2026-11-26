@@ -2466,7 +2466,7 @@ way PR 1 was. Two orderings are load-bearing rather than tidy:
 | 1 | `ScopeReq { Undefined, None, Area(Scope, Access) }`; `Policy::scope: ScopeReq`, `Default = Undefined`. Boot check OFF | not started — inert, a type change only |
 | 2 | `Condition::scope(area, access)` and `Condition::scopeless()` | not started — inert |
 | 3 | the ~10 AREA-PREFIX declarations (§ Areas, not protocols), plus `scopeless()` on the login/public/ops routes (§ Deliberately scopeless) | not started — inert; the acceptance is mechanical, see below |
-| 4 | the `Undefined` refusal at GENERATION time (`generate-openapi` exits non-zero), plus a runtime deny as defence in depth | not started — gates merges via CI's `openapi-spec-drift`; `just gen-openapi` is the local proof. NOT a boot check: feature-gated routers would make a stock deployment refuse to start |
+| 4 | the `Undefined` refusal at GENERATION time (`generate-openapi` exits non-zero), over REST **plus the six DAV operations** (in no spec, so the spec-driven list misses them), plus a runtime deny as defence in depth | not started — gates merges via CI's `openapi-spec-drift`; `just gen-openapi` is the local proof. NOT a boot check: feature-gated routers would make a stock deployment refuse to start |
 | 5 | `auth.app_passwords.scopes` column + backfill `files,calendar,contacts`; WIDEN existing `device_codes` rows with `account` | not started — migration; the widening is not optional (§ Defaults) |
 | 6 | the wire parser → `ScopeSet`: namespaced, both delimiters, `effective = (requested ?? type_default) ∩ type_maximum`, empty REJECTED, `mail` REJECTED | not started |
 | 7 | mint: the scope set into the JWT claim; absent claim ⇒ every scope `:rw` | not started — must precede 9 |
@@ -2576,8 +2576,28 @@ This also keeps declarations AT their routes, including feature-gated
 ones, instead of forcing the ten area declarations into the central map
 to dodge a boot check.
 
-The operation list for that check is § 2b's existing cross-check against
-`openapi.json` and `asyncapi.json`.
+**The operation list for that check is NOT just the two specs.** § 2b's
+cross-check reads `openapi.json` and `asyncapi.json`, and ZERO DAV paths
+appear in either — a DAV surface has one `any` handler and so no
+`#[utoipa::path]`. Driving the scope check off the specs alone would
+therefore skip the six `Op::Dav(area, access)` operations, which is the
+worst possible omission: `/webdav`, `/caldav` and `/carddav` are precisely
+what app passwords and device codes are FOR, so an undeclared scope there
+is the exact fail-open this section exists to close, waved through by the
+check meant to catch it.
+
+So the list is three sources:
+
+- the REST operations in `openapi.json`;
+- the `rt.*` methods in `asyncapi.json`;
+- the DAV operations, enumerated literally — they already are, in
+  `policy_declarations.rs`, which maps each area across both accesses.
+
+A fourth source is NOT needed and that is worth stating: `/wopi/*` and
+`/api/rt/ws` are absent from every spec by design (§ Between PR 1 and
+PR 2), so the engine is silent about them and the check has nothing to
+assert. If either is ever documented, it joins the list by virtue of
+being in the spec.
 
 **Declare by AREA PREFIX so the workload stays small.** § Areas, not
 protocols already has the rule — "a new route under an existing area
