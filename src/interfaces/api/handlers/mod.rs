@@ -34,6 +34,7 @@ pub mod search_handler;
 pub mod server_status_handler;
 pub mod share_handler;
 pub mod subject_group_handler;
+pub(crate) mod sync_collection;
 pub mod trash_handler;
 pub mod users_handler;
 pub mod webdav_handler;

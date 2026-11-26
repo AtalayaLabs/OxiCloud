@@ -715,6 +715,8 @@ HURL_FILES=( \
   "$API_DIR/webdav_nested_move_cascade.hurl" \
   "$API_DIR/webdav_move_copy_overwrite_regression.hurl" \
   "$API_DIR/nfc_normalization.hurl" \
+  "$API_DIR/webdav_sync_collection.hurl" \
+  "$API_DIR/nc_webdav_sync_collection.hurl" \
   "$API_DIR/wopi_authz.hurl" \
   "$API_DIR/wopi_shared_drive.hurl" \
   `# Engages the operator write-lock, which refuses user writes and makes` \

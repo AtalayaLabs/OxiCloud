@@ -79,6 +79,29 @@ def caldav_app_password() -> str:
 
 
 @pytest.fixture(scope="session")
+def admin_jwt() -> str:
+    """Bearer JWT for the admin account, minted by `run-pycaldav.sh`.
+
+    Needed for admin-only endpoints (`/api/admin/...`) — app passwords /
+    DAV Basic Auth don't satisfy the `require_admin` middleware, only a
+    JWT with the admin role does."""
+    return _env("OXICLOUD_ADMIN_JWT")
+
+
+@pytest.fixture(scope="session")
+def base_url(caldav_url: str) -> str:
+    """Server origin, derived from `caldav_url` — same derivation style
+    as `carddav_url` below. Needed for endpoints outside the
+    `/caldav/`-rooted `dav_client` (e.g. `/api/admin/...`)."""
+    if "/caldav/" not in caldav_url:
+        raise RuntimeError(
+            f"OXICLOUD_CALDAV_URL={caldav_url!r} does not contain "
+            "'/caldav/'; can't derive the base origin."
+        )
+    return caldav_url.split("/caldav/", 1)[0]
+
+
+@pytest.fixture(scope="session")
 def dav_client(
     caldav_url: str, caldav_username: str, caldav_app_password: str
 ) -> caldav.DAVClient:
@@ -222,5 +245,49 @@ def fresh_addressbook(dav_client: caldav.DAVClient, carddav_url: str):
     yield ab_url
     try:
         dav_client.request(ab_url, method="DELETE")
+    except Exception:
+        pass
+
+
+# ─────────────────────────────────────────────────────────────
+# WebDAV files fixtures — same rationale as the CardDAV block
+# above (no first-class client library for this surface), raw
+# HTTP through the same authenticated DAVClient session.
+# ─────────────────────────────────────────────────────────────
+
+
+@pytest.fixture(scope="session")
+def webdav_url(caldav_url: str) -> str:
+    """WebDAV files base URL derived from the CalDAV URL — same
+    derivation as `carddav_url`."""
+    if "/caldav/" not in caldav_url:
+        raise RuntimeError(
+            f"OXICLOUD_CALDAV_URL={caldav_url!r} does not contain "
+            "'/caldav/'; can't derive the WebDAV counterpart."
+        )
+    return caldav_url.replace("/caldav/", "/webdav/", 1)
+
+
+@pytest.fixture
+def fresh_webdav_folder(dav_client: caldav.DAVClient, webdav_url: str):
+    """Create a fresh WebDAV folder and return its URL as a string.
+
+    Unlike `fresh_calendar`/`fresh_addressbook`, WebDAV's MKCOL uses the
+    client-given slug directly as the folder's path/name — no
+    server-UUID rebind needed (confirmed against
+    `webdav_sync_collection.hurl`, which references its MKCOL'd folder
+    by the exact same slug it created, with no PROPFIND-based rediscovery
+    step). Yields the URL (string, trailing `/`); teardown DELETEs it on
+    best-effort."""
+    name = f"pywebdav-{uuid.uuid4().hex[:12]}"
+    url = webdav_url.rstrip("/") + f"/{name}/"
+
+    r = dav_client.request(url, method="MKCOL", body="")
+    if r.status not in (200, 201):
+        raise RuntimeError(f"MKCOL {url} → HTTP {r.status}\n{r.raw!r}")
+
+    yield url
+    try:
+        dav_client.request(url, method="DELETE")
     except Exception:
         pass

@@ -39,6 +39,7 @@ use crate::domain::services::authorization::{Permission, Resource, Subject};
 use crate::domain::services::path_service::normalize_storage_name;
 use crate::infrastructure::services::path_resolver_service::ResolvedResource;
 use crate::infrastructure::services::webdav_dead_property_store::{DeadPropertyStore, ResourceRef};
+use crate::interfaces::api::handlers::sync_collection;
 use crate::interfaces::errors::AppError;
 use crate::interfaces::middleware::auth::AuthUser;
 use crate::interfaces::range_requests::{not_modified_response, range_response};
@@ -71,8 +72,9 @@ const PATH_SEGMENT_ENCODE_SET: &AsciiSet = &NON_ALPHANUMERIC
     .remove(b':')
     .remove(b'@');
 
-/// Percent-encode a single URI path segment (folder/file name).
-/// Percent-encode a full slash-separated path, encoding each segment individually.
+/// Percent-encode a full slash-separated path, encoding each segment
+/// individually — also safe for a single segment (folder/file name),
+/// which just has no `/` to split on.
 pub(crate) fn encode_uri_path(path: &str) -> String {
     use std::fmt::Write as _;
     // `utf8_percent_encode` returns a `Display` adapter, so write each encoded
@@ -434,6 +436,7 @@ async fn handle_webdav_dispatch(
         "COPY" => handle_copy(state, req, path).await,
         "PROPFIND" => handle_propfind(state, req, path).await,
         "PROPPATCH" => handle_proppatch(state, req, path).await,
+        "REPORT" => handle_report(state, req, path).await,
         "LOCK" => handle_lock(state, req, path).await,
         "UNLOCK" => handle_unlock(state, req, path).await,
         _ => Err(AppError::method_not_allowed(format!(
@@ -459,7 +462,7 @@ async fn handle_options(_path: String) -> Result<Response<Body>, AppError> {
         .header(HEADER_DAV, "1, 2") // Class 1 and 2 WebDAV support
         .header(
             header::ALLOW,
-            "OPTIONS, GET, HEAD, PUT, PATCH, DELETE, PROPFIND, PROPPATCH, MKCOL, COPY, MOVE, LOCK, UNLOCK",
+            "OPTIONS, GET, HEAD, PUT, PATCH, DELETE, PROPFIND, PROPPATCH, REPORT, MKCOL, COPY, MOVE, LOCK, UNLOCK",
         )
         .body(Body::empty())
         .unwrap())
@@ -853,6 +856,175 @@ async fn build_streaming_propfind_response(
         .header(header::CONTENT_TYPE, "application/xml; charset=utf-8")
         .body(Body::from_stream(stream))
         .unwrap())
+}
+
+/**
+ * Handles REPORT requests (currently: RFC 6578 sync-collection).
+ *
+ * Real incremental sync for ordinary folder collections, backed by
+ * `storage.folder_sync_changes` (`WebdavSyncCollectionService`): an
+ * absent/empty client `sync-token` renders a full listing (paired with a
+ * freshly minted token); a present token renders only what changed,
+ * including RFC 6578 §3.7 404 sub-responses for removed members.
+ * The Depth header is ignored and only sync-level 1 is served (see
+ * `sync_collection::check_sync_level`).
+ *
+ * The synthetic multi-drive root (`path.is_empty()`, no real
+ * `storage.folders` row to log against — see
+ * `migrations/20261126000000_folder_sync_changes.sql`'s header) is out of
+ * scope for this phase and keeps the old full-listing-every-call
+ * behavior with a fake timestamp token.
+ *
+ * @param state The application state containing service dependencies
+ * @param req   The HTTP request containing the REPORT XML body
+ * @param path  The requested collection path
+ * @return HTTP response: 207 multistatus + trailing `<D:sync-token>`,
+ *         or 403 `DAV:valid-sync-token` for any token the server will
+ *         not answer (`AppError::invalid_sync_token`)
+ */
+async fn handle_report(
+    state: Arc<AppState>,
+    req: Request<Body>,
+    path: String,
+) -> Result<Response<Body>, AppError> {
+    let user = extract_user(&req)?;
+
+    let client_path = extract_webdav_path(req.uri())?;
+    let base_href = if client_path.is_empty() || client_path == "/" {
+        "/webdav/".to_string()
+    } else {
+        format!("/webdav/{}/", encode_uri_path(&client_path))
+    };
+
+    let body_bytes = body::to_bytes(req.into_body(), MAX_XML_BODY)
+        .await
+        .map_err(|e| AppError::bad_request(format!("Failed to read request body: {}", e)))?;
+
+    let sync_req = WebDavAdapter::parse_sync_collection(body_bytes.reader())
+        .map_err(|e| AppError::bad_request(format!("Failed to parse REPORT: {}", e)))?;
+    sync_collection::check_sync_level(sync_req.sync_level.as_deref())?;
+
+    let scope = resolve_webdav_scope_or_405(&state, user.id, &path).await?;
+    let drive_id = scope.drive_id;
+    let path = scope.db_path;
+
+    // Resolve the target — must be a collection (folder), drive root
+    // included. No authz here: the service checks Read on the folder.
+    let folder_id: Option<String> = if path.is_empty() {
+        None
+    } else if let Some(resolver) = &state.path_resolver {
+        match resolver.resolve_path_in_drive(&path, drive_id).await {
+            Ok(ResolvedResource::Folder(f)) => Some(f.id),
+            Ok(ResolvedResource::File(_)) => {
+                return Err(AppError::conflict(
+                    "sync-collection REPORT target must be a collection",
+                ));
+            }
+            Err(_) => {
+                return Err(AppError::not_found(format!("Resource not found: {}", path)));
+            }
+        }
+    } else {
+        let f = state
+            .applications
+            .folder_service
+            .get_folder_by_path(&path, drive_id)
+            .await
+            .map_err(|_| AppError::not_found(format!("Resource not found: {}", path)))?;
+        Some(f.id)
+    };
+
+    let (subfolders, files, deleted, sync_token) = match folder_id {
+        Some(folder_id) => {
+            let folder_uuid = Uuid::parse_str(&folder_id)
+                .map_err(|_| AppError::not_found(format!("Resource not found: {}", path)))?;
+            let since = sync_req
+                .sync_token
+                .as_deref()
+                .map(|raw| sync_collection::parse_sync_token(raw, folder_uuid, user.id))
+                .transpose()?;
+            let view = state
+                .applications
+                .webdav_sync_collection_service
+                .sync_folder_with_perms(folder_uuid, since, user.id)
+                .await?;
+            let deleted = view
+                .deleted
+                .iter()
+                .map(|d| member_href(&base_href, &d.name, d.is_collection))
+                .collect();
+            (view.subfolders, view.files, deleted, view.token.to_string())
+        }
+        None => synthetic_root_sync(&state, user.id).await?,
+    };
+
+    let subfolders: Vec<(FolderDto, String)> = subfolders
+        .into_iter()
+        .map(|f| {
+            let href = member_href(&base_href, &f.name, true);
+            (f, href)
+        })
+        .collect();
+    let files: Vec<(FileDto, String)> = files
+        .into_iter()
+        .map(|f| {
+            let href = member_href(&base_href, &f.name, false);
+            (f, href)
+        })
+        .collect();
+
+    let mut response_body = Vec::new();
+    WebDavAdapter::generate_sync_collection_response(
+        &mut response_body,
+        &subfolders,
+        &files,
+        &deleted,
+        &sync_req.request,
+        &sync_token,
+    )
+    .map_err(|e| AppError::internal_error(format!("Failed to generate XML: {}", e)))?;
+
+    Ok(Response::builder()
+        .status(StatusCode::MULTI_STATUS)
+        .header(header::CONTENT_TYPE, "application/xml; charset=utf-8")
+        .body(Body::from(response_body))
+        .unwrap())
+}
+
+/// `{base_href}{encoded name}`, with a trailing slash for a collection.
+fn member_href(base_href: &str, name: &str, is_collection: bool) -> String {
+    let mut href = format!(
+        "{base_href}{}",
+        utf8_percent_encode(name, PATH_SEGMENT_ENCODE_SET)
+    );
+    if is_collection {
+        href.push('/');
+    }
+    href
+}
+
+/// The synthetic multi-drive root has no `storage.folders` row to log
+/// changes against, so it keeps the full-listing-every-call behaviour with
+/// a throwaway timestamp token (see `handle_report`'s doc comment).
+async fn synthetic_root_sync(
+    state: &AppState,
+    caller_id: Uuid,
+) -> Result<(Vec<FolderDto>, Vec<FileDto>, Vec<String>, String), AppError> {
+    let subfolders = state
+        .applications
+        .folder_service
+        .list_folders_with_perms(None, caller_id)
+        .await?;
+    let files = state
+        .applications
+        .file_retrieval_service
+        .list_files_with_perms(None, caller_id)
+        .await?;
+    let token = format!(
+        "http://oxicloud.local/ns/sync/{}",
+        Utc::now().timestamp_millis()
+    );
+    Ok((subfolders, files, Vec::new(), token))
 }
 
 /**

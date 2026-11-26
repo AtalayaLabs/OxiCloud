@@ -6,6 +6,7 @@ pub mod collab_evict_lifecycle_hook;
 pub mod param_encoding;
 pub mod plugin_lifecycle_hook;
 pub mod plugin_user_lifecycle_hook;
+pub mod sync_collection_xml;
 pub mod webdav_adapter;
 
 #[cfg(test)]
