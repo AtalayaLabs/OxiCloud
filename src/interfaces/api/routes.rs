@@ -1,4 +1,4 @@
-use crate::application::ports::scope_ports::{Condition, MinRole};
+use crate::application::ports::scope_ports::{Access, Condition, MinRole, Scope};
 use crate::application::services::batch_operations::BatchOperationService;
 use crate::application::services::scope_table::PolicyRegistry;
 use crate::common::di::AppState;
@@ -9,9 +9,40 @@ use crate::interfaces::api::policy_router::{GatedRouter, Policied, delete, get, 
 /// visitor may reach.
 const VISITOR: [Condition; 1] = [Condition::visitor_allowed()];
 
-/// No credential at all. The spec turns this into `security: []`, which is
-/// the only honest way to document an endpoint that needs none.
-const PUBLIC: [Condition; 1] = [Condition::public()];
+// ── Scope-axis declarations, one per AREA ────────────────────────────────
+//
+// Declared on the NEST, so one line covers a subtree and any route added
+// to it later inherits rather than defaulting to `Undefined`. That
+// inheritance is also why the nest is the right site rather than the
+// route: `/api/version` and `/api/openapi.json` are not in the OpenAPI
+// spec, so the generation check cannot see them — but the runtime gate
+// still compiles a policy for them, and a prefix declaration is what
+// stops that being unsatisfiable.
+//
+// `scope_by_verb` throughout: the access follows the method, so a GET
+// under `/api/files` needs `files:ro` while a DELETE needs `files:rw`.
+// The three places the verb lies declare their access explicitly — see
+// the overrides further down, and § Access follows the VERB in the plan.
+
+/// Anything that reads or writes stored bytes. Photos and playlists are
+/// here too: they DISPLAY files rather than being areas of their own.
+const FILES: [Condition; 1] = [Condition::scope_by_verb(Scope::Files)];
+const CALENDAR: [Condition; 1] = [Condition::scope_by_verb(Scope::Calendar)];
+const CONTACTS: [Condition; 1] = [Condition::scope_by_verb(Scope::Contacts)];
+/// The biometric face index. Its own area because pixel analysis produces
+/// data the file bytes do not contain.
+const FACES: [Condition; 1] = [Condition::scope_by_verb(Scope::Faces)];
+/// Grants to OTHER people — shares, drive members, playlist sharing, and
+/// the recipient lookup that makes a share picker work.
+const SHARING: [Condition; 1] = [Condition::scope_by_verb(Scope::Sharing)];
+/// The caller's own profile and preferences.
+const ACCOUNT: [Condition; 1] = [Condition::scope_by_verb(Scope::Account)];
+/// No scope required, DECLARED — distinct from declaring nothing, which
+/// leaves `ScopeReq::Undefined` and fails spec generation.
+const SCOPELESS: [Condition; 1] = [Condition::scopeless()];
+/// Public AND scopeless: the login and pre-auth flows, where no
+/// credential exists yet to carry a scope.
+const PUBLIC_SCOPELESS: [Condition; 2] = [Condition::public(), Condition::scopeless()];
 use axum::{
     Router,
     body::Body,
@@ -155,13 +186,13 @@ pub fn create_public_api_routes(app_state: &Arc<AppState>) -> GatedRouter<Arc<Ap
         let public_share_router = GatedRouter::new()
             .route(
                 "/{token}",
-                get(share_handler::access_shared_item).policy(PUBLIC),
+                get(share_handler::access_shared_item).policy(PUBLIC_SCOPELESS),
             )
             .route(
                 "/{token}/verify",
                 // A rate limit is not a policy: the two coexist.
                 post(share_handler::verify_shared_item_password)
-                    .policy(PUBLIC)
+                    .policy(PUBLIC_SCOPELESS)
                     .layer(axum::middleware::from_fn_with_state(
                         verify_limiter,
                         rate_limit_share_verify,
@@ -181,7 +212,7 @@ pub fn create_public_api_routes(app_state: &Arc<AppState>) -> GatedRouter<Arc<Ap
         // contents/{folder_id}, file/{file_id}, zip, zip/{folder_id}) were a
         // parallel implementation of that surface and are gone; see the
         // Phase 4 commit for what they were and why they could not stay.
-        router = router.nest("/s", public_share_router);
+        router = router.nest("/s", public_share_router.policy(SCOPELESS));
     }
 
     // i18n routes — no auth required (localization should be available before login)
@@ -197,7 +228,7 @@ pub fn create_public_api_routes(app_state: &Arc<AppState>) -> GatedRouter<Arc<Ap
         // have that property — see AGENTS.md § Declare the policy where
         // the route is.
         let i18n_router = GatedRouter::new()
-            .policy(PUBLIC)
+            .policy(PUBLIC_SCOPELESS)
             .route("/locales", get(get_locales))
             .route("/translate", get(translate))
             .route("/locales/{locale_code}", get(get_translations_by_locale))
@@ -207,8 +238,11 @@ pub fn create_public_api_routes(app_state: &Arc<AppState>) -> GatedRouter<Arc<Ap
     }
 
     // Version endpoint — public, no auth required
-    router = router.route("/version", get(get_version).policy(PUBLIC));
-    router = router.route("/openapi.json", get(get_openapi_spec).policy(PUBLIC));
+    router = router.route("/version", get(get_version).policy(PUBLIC_SCOPELESS));
+    router = router.route(
+        "/openapi.json",
+        get(get_openapi_spec).policy(PUBLIC_SCOPELESS),
+    );
 
     // Server-configuration discovery endpoint — public, unauthenticated.
     // Returns feature flags, version, and a snapshot of the server-status
@@ -217,7 +251,7 @@ pub fn create_public_api_routes(app_state: &Arc<AppState>) -> GatedRouter<Arc<Ap
     router = router.route(
         "/config",
         get(crate::interfaces::api::handlers::config_handler::get_config)
-            .policy(PUBLIC)
+            .policy(PUBLIC_SCOPELESS)
             .with_state(app_state.clone()),
     );
 
@@ -401,17 +435,34 @@ pub fn create_api_routes(app_state: &Arc<AppState>) -> GatedRouter<Arc<AppState>
         .route("/files/move", post(batch_handler::move_files_batch))
         .route("/files/copy", post(batch_handler::copy_files_batch))
         .route("/files/delete", post(batch_handler::delete_files_batch))
-        .route("/files/get", post(batch_handler::get_files_batch))
+        .route(
+            "/files/get",
+            // A READ posted for its body: the id list does not fit a query
+            // string. `scope_by_verb` would demand `files:rw` and lock a
+            // read-only credential out of a read.
+            post(batch_handler::get_files_batch)
+                .policy([Condition::scope(Scope::Files, Access::ReadOnly)]),
+        )
         // Folder operations
         .route("/folders/delete", post(batch_handler::delete_folders_batch))
         .route("/folders/create", post(batch_handler::create_folders_batch))
-        .route("/folders/get", post(batch_handler::get_folders_batch))
+        .route(
+            "/folders/get",
+            post(batch_handler::get_folders_batch)
+                .policy([Condition::scope(Scope::Files, Access::ReadOnly)]),
+        )
         .route("/folders/copy", post(batch_handler::copy_folders_batch))
         .route("/folders/move", post(batch_handler::move_folders_batch))
         // Trash operations (soft delete)
         .route("/trash", post(batch_handler::trash_batch))
         // Download as ZIP
-        .route("/download", post(batch_handler::download_batch_post))
+        .route(
+            "/download",
+            // A READ posted for its body — the id list does not fit a
+            // query string. The GET twin below needs no override.
+            post(batch_handler::download_batch_post)
+                .policy([Condition::scope(Scope::Files, Access::ReadOnly)]),
+        )
         // work arround for drag & drop (does not support POST requests)
         .route("/download", get(batch_handler::download_batch_querystring))
         .with_state(batch_handler_state);
@@ -561,7 +612,12 @@ pub fn create_api_routes(app_state: &Arc<AppState>) -> GatedRouter<Arc<AppState>
     use super::handlers::dedup_handler::{check_hash, check_hashes_batch, get_blob};
     let dedup_router = GatedRouter::new()
         .route("/check/{hash}", get(check_hash))
-        .route("/check-batch", post(check_hashes_batch))
+        .route(
+            "/check-batch",
+            // Asks which hashes the server already has — a read, posted
+            // because the hash list is a body.
+            post(check_hashes_batch).policy([Condition::scope(Scope::Files, Access::ReadOnly)]),
+        )
         .route("/blob/{hash}", get(get_blob))
         // NOTE: `remove_reference` is intentionally NOT exposed as a
         // public endpoint — ref_count management is an internal concern
@@ -577,17 +633,17 @@ pub fn create_api_routes(app_state: &Arc<AppState>) -> GatedRouter<Arc<AppState>
         .with_state(app_state.clone());
 
     let mut router = GatedRouter::<Arc<AppState>>::new()
-        .nest("/folders", folders_router)
-        .nest("/files", files_router)
-        .nest("/uploads", chunked_upload_router)
-        .nest("/dedup", dedup_router)
-        .nest("/batch", batch_router)
-        .nest("/search", search_router)
-        .nest("/shares", share_router)
-        .nest("/grants", grants_router)
-        .nest("/favorites", favorites_router)
-        .nest("/recent", recent_router)
-        .nest("/notifications", notifications_router);
+        .nest("/folders", folders_router.policy(FILES))
+        .nest("/files", files_router.policy(FILES))
+        .nest("/uploads", chunked_upload_router.policy(FILES))
+        .nest("/dedup", dedup_router.policy(FILES))
+        .nest("/batch", batch_router.policy(FILES))
+        .nest("/search", search_router.policy(SCOPELESS))
+        .nest("/shares", share_router.policy(SHARING))
+        .nest("/grants", grants_router.policy(SHARING))
+        .nest("/favorites", favorites_router.policy(FILES))
+        .nest("/recent", recent_router.policy(FILES))
+        .nest("/notifications", notifications_router.policy(ACCOUNT));
 
     // Photos timeline endpoint — lists all image/video files sorted by capture date.
     // Top-level gate on `features.enable_photos`: when the operator sets
@@ -606,7 +662,7 @@ pub fn create_api_routes(app_state: &Arc<AppState>) -> GatedRouter<Arc<AppState>
         }
         let photos_router = photos_router.with_state(app_state.clone());
 
-        router = router.nest("/photos", photos_router);
+        router = router.nest("/photos", photos_router.policy(FILES));
     }
 
     // Drives — every drive the caller can read. D0 ships the read-only
@@ -623,8 +679,19 @@ pub fn create_api_routes(app_state: &Arc<AppState>) -> GatedRouter<Arc<AppState>
                 patch(drive_handler::update_drive_policies),
             )
             .route("/{id}/quota", patch(drive_handler::update_drive_quota))
-            .route("/{id}/members", get(drive_handler::list_drive_members))
-            .route("/{id}/members", post(drive_handler::add_drive_member))
+            .route(
+                "/{id}/members",
+                // Drive membership is a GRANT to another user, so `sharing`
+                // rather than the `files` of its parent prefix — the split is
+                // by OPERATION, not by collection.
+                get(drive_handler::list_drive_members)
+                    .policy([Condition::scope_by_verb(Scope::Sharing)]),
+            )
+            .route(
+                "/{id}/members",
+                post(drive_handler::add_drive_member)
+                    .policy([Condition::scope_by_verb(Scope::Sharing)]),
+            )
             .route(
                 "/{id}/members/{kind}/{sid}",
                 patch(drive_handler::update_drive_member),
@@ -635,7 +702,7 @@ pub fn create_api_routes(app_state: &Arc<AppState>) -> GatedRouter<Arc<AppState>
             )
             .with_state(app_state.clone());
 
-        router = router.nest("/drives", drives_router);
+        router = router.nest("/drives", drives_router.policy(FILES));
     }
 
     // People (faces) routes — mounted only when OXICLOUD_ENABLE_FACES is on.
@@ -652,7 +719,7 @@ pub fn create_api_routes(app_state: &Arc<AppState>) -> GatedRouter<Arc<AppState>
             .route("/{id}/photos", get(people_handler::person_photos))
             .with_state(app_state.clone());
 
-        router = router.nest("/people", people_router);
+        router = router.nest("/people", people_router.policy(FACES));
     }
 
     // Re-enable trash routes to make the trash view work
@@ -677,7 +744,7 @@ pub fn create_api_routes(app_state: &Arc<AppState>) -> GatedRouter<Arc<AppState>
             .route("/{id}", delete(trash_handler::delete_permanently))
             .with_state(app_state.clone());
 
-        router = router.nest("/trash", trash_router);
+        router = router.nest("/trash", trash_router.policy(FILES));
     } else {
         tracing::warn!("Trash service not available - trash view will not work");
     }
@@ -727,14 +794,23 @@ pub fn create_api_routes(app_state: &Arc<AppState>) -> GatedRouter<Arc<AppState>
                 axum::routing::delete(music_handler::remove_track),
             )
             .route("/{playlist_id}/reorder", put(music_handler::reorder_tracks))
-            .route("/{playlist_id}/share", post(music_handler::share_playlist))
+            .route(
+                "/{playlist_id}/share",
+                // Sharing a playlist creates a GRANT to another user, so
+                // `sharing` rather than the `files` of its prefix. Ed plans
+                // album sharing too; it follows the same rule.
+                post(music_handler::share_playlist)
+                    .policy([Condition::scope_by_verb(Scope::Sharing)]),
+            )
             .route(
                 "/{playlist_id}/share/{user_id}",
-                axum::routing::delete(music_handler::remove_share),
+                delete(music_handler::remove_share)
+                    .policy([Condition::scope_by_verb(Scope::Sharing)]),
             )
             .route(
                 "/{playlist_id}/shares",
-                get(music_handler::get_playlist_shares),
+                get(music_handler::get_playlist_shares)
+                    .policy([Condition::scope_by_verb(Scope::Sharing)]),
             )
             .route(
                 "/audio-metadata/{file_id}",
@@ -742,7 +818,7 @@ pub fn create_api_routes(app_state: &Arc<AppState>) -> GatedRouter<Arc<AppState>
             )
             .with_state(music_svc.clone());
 
-        router = router.nest("/playlists", music_router);
+        router = router.nest("/playlists", music_router.policy(FILES));
         tracing::info!("Music routes initialized");
     }
 
@@ -844,7 +920,7 @@ pub fn create_api_routes(app_state: &Arc<AppState>) -> GatedRouter<Arc<AppState>
             )
             .with_state(contacts_state);
 
-        router = router.nest("/address-books", contacts_router);
+        router = router.nest("/address-books", contacts_router.policy(CONTACTS));
         tracing::info!("Contacts REST API routes initialized");
     }
 
@@ -883,7 +959,7 @@ pub fn create_api_routes(app_state: &Arc<AppState>) -> GatedRouter<Arc<AppState>
             )
             .with_state(CalendarApiState { calendar_service });
 
-        router = router.nest("/calendars", calendar_router);
+        router = router.nest("/calendars", calendar_router.policy(CALENDAR));
         tracing::info!("Calendar REST API routes initialized");
     }
 
@@ -909,7 +985,17 @@ pub fn create_api_routes(app_state: &Arc<AppState>) -> GatedRouter<Arc<AppState>
     let admin_router = admin_handler::admin_routes(app_state).with_state(app_state.clone());
     router = router.nest(
         "/admin",
-        admin_router.policy([Condition::role(MinRole::Admin)]),
+        // Both axes in one slice: a repeated AXIS is the boot error, two
+        // different axes are the normal case.
+        //
+        // The scope matters independently of the role. `MinRole::Admin`
+        // reads the USER row, so an admin's app password carries the admin
+        // role — without `Scope::Admin`, a credential created for DAVx⁵
+        // could administer the instance, and no ceiling would stop it.
+        admin_router.policy([
+            Condition::role(MinRole::Admin),
+            Condition::scope_by_verb(Scope::Admin),
+        ]),
     );
 
     // ReBAC subject-group management. All mutating routes are admin-gated;
@@ -918,14 +1004,27 @@ pub fn create_api_routes(app_state: &Arc<AppState>) -> GatedRouter<Arc<AppState>
     let group_router =
         crate::interfaces::api::handlers::subject_group_handler::subject_group_routes()
             .with_state(app_state.clone());
-    router = router.nest("/groups", group_router);
+    router = router.nest(
+        "/groups",
+        // NO prefix declaration, deliberately. This subtree is MIXED:
+        // the group CRUD is the `admin` control surface, but
+        // `/api/groups/search` is recipient lookup for the share picker,
+        // which an ordinary user does. Because a leaf APPENDS and can
+        // never shed what a prefix imposed, declaring `admin` here would
+        // make the share picker require admin scope — it did, and the
+        // spec showed `search` as `["admin:ro","sharing:ro"]`.
+        //
+        // A mixed subtree declares per route. See
+        // `docs/architecture/authorization-axes.md` § Scope APPENDS.
+        group_router,
+    );
 
     // Per-user profile lookup `/api/users/{id}` — authenticated only,
     // throttled by a per-caller limiter inside the handler. External
     // callers are 403'd in the service layer.
     let users_router = crate::interfaces::api::handlers::users_handler::user_routes()
         .with_state(app_state.clone());
-    router = router.nest("/users", users_router);
+    router = router.nest("/users", users_router.policy(SHARING));
 
     // Message bus — ticket issuance (`POST /api/rt/ticket`). Stays in
     // the protected router (auth + DPoP), so the caller proves session
@@ -961,7 +1060,12 @@ pub fn create_api_routes(app_state: &Arc<AppState>) -> GatedRouter<Arc<AppState>
     // `handlers/server_status_handler.rs`.
     router = router.route(
         "/status",
+        // Scopeless: an operational probe reports on the SERVER, not on
+        // any data area of the caller's, so there is nothing for a scope
+        // to withhold. Authenticated, though — § Deliberately scopeless
+        // distinguishes "needs no area" from "needs no credential".
         get(crate::interfaces::api::handlers::server_status_handler::get_server_status)
+            .policy(SCOPELESS)
             .with_state(app_state.clone()),
     );
 

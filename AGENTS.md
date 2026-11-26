@@ -352,6 +352,26 @@ same path, which axum merges.
 a write endpoint added later inherits it silently. Use it where that is
 true by construction (a router of public GETs); prefer per-verb elsewhere.
 
+**On the SCOPE axis a leaf APPENDS, it cannot change.** A route's
+declaration adds to what its prefix declared, so
+`GET /api/drives/{id}/members` under a `files` prefix with a `sharing`
+route declaration requires BOTH. Three consequences:
+
+- the same area twice tightens the ACCESS by `max`;
+- a MIXED subtree must declare per route, never at its prefix — a leaf
+  cannot shed what the prefix imposed. `/api/groups` is the worked case:
+  declaring `admin` on the nest made the share picker's `/search` require
+  admin scope;
+- **where you mount a route decides what it requires**, so check the
+  prefix's area fits before mounting there. Adding a route under an
+  existing prefix inherits silently, which is what stops it being
+  `Undefined` — and also how an operation ends up requiring an area it
+  has nothing to do with.
+
+Visitors carry exactly `files:ro` (`ScopeSet::ring()`), so a
+visitor-admitting operation requiring more is a generation failure. Full
+rule: `docs/architecture/authorization-axes.md` § Scope APPENDS.
+
 `policy_declarations.rs` holds only what cannot be written at a route: the
 DAV operations (one `any` handler each, so no route per operation) and
 per-METHOD gates, since a `MethodRouter` does not expose its methods.

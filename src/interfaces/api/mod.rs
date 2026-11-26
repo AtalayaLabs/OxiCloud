@@ -906,6 +906,48 @@ fn area_name(scope: crate::application::ports::scope_ports::Scope) -> &'static s
 ///
 /// A finding is therefore a stale annotation or a missing declaration.
 /// Reported rather than fatal while the two are being reconciled.
+/// Every operation whose declarations FAIL to compile, with the reason.
+///
+/// PR 2 step 4. `mark_policies` skips an operation it cannot compile —
+/// correctly, since a spec is no place to report a boot error — but that
+/// made a broken declaration indistinguishable from an undeclared one:
+/// both left the operation with no `x-oxicloud-policy` object. 34
+/// operations were failing silently when this was written, which is how
+/// it was found.
+///
+/// Reported at GENERATION time rather than boot, because the operation
+/// list comes from the spec while a feature-gated router only exists when
+/// its feature is on — see `ScopeReq` on why boot is the wrong phase.
+#[must_use]
+pub fn compile_failures(
+    openapi: &utoipa::openapi::OpenApi,
+    registry: &crate::application::services::scope_table::PolicyRegistry,
+) -> Vec<(String, String, String)> {
+    use crate::application::ports::scope_ports::Op;
+    let mut out = Vec::new();
+    for (path, item) in openapi.paths.paths.iter() {
+        let path_static: &'static str = Box::leak(path.clone().into_boxed_str());
+        for (method, present) in [
+            ("GET", item.get.is_some()),
+            ("POST", item.post.is_some()),
+            ("PUT", item.put.is_some()),
+            ("DELETE", item.delete.is_some()),
+            ("PATCH", item.patch.is_some()),
+            ("HEAD", item.head.is_some()),
+            ("OPTIONS", item.options.is_some()),
+        ] {
+            if !present {
+                continue;
+            }
+            if let Err(e) = registry.compile_one(Op::Rest(method, path_static)) {
+                out.push((method.to_string(), path.clone(), e.to_string()));
+            }
+        }
+    }
+    out.sort();
+    out
+}
+
 pub fn audit_declared_security(
     openapi: &utoipa::openapi::OpenApi,
     registry: &crate::application::services::scope_table::PolicyRegistry,
@@ -1084,13 +1126,22 @@ pub fn mark_policies(
                 match policy.scope {
                     ScopeReq::Undefined => serde_json::Value::Null,
                     ScopeReq::None => serde_json::json!("none"),
-                    ScopeReq::Area(scope, access) => {
-                        let access = match access {
-                            Access::ReadOnly => "ro",
-                            Access::ReadWrite => "rw",
-                        };
-                        serde_json::json!(format!("{}:{access}", area_name(scope)))
-                    }
+                    // An ARRAY, because an operation can require more than
+                    // one area: a leaf appends to what its prefix declared
+                    // rather than replacing it, so `/api/drives/{id}/members`
+                    // requires `files` AND `sharing`. A joined string would
+                    // make a consumer parse a separator.
+                    ScopeReq::Areas(set) => serde_json::Value::Array(
+                        set.iter()
+                            .map(|(scope, access)| {
+                                let access = match access {
+                                    Access::ReadOnly => "ro",
+                                    Access::ReadWrite => "rw",
+                                };
+                                serde_json::json!(format!("{}:{access}", area_name(scope)))
+                            })
+                            .collect(),
+                    ),
                 },
             );
 

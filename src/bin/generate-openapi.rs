@@ -117,6 +117,22 @@ async fn main() {
     // derived from the policy, so an annotation that disagrees is stale or
     // a declaration is missing. Reported, not fatal, while the two are
     // being reconciled.
+    // Step 4 of PR 2: a declaration that cannot COMPILE is reported here,
+    // not swallowed. `mark_policies` skips such an operation, which made a
+    // broken declaration look identical to a missing one in the spec.
+    let broken = oxicloud::interfaces::api::compile_failures(&openapi, &registry);
+    if !broken.is_empty() {
+        eprintln!(
+            "\n{} operation(s) have declarations that do not compile:\n",
+            broken.len()
+        );
+        for (method, path, why) in &broken {
+            eprintln!("  {method} {path}\n      {why}");
+        }
+        eprintln!();
+        std::process::exit(1);
+    }
+
     let findings = oxicloud::interfaces::api::audit_declared_security(&openapi, &registry);
     if findings.is_empty() {
         println!("auth declarations: macro and policy agree on every operation");

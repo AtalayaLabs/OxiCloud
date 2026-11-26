@@ -12,22 +12,31 @@ use crate::application::dtos::user_dto::{
     AuthResponseDto, ChangePasswordDto, LoginDto, OidcCallbackQueryDto, OidcExchangeDto,
     PublicUserDto, RefreshTokenDto, RegisterDto, SelfUserDto, SetupAdminDto, UpgradeToInternalDto,
 };
-use crate::application::ports::scope_ports::Condition;
+use crate::application::ports::scope_ports::{Condition, Scope};
 use crate::application::services::auth_application_service::{OidcCallbackResult, RegisterResult};
 use crate::application::services::registration_policy::domain_allowed;
 use crate::common::di::AppState;
 use crate::interfaces::api::cookie_auth;
-use crate::interfaces::api::policy_router::{GatedRouter, get, post, put};
+use crate::interfaces::api::policy_router::{GatedRouter, delete, get, patch, post, put};
 
-/// No credential at all. The spec turns this into `security: []`, which is
-/// the only honest way to document an endpoint that needs none.
-///
-/// `policy_get` / `policy_post` are aliased rather than shadowing axum's
-/// only because this file also builds a PLAIN `Router`
-/// (`auth_protected_routes`), so both verb sets are in scope. In a file
-/// that is wholly `GatedRouter`, import them as `get` / `post` and the
-/// prefix disappears.
-const PUBLIC: [Condition; 1] = [Condition::public()];
+/// Public AND scopeless. The two travel together: no credential exists
+/// yet to carry a scope on a login or pre-auth flow, and the compile step
+/// refuses `public` combined with an area in any case. Declaring both
+/// states the scope axis rather than leaving it `Undefined`, which spec
+/// generation refuses.
+const PUBLIC_SCOPELESS: [Condition; 2] = [Condition::public(), Condition::scopeless()];
+
+/// The caller's OWN profile and preferences.
+const ACCOUNT: [Condition; 1] = [Condition::scope_by_verb(Scope::Account)];
+/// The caller's OWN credentials and identities — passwords, sessions,
+/// linked IdPs, the internal-account upgrade. Withheld from every
+/// non-interactive ceiling, which is the whole mechanism by which an app
+/// password cannot mint another one.
+const SECURITY: [Condition; 1] = [Condition::scope_by_verb(Scope::Security)];
+/// No scope required, declared. `logout` ends the caller's own session
+/// and `dpop/bind` binds a key to it — § Deliberately scopeless argues
+/// that any credential should be able to do both.
+const SCOPELESS: [Condition; 1] = [Condition::scopeless()];
 use crate::interfaces::errors::AppError;
 use crate::interfaces::middleware::auth::{AuthUser, CurrentUserId};
 use crate::interfaces::middleware::trusted_proxy::client_ip_from_parts;
@@ -51,65 +60,84 @@ pub fn auth_public_routes() -> GatedRouter<Arc<AppState>> {
         // at `/oidc/providers`; it was retired on feat/registration —
         // the same payload (plus `password`/`magic_link`/`registration`
         // sibling blocks) is now carried by `GET /api/config.auth.oidc`.
-        .route("/oidc/authorize", get(oidc_authorize).policy(PUBLIC))
-        .route("/oidc/callback", get(oidc_callback).policy(PUBLIC))
-        .route("/oidc/exchange", post(oidc_exchange).policy(PUBLIC))
+        .route(
+            "/oidc/authorize",
+            get(oidc_authorize).policy(PUBLIC_SCOPELESS),
+        )
+        .route(
+            "/oidc/callback",
+            get(oidc_callback).policy(PUBLIC_SCOPELESS),
+        )
+        .route(
+            "/oidc/exchange",
+            post(oidc_exchange).policy(PUBLIC_SCOPELESS),
+        )
         // OIDC Back-Channel Logout 1.0 — public (server-to-server call
         // from the IdP with a signed logout_token; no cookies, no CSRF).
         .route(
             "/oidc/backchannel-logout",
-            post(oidc_backchannel_logout).policy(PUBLIC),
+            post(oidc_backchannel_logout).policy(PUBLIC_SCOPELESS),
         )
         // Login-via-email — sends a magic-link to the user's email so
         // accounts with no other login credential can sign in.
-        .route("/magic-link/send", post(send_magic_link).policy(PUBLIC))
+        .route(
+            "/magic-link/send",
+            post(send_magic_link).policy(PUBLIC_SCOPELESS),
+        )
 }
 
 /// Protected auth routes, require authentication (auth + CSRF middleware
 /// must be applied by the caller in main.rs).
 pub fn auth_protected_routes() -> GatedRouter<Arc<AppState>> {
-    use axum::routing::patch;
     // A `GatedRouter` even though it declares nothing yet: these
     // operations are `account` (`/me*`) and `security`
     // (`change-password`, `upgrade-to-internal`) in § Areas, not
     // protocols, so PR 2 declares scopes here. Returning a bare `Router`
     // would mean no route in it could declare per verb.
     GatedRouter::new()
-        .route("/me", get(get_current_user))
-        .route("/me/image", put(update_user_image))
-        .route("/me/profile", patch(update_profile))
-        .route("/change-password", put(change_password))
-        .route("/upgrade-to-internal", post(upgrade_to_internal))
-        .route("/logout", post(logout))
+        .route("/me", get(get_current_user).policy(ACCOUNT))
+        .route("/me/image", put(update_user_image).policy(ACCOUNT))
+        .route("/me/profile", patch(update_profile).policy(ACCOUNT))
+        .route("/change-password", put(change_password).policy(SECURITY))
+        .route(
+            "/upgrade-to-internal",
+            post(upgrade_to_internal).policy(SECURITY),
+        )
+        .route("/logout", post(logout).policy(SCOPELESS))
         // Self-service session management — the user-scoped mirror of
         // /api/admin/sessions. Protected, so the caller is already
         // authenticated and the scope is their own id by construction.
-        .route("/sessions", get(list_own_sessions))
-        .route("/sessions/{id}", axum::routing::delete(revoke_own_session))
+        .route("/sessions", get(list_own_sessions).policy(SECURITY))
+        .route(
+            "/sessions/{id}",
+            // OUR `delete`, not axum's: `.policy()` needs the verb, and
+            // revoking a session is credential management.
+            delete(revoke_own_session).policy(SECURITY),
+        )
         // Self-service OIDC identity linking — see
         // docs/plan/oidc-account-linking.md.
-        .route("/oidc/link/start", post(oidc_link_start))
-        .route("/oidc/unlink", post(oidc_unlink))
-        .route("/dpop/bind", post(dpop_bind))
+        .route("/oidc/link/start", post(oidc_link_start).policy(SECURITY))
+        .route("/oidc/unlink", post(oidc_unlink).policy(SECURITY))
+        .route("/dpop/bind", post(dpop_bind).policy(SCOPELESS))
 }
 
 /// Rate-limited auth routes, split out so main.rs can apply per-endpoint
 /// rate limiting middleware independently.
 pub fn login_route() -> GatedRouter<Arc<AppState>> {
-    GatedRouter::new().route("/login", post(login).policy(PUBLIC))
+    GatedRouter::new().route("/login", post(login).policy(PUBLIC_SCOPELESS))
 }
 
 pub fn register_route() -> GatedRouter<Arc<AppState>> {
-    GatedRouter::new().route("/register", post(register).policy(PUBLIC))
+    GatedRouter::new().route("/register", post(register).policy(PUBLIC_SCOPELESS))
 }
 
 pub fn refresh_route() -> GatedRouter<Arc<AppState>> {
-    GatedRouter::new().route("/refresh", post(refresh_token).policy(PUBLIC))
+    GatedRouter::new().route("/refresh", post(refresh_token).policy(PUBLIC_SCOPELESS))
 }
 
 /// Public setup route, only active before the first admin is created.
 pub fn setup_route() -> GatedRouter<Arc<AppState>> {
-    GatedRouter::new().route("/setup", post(setup_admin).policy(PUBLIC))
+    GatedRouter::new().route("/setup", post(setup_admin).policy(PUBLIC_SCOPELESS))
 }
 
 /// `OXICLOUD_REGISTRATION_ALLOWED_EMAIL_DOMAINS` gate, shared by the two

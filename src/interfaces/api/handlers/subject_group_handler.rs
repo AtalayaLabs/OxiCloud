@@ -5,13 +5,13 @@
 //! `/api/groups/search` endpoint requires only authentication so the share
 //! dialog can offer groups as recipients.
 
+use crate::application::ports::scope_ports::{Condition, Scope};
 use std::sync::Arc;
 
 use axum::{
     extract::{Json, Path, Query, State},
     http::{HeaderMap, StatusCode},
     response::IntoResponse,
-    routing::{delete, get, patch, post},
 };
 use serde::{Deserialize, Serialize};
 use utoipa::{IntoParams, ToSchema};
@@ -20,7 +20,7 @@ use uuid::Uuid;
 use crate::common::di::AppState;
 use crate::domain::entities::subject_group::{GroupMember, SubjectGroup};
 use crate::domain::entities::user::UserRole;
-use crate::interfaces::api::policy_router::GatedRouter;
+use crate::interfaces::api::policy_router::{GatedRouter, delete, get, patch, post};
 use crate::interfaces::errors::AppError;
 use crate::interfaces::middleware::admin::{require_admin, require_authenticated};
 
@@ -154,17 +154,53 @@ impl From<GroupMember> for GroupMemberDto {
 /// so this is a per-VERB declaration, not a subtree one.
 pub fn subject_group_routes() -> GatedRouter<Arc<AppState>> {
     GatedRouter::new()
-        .route("/", post(create_group))
-        .route("/", get(list_groups))
-        .route("/search", get(search_groups))
-        .route("/{id}", get(get_group))
-        .route("/{id}", patch(update_group))
-        .route("/{id}", delete(delete_group))
-        .route("/{id}/members", get(list_members))
-        .route("/{id}/members", post(add_member))
-        .route("/{id}/members/user/{uid}", delete(remove_user_member))
-        .route("/{id}/members/group/{gid}", delete(remove_group_member))
-        .route("/{id}/effective-members", get(list_effective_members))
+        .route(
+            "/",
+            post(create_group).policy([Condition::scope_by_verb(Scope::Admin)]),
+        )
+        .route(
+            "/",
+            get(list_groups).policy([Condition::scope_by_verb(Scope::Admin)]),
+        )
+        .route(
+            "/search",
+            // Recipient lookup for the share picker, NOT administration —
+            // so it overrides the `admin` area its `/api/groups` prefix
+            // declares. The split is by operation, not by collection.
+            get(search_groups).policy([Condition::scope_by_verb(Scope::Sharing)]),
+        )
+        .route(
+            "/{id}",
+            get(get_group).policy([Condition::scope_by_verb(Scope::Admin)]),
+        )
+        .route(
+            "/{id}",
+            patch(update_group).policy([Condition::scope_by_verb(Scope::Admin)]),
+        )
+        .route(
+            "/{id}",
+            delete(delete_group).policy([Condition::scope_by_verb(Scope::Admin)]),
+        )
+        .route(
+            "/{id}/members",
+            get(list_members).policy([Condition::scope_by_verb(Scope::Admin)]),
+        )
+        .route(
+            "/{id}/members",
+            post(add_member).policy([Condition::scope_by_verb(Scope::Admin)]),
+        )
+        .route(
+            "/{id}/members/user/{uid}",
+            delete(remove_user_member).policy([Condition::scope_by_verb(Scope::Admin)]),
+        )
+        .route(
+            "/{id}/members/group/{gid}",
+            delete(remove_group_member).policy([Condition::scope_by_verb(Scope::Admin)]),
+        )
+        .route(
+            "/{id}/effective-members",
+            get(list_effective_members).policy([Condition::scope_by_verb(Scope::Admin)]),
+        )
 }
 
 fn service(

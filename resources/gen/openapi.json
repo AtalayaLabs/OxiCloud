@@ -49,7 +49,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": null,
-          "scope": null
+          "scope": [
+            "contacts:ro"
+          ]
         }
       },
       "post": {
@@ -99,7 +101,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": "internal",
-          "scope": null
+          "scope": [
+            "contacts:rw"
+          ]
         }
       }
     },
@@ -171,7 +175,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": null,
-          "scope": null
+          "scope": [
+            "contacts:rw"
+          ]
         }
       },
       "delete": {
@@ -224,7 +230,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": null,
-          "scope": null
+          "scope": [
+            "contacts:rw"
+          ]
         }
       }
     },
@@ -327,7 +335,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": null,
-          "scope": null
+          "scope": [
+            "contacts:ro"
+          ]
         }
       },
       "post": {
@@ -407,7 +417,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": null,
-          "scope": null
+          "scope": [
+            "contacts:rw"
+          ]
         }
       }
     },
@@ -478,7 +490,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": null,
-          "scope": null
+          "scope": [
+            "contacts:ro"
+          ]
         }
       },
       "put": {
@@ -577,7 +591,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": null,
-          "scope": null
+          "scope": [
+            "contacts:rw"
+          ]
         }
       },
       "delete": {
@@ -649,7 +665,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": null,
-          "scope": null
+          "scope": [
+            "contacts:rw"
+          ]
         }
       }
     },
@@ -714,7 +732,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": null,
-          "scope": null
+          "scope": [
+            "contacts:ro"
+          ]
         }
       },
       "post": {
@@ -784,7 +804,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": null,
-          "scope": null
+          "scope": [
+            "contacts:rw"
+          ]
         }
       }
     },
@@ -855,7 +877,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": null,
-          "scope": null
+          "scope": [
+            "contacts:ro"
+          ]
         }
       },
       "put": {
@@ -934,7 +958,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": null,
-          "scope": null
+          "scope": [
+            "contacts:rw"
+          ]
         }
       },
       "delete": {
@@ -996,7 +1022,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": null,
-          "scope": null
+          "scope": [
+            "contacts:rw"
+          ]
         }
       }
     },
@@ -1070,7 +1098,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": null,
-          "scope": null
+          "scope": [
+            "contacts:ro"
+          ]
         }
       },
       "post": {
@@ -1152,7 +1182,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": null,
-          "scope": null
+          "scope": [
+            "contacts:rw"
+          ]
         }
       }
     },
@@ -1225,7 +1257,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": null,
-          "scope": null
+          "scope": [
+            "contacts:rw"
+          ]
         }
       }
     },
@@ -1280,7 +1314,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": "admin",
-          "scope": null
+          "scope": [
+            "admin:ro"
+          ]
         }
       },
       "post": {
@@ -1360,7 +1396,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": "admin",
-          "scope": null
+          "scope": [
+            "admin:rw"
+          ]
         }
       }
     },
@@ -1453,7 +1491,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": "admin",
-          "scope": null
+          "scope": [
+            "admin:rw"
+          ]
         }
       },
       "delete": {
@@ -1517,7 +1557,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": "admin",
-          "scope": null
+          "scope": [
+            "admin:rw"
+          ]
         }
       }
     },
@@ -1569,7 +1611,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": "admin",
-          "scope": null
+          "scope": [
+            "admin:ro"
+          ]
         }
       }
     },
@@ -1641,7 +1685,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": "admin",
-          "scope": null
+          "scope": [
+            "admin:ro"
+          ]
         }
       }
     },
@@ -1702,7 +1748,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": "admin",
-          "scope": null
+          "scope": [
+            "admin:rw"
+          ]
         }
       }
     },
@@ -1753,7 +1801,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": "admin",
-          "scope": null
+          "scope": [
+            "admin:ro"
+          ]
         }
       }
     },
@@ -1826,7 +1876,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": "admin",
-          "scope": null
+          "scope": [
+            "admin:ro"
+          ]
         }
       },
       "put": {
@@ -1914,7 +1966,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": "admin",
-          "scope": null
+          "scope": [
+            "admin:rw"
+          ]
         }
       }
     },
@@ -1969,7 +2023,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": "admin",
-          "scope": null
+          "scope": [
+            "admin:ro"
+          ]
         }
       }
     },
@@ -2024,7 +2080,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": "admin",
-          "scope": null
+          "scope": [
+            "admin:ro"
+          ]
         }
       }
     },
@@ -2101,7 +2159,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": "admin",
-          "scope": null
+          "scope": [
+            "admin:rw"
+          ]
         }
       }
     },
@@ -2168,7 +2228,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": "admin",
-          "scope": null
+          "scope": [
+            "admin:ro"
+          ]
         }
       },
       "post": {
@@ -2260,7 +2322,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": "admin",
-          "scope": null
+          "scope": [
+            "admin:rw"
+          ]
         }
       }
     },
@@ -2356,7 +2420,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": "admin",
-          "scope": null
+          "scope": [
+            "admin:rw"
+          ]
         }
       },
       "patch": {
@@ -2467,7 +2533,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": "admin",
-          "scope": null
+          "scope": [
+            "admin:rw"
+          ]
         }
       }
     },
@@ -2522,7 +2590,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": "admin",
-          "scope": null
+          "scope": [
+            "admin:ro"
+          ]
         }
       }
     },
@@ -2595,7 +2665,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": "admin",
-          "scope": null
+          "scope": [
+            "admin:rw"
+          ]
         }
       }
     },
@@ -2668,7 +2740,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": "admin",
-          "scope": null
+          "scope": [
+            "admin:rw"
+          ]
         }
       }
     },
@@ -2752,7 +2826,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": "admin",
-          "scope": null
+          "scope": [
+            "admin:ro"
+          ]
         }
       }
     },
@@ -2844,7 +2920,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": "admin",
-          "scope": null
+          "scope": [
+            "admin:ro"
+          ]
         }
       }
     },
@@ -2958,7 +3036,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": "admin",
-          "scope": null
+          "scope": [
+            "admin:ro"
+          ]
         }
       }
     },
@@ -3031,7 +3111,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": "admin",
-          "scope": null
+          "scope": [
+            "admin:rw"
+          ]
         }
       }
     },
@@ -3083,7 +3165,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": "admin",
-          "scope": null
+          "scope": [
+            "admin:ro"
+          ]
         }
       }
     },
@@ -3144,7 +3228,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": "admin",
-          "scope": null
+          "scope": [
+            "admin:rw"
+          ]
         }
       }
     },
@@ -3236,7 +3322,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": "admin",
-          "scope": null
+          "scope": [
+            "admin:ro"
+          ]
         }
       }
     },
@@ -3319,7 +3407,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": "admin",
-          "scope": null
+          "scope": [
+            "admin:rw"
+          ]
         }
       }
     },
@@ -3356,7 +3446,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": "admin",
-          "scope": null
+          "scope": [
+            "admin:ro"
+          ]
         }
       },
       "put": {
@@ -3407,7 +3499,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": "admin",
-          "scope": null
+          "scope": [
+            "admin:rw"
+          ]
         }
       }
     },
@@ -3450,7 +3544,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": "admin",
-          "scope": null
+          "scope": [
+            "admin:rw"
+          ]
         }
       }
     },
@@ -3502,7 +3598,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": "admin",
-          "scope": null
+          "scope": [
+            "admin:ro"
+          ]
         }
       },
       "put": {
@@ -3582,7 +3680,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": "admin",
-          "scope": null
+          "scope": [
+            "admin:rw"
+          ]
         }
       }
     },
@@ -3652,7 +3752,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": "admin",
-          "scope": null
+          "scope": [
+            "admin:rw"
+          ]
         }
       }
     },
@@ -3704,7 +3806,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": "admin",
-          "scope": null
+          "scope": [
+            "admin:ro"
+          ]
         }
       },
       "put": {
@@ -3764,7 +3868,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": "admin",
-          "scope": null
+          "scope": [
+            "admin:rw"
+          ]
         }
       }
     },
@@ -3816,7 +3922,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": "admin",
-          "scope": null
+          "scope": [
+            "admin:rw"
+          ]
         }
       }
     },
@@ -3868,7 +3976,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": "admin",
-          "scope": null
+          "scope": [
+            "admin:ro"
+          ]
         }
       }
     },
@@ -3940,7 +4050,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": "admin",
-          "scope": null
+          "scope": [
+            "admin:rw"
+          ]
         }
       }
     },
@@ -4006,7 +4118,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": "admin",
-          "scope": null
+          "scope": [
+            "admin:rw"
+          ]
         }
       }
     },
@@ -4058,7 +4172,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": "admin",
-          "scope": null
+          "scope": [
+            "admin:ro"
+          ]
         }
       }
     },
@@ -4110,7 +4226,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": "admin",
-          "scope": null
+          "scope": [
+            "admin:rw"
+          ]
         }
       }
     },
@@ -4162,7 +4280,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": "admin",
-          "scope": null
+          "scope": [
+            "admin:rw"
+          ]
         }
       }
     },
@@ -4224,7 +4344,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": "admin",
-          "scope": null
+          "scope": [
+            "admin:rw"
+          ]
         }
       }
     },
@@ -4276,7 +4398,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": "admin",
-          "scope": null
+          "scope": [
+            "admin:ro"
+          ]
         }
       },
       "post": {
@@ -4347,7 +4471,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": "admin",
-          "scope": null
+          "scope": [
+            "admin:rw"
+          ]
         }
       },
       "delete": {
@@ -4397,7 +4523,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": "admin",
-          "scope": null
+          "scope": [
+            "admin:rw"
+          ]
         }
       }
     },
@@ -4479,7 +4607,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": "owner",
-          "scope": null
+          "scope": [
+            "admin:rw"
+          ]
         }
       }
     },
@@ -4553,7 +4683,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": "admin",
-          "scope": null
+          "scope": [
+            "admin:ro"
+          ]
         }
       },
       "post": {
@@ -4623,7 +4755,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": "admin",
-          "scope": null
+          "scope": [
+            "admin:rw"
+          ]
         }
       }
     },
@@ -4696,7 +4830,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": "admin",
-          "scope": null
+          "scope": [
+            "admin:ro"
+          ]
         }
       },
       "delete": {
@@ -4767,7 +4903,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": "admin",
-          "scope": null
+          "scope": [
+            "admin:rw"
+          ]
         }
       }
     },
@@ -4850,7 +4988,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": "admin",
-          "scope": null
+          "scope": [
+            "admin:rw"
+          ]
         }
       }
     },
@@ -4933,7 +5073,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": "admin",
-          "scope": null
+          "scope": [
+            "admin:rw"
+          ]
         }
       }
     },
@@ -5026,7 +5168,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": "admin",
-          "scope": null
+          "scope": [
+            "admin:rw"
+          ]
         }
       }
     },
@@ -5099,7 +5243,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": "admin",
-          "scope": null
+          "scope": [
+            "admin:rw"
+          ]
         }
       }
     },
@@ -5182,7 +5328,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": "admin",
-          "scope": null
+          "scope": [
+            "admin:rw"
+          ]
         }
       }
     },
@@ -5234,7 +5382,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": "admin",
-          "scope": null
+          "scope": [
+            "admin:ro"
+          ]
         }
       }
     },
@@ -5296,7 +5446,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": "admin",
-          "scope": null
+          "scope": [
+            "admin:rw"
+          ]
         }
       }
     },
@@ -5338,7 +5490,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": null,
-          "scope": null
+          "scope": [
+            "security:ro"
+          ]
         }
       },
       "post": {
@@ -5408,7 +5562,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": null,
-          "scope": null
+          "scope": [
+            "security:rw"
+          ]
         }
       }
     },
@@ -5480,7 +5636,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": null,
-          "scope": null
+          "scope": [
+            "security:rw"
+          ]
         }
       }
     },
@@ -5541,7 +5699,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": null,
-          "scope": null
+          "scope": [
+            "security:rw"
+          ]
         }
       }
     },
@@ -5579,7 +5739,7 @@
         "x-oxicloud-policy": {
           "principal": "public",
           "role": null,
-          "scope": null
+          "scope": "none"
         }
       }
     },
@@ -5622,7 +5782,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": null,
-          "scope": null
+          "scope": [
+            "security:ro"
+          ]
         }
       }
     },
@@ -5676,7 +5838,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": null,
-          "scope": null
+          "scope": [
+            "security:rw"
+          ]
         }
       }
     },
@@ -5724,7 +5888,7 @@
         "x-oxicloud-policy": {
           "principal": "public",
           "role": null,
-          "scope": null
+          "scope": "none"
         }
       }
     },
@@ -5775,7 +5939,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": null,
-          "scope": null
+          "scope": [
+            "security:ro"
+          ]
         }
       },
       "post": {
@@ -5833,7 +5999,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": null,
-          "scope": null
+          "scope": [
+            "security:rw"
+          ]
         }
       }
     },
@@ -5905,7 +6073,7 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": null,
-          "scope": null
+          "scope": "none"
         }
       }
     },
@@ -5973,7 +6141,7 @@
         "x-oxicloud-policy": {
           "principal": "public",
           "role": null,
-          "scope": null
+          "scope": "none"
         }
       }
     },
@@ -6034,7 +6202,7 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": null,
-          "scope": null
+          "scope": "none"
         }
       }
     },
@@ -6082,7 +6250,7 @@
         "x-oxicloud-policy": {
           "principal": "public",
           "role": null,
-          "scope": null
+          "scope": "none"
         }
       }
     },
@@ -6123,7 +6291,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": null,
-          "scope": null
+          "scope": [
+            "account:ro"
+          ]
         }
       }
     },
@@ -6178,7 +6348,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": null,
-          "scope": null
+          "scope": [
+            "account:rw"
+          ]
         }
       }
     },
@@ -6260,7 +6432,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": null,
-          "scope": null
+          "scope": [
+            "account:rw"
+          ]
         }
       }
     },
@@ -6301,7 +6475,7 @@
         "x-oxicloud-policy": {
           "principal": "public",
           "role": null,
-          "scope": null
+          "scope": "none"
         }
       }
     },
@@ -6355,7 +6529,7 @@
         "x-oxicloud-policy": {
           "principal": "public",
           "role": null,
-          "scope": null
+          "scope": "none"
         }
       }
     },
@@ -6416,7 +6590,7 @@
         "x-oxicloud-policy": {
           "principal": "public",
           "role": null,
-          "scope": null
+          "scope": "none"
         }
       }
     },
@@ -6464,7 +6638,7 @@
         "x-oxicloud-policy": {
           "principal": "public",
           "role": null,
-          "scope": null
+          "scope": "none"
         }
       }
     },
@@ -6523,7 +6697,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": null,
-          "scope": null
+          "scope": [
+            "security:rw"
+          ]
         }
       }
     },
@@ -6574,7 +6750,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": null,
-          "scope": null
+          "scope": [
+            "security:rw"
+          ]
         }
       }
     },
@@ -6632,7 +6810,7 @@
         "x-oxicloud-policy": {
           "principal": "public",
           "role": null,
-          "scope": null
+          "scope": "none"
         }
       }
     },
@@ -6700,7 +6878,7 @@
         "x-oxicloud-policy": {
           "principal": "public",
           "role": null,
-          "scope": null
+          "scope": "none"
         }
       }
     },
@@ -6758,7 +6936,7 @@
         "x-oxicloud-policy": {
           "principal": "public",
           "role": null,
-          "scope": null
+          "scope": "none"
         }
       }
     },
@@ -6786,7 +6964,7 @@
         "x-oxicloud-policy": {
           "principal": "public",
           "role": null,
-          "scope": null
+          "scope": "none"
         }
       }
     },
@@ -6850,7 +7028,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": null,
-          "scope": null
+          "scope": [
+            "security:rw"
+          ]
         }
       }
     },
@@ -6922,7 +7102,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": null,
-          "scope": null
+          "scope": [
+            "security:rw"
+          ]
         }
       }
     },
@@ -6979,7 +7161,7 @@
         "x-oxicloud-policy": {
           "principal": "public",
           "role": null,
-          "scope": null
+          "scope": "none"
         }
       }
     },
@@ -7067,7 +7249,7 @@
         "x-oxicloud-policy": {
           "principal": "public",
           "role": null,
-          "scope": null
+          "scope": "none"
         }
       }
     },
@@ -7109,7 +7291,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": null,
-          "scope": null
+          "scope": [
+            "security:ro"
+          ]
         }
       }
     },
@@ -7182,7 +7366,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": null,
-          "scope": null
+          "scope": [
+            "security:rw"
+          ]
         }
       }
     },
@@ -7264,7 +7450,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": null,
-          "scope": null
+          "scope": [
+            "security:rw"
+          ]
         }
       }
     },
@@ -7370,7 +7558,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": null,
-          "scope": null
+          "scope": [
+            "files:ro"
+          ]
         }
       },
       "post": {
@@ -7466,7 +7656,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": null,
-          "scope": null
+          "scope": [
+            "files:rw"
+          ]
         }
       }
     },
@@ -7567,7 +7759,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": null,
-          "scope": null
+          "scope": [
+            "files:rw"
+          ]
         }
       }
     },
@@ -7668,7 +7862,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": null,
-          "scope": null
+          "scope": [
+            "files:rw"
+          ]
         }
       }
     },
@@ -7769,7 +7965,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": null,
-          "scope": null
+          "scope": [
+            "files:rw"
+          ]
         }
       }
     },
@@ -7870,7 +8068,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": null,
-          "scope": null
+          "scope": [
+            "files:rw"
+          ]
         }
       }
     },
@@ -7971,7 +8171,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": null,
-          "scope": null
+          "scope": [
+            "files:rw"
+          ]
         }
       }
     },
@@ -8072,7 +8274,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": null,
-          "scope": null
+          "scope": [
+            "files:rw"
+          ]
         }
       }
     },
@@ -8173,7 +8377,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": null,
-          "scope": null
+          "scope": [
+            "files:rw"
+          ]
         }
       }
     },
@@ -8274,7 +8480,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": null,
-          "scope": null
+          "scope": [
+            "files:rw"
+          ]
         }
       }
     },
@@ -8375,7 +8583,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": null,
-          "scope": null
+          "scope": [
+            "files:rw"
+          ]
         }
       }
     },
@@ -8476,7 +8686,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": null,
-          "scope": null
+          "scope": [
+            "files:rw"
+          ]
         }
       }
     },
@@ -8510,7 +8722,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": null,
-          "scope": null
+          "scope": [
+            "calendar:ro"
+          ]
         }
       },
       "post": {
@@ -8552,7 +8766,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": null,
-          "scope": null
+          "scope": [
+            "calendar:rw"
+          ]
         }
       }
     },
@@ -8610,7 +8826,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": null,
-          "scope": null
+          "scope": [
+            "calendar:rw"
+          ]
         }
       },
       "delete": {
@@ -8649,7 +8867,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": null,
-          "scope": null
+          "scope": [
+            "calendar:rw"
+          ]
         }
       }
     },
@@ -8720,7 +8940,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": null,
-          "scope": null
+          "scope": [
+            "calendar:ro"
+          ]
         }
       },
       "post": {
@@ -8779,7 +9001,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": null,
-          "scope": null
+          "scope": [
+            "calendar:rw"
+          ]
         }
       }
     },
@@ -8849,7 +9073,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": null,
-          "scope": null
+          "scope": [
+            "calendar:rw"
+          ]
         }
       },
       "delete": {
@@ -8897,7 +9123,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": null,
-          "scope": null
+          "scope": [
+            "calendar:rw"
+          ]
         }
       }
     },
@@ -8925,7 +9153,7 @@
         "x-oxicloud-policy": {
           "principal": "public",
           "role": null,
-          "scope": null
+          "scope": "none"
         }
       }
     },
@@ -8982,7 +9210,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": null,
-          "scope": null
+          "scope": [
+            "files:ro"
+          ]
         }
       }
     },
@@ -9032,7 +9262,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": null,
-          "scope": null
+          "scope": [
+            "files:rw"
+          ]
         }
       }
     },
@@ -9083,7 +9315,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": null,
-          "scope": null
+          "scope": [
+            "files:ro"
+          ]
         }
       }
     },
@@ -9126,7 +9360,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": null,
-          "scope": null
+          "scope": [
+            "files:ro"
+          ]
         }
       }
     },
@@ -9193,7 +9429,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": null,
-          "scope": null
+          "scope": [
+            "files:rw"
+          ]
         }
       }
     },
@@ -9248,7 +9486,10 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": null,
-          "scope": null
+          "scope": [
+            "files:ro",
+            "sharing:ro"
+          ]
         }
       },
       "post": {
@@ -9328,7 +9569,10 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": null,
-          "scope": null
+          "scope": [
+            "files:rw",
+            "sharing:rw"
+          ]
         }
       }
     },
@@ -9412,7 +9656,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": null,
-          "scope": null
+          "scope": [
+            "files:rw"
+          ]
         }
       },
       "patch": {
@@ -9511,7 +9757,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": null,
-          "scope": null
+          "scope": [
+            "files:rw"
+          ]
         }
       }
     },
@@ -9575,7 +9823,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": null,
-          "scope": null
+          "scope": [
+            "files:rw"
+          ]
         }
       }
     },
@@ -9649,7 +9899,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": null,
-          "scope": null
+          "scope": [
+            "files:rw"
+          ]
         }
       }
     },
@@ -9700,7 +9952,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": null,
-          "scope": null
+          "scope": [
+            "files:rw"
+          ]
         }
       }
     },
@@ -9804,7 +10058,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": null,
-          "scope": null
+          "scope": [
+            "files:ro"
+          ]
         }
       }
     },
@@ -9865,7 +10121,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": null,
-          "scope": null
+          "scope": [
+            "files:rw"
+          ]
         }
       },
       "delete": {
@@ -9924,7 +10182,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": null,
-          "scope": null
+          "scope": [
+            "files:rw"
+          ]
         }
       }
     },
@@ -9971,7 +10231,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": null,
-          "scope": null
+          "scope": [
+            "files:ro"
+          ]
         }
       }
     },
@@ -10071,7 +10333,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": null,
-          "scope": null
+          "scope": [
+            "files:rw"
+          ]
         }
       }
     },
@@ -10127,7 +10391,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": null,
-          "scope": null
+          "scope": [
+            "files:rw"
+          ]
         }
       }
     },
@@ -10237,7 +10503,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": null,
-          "scope": null
+          "scope": [
+            "files:rw"
+          ]
         }
       }
     },
@@ -10303,7 +10571,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": null,
-          "scope": null
+          "scope": [
+            "files:rw"
+          ]
         }
       }
     },
@@ -10363,7 +10633,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": null,
-          "scope": null
+          "scope": [
+            "files:rw"
+          ]
         }
       }
     },
@@ -10517,7 +10789,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": "internal",
-          "scope": null
+          "scope": [
+            "files:ro"
+          ]
         }
       }
     },
@@ -10583,7 +10857,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": null,
-          "scope": null
+          "scope": [
+            "files:rw"
+          ]
         }
       }
     },
@@ -10667,7 +10943,9 @@
         "x-oxicloud-policy": {
           "principal": "visitor",
           "role": null,
-          "scope": null
+          "scope": [
+            "files:ro"
+          ]
         }
       },
       "delete": {
@@ -10709,7 +10987,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": null,
-          "scope": null
+          "scope": [
+            "files:rw"
+          ]
         }
       }
     },
@@ -10860,7 +11140,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": null,
-          "scope": null
+          "scope": [
+            "files:ro"
+          ]
         }
       }
     },
@@ -10912,7 +11194,9 @@
         "x-oxicloud-policy": {
           "principal": "visitor",
           "role": null,
-          "scope": null
+          "scope": [
+            "files:ro"
+          ]
         }
       }
     },
@@ -10974,7 +11258,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": null,
-          "scope": null
+          "scope": [
+            "files:rw"
+          ]
         }
       }
     },
@@ -11031,7 +11317,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": null,
-          "scope": null
+          "scope": [
+            "files:rw"
+          ]
         }
       }
     },
@@ -11094,7 +11382,9 @@
         "x-oxicloud-policy": {
           "principal": "visitor",
           "role": null,
-          "scope": null
+          "scope": [
+            "files:ro"
+          ]
         }
       },
       "put": {
@@ -11168,7 +11458,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": null,
-          "scope": null
+          "scope": [
+            "files:rw"
+          ]
         }
       }
     },
@@ -11201,7 +11493,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": null,
-          "scope": null
+          "scope": [
+            "files:ro"
+          ]
         }
       },
       "post": {
@@ -11250,7 +11544,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": null,
-          "scope": null
+          "scope": [
+            "files:rw"
+          ]
         }
       }
     },
@@ -11302,7 +11598,9 @@
         "x-oxicloud-policy": {
           "principal": "visitor",
           "role": null,
-          "scope": null
+          "scope": [
+            "files:ro"
+          ]
         }
       },
       "delete": {
@@ -11344,7 +11642,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": null,
-          "scope": null
+          "scope": [
+            "files:rw"
+          ]
         }
       }
     },
@@ -11415,7 +11715,9 @@
         "x-oxicloud-policy": {
           "principal": "visitor",
           "role": null,
-          "scope": null
+          "scope": [
+            "files:ro"
+          ]
         }
       }
     },
@@ -11473,7 +11775,9 @@
         "x-oxicloud-policy": {
           "principal": "visitor",
           "role": null,
-          "scope": null
+          "scope": [
+            "files:ro"
+          ]
         }
       }
     },
@@ -11535,7 +11839,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": null,
-          "scope": null
+          "scope": [
+            "files:rw"
+          ]
         }
       }
     },
@@ -11597,7 +11903,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": null,
-          "scope": null
+          "scope": [
+            "files:rw"
+          ]
         }
       }
     },
@@ -11709,7 +12017,9 @@
         "x-oxicloud-policy": {
           "principal": "visitor",
           "role": null,
-          "scope": null
+          "scope": [
+            "files:ro"
+          ]
         }
       }
     },
@@ -11842,7 +12152,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": null,
-          "scope": null
+          "scope": [
+            "sharing:ro"
+          ]
         }
       },
       "post": {
@@ -11912,7 +12224,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": null,
-          "scope": null
+          "scope": [
+            "sharing:rw"
+          ]
         }
       }
     },
@@ -11945,7 +12259,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": null,
-          "scope": null
+          "scope": [
+            "sharing:ro"
+          ]
         }
       }
     },
@@ -12037,7 +12353,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": null,
-          "scope": null
+          "scope": [
+            "sharing:ro"
+          ]
         }
       }
     },
@@ -12070,7 +12388,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": null,
-          "scope": null
+          "scope": [
+            "sharing:ro"
+          ]
         }
       }
     },
@@ -12162,7 +12482,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": null,
-          "scope": null
+          "scope": [
+            "sharing:ro"
+          ]
         }
       }
     },
@@ -12237,7 +12559,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": null,
-          "scope": null
+          "scope": [
+            "sharing:rw"
+          ]
         }
       }
     },
@@ -12281,7 +12605,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": null,
-          "scope": null
+          "scope": [
+            "sharing:rw"
+          ]
         }
       }
     },
@@ -12355,7 +12681,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": null,
-          "scope": null
+          "scope": [
+            "sharing:rw"
+          ]
         }
       }
     },
@@ -12440,7 +12768,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": null,
-          "scope": null
+          "scope": [
+            "admin:ro"
+          ]
         }
       },
       "post": {
@@ -12519,7 +12849,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": null,
-          "scope": null
+          "scope": [
+            "admin:rw"
+          ]
         }
       }
     },
@@ -12583,7 +12915,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": null,
-          "scope": null
+          "scope": [
+            "sharing:ro"
+          ]
         }
       }
     },
@@ -12656,7 +12990,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": null,
-          "scope": null
+          "scope": [
+            "admin:ro"
+          ]
         }
       },
       "delete": {
@@ -12720,7 +13056,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": null,
-          "scope": null
+          "scope": [
+            "admin:rw"
+          ]
         }
       },
       "patch": {
@@ -12821,7 +13159,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": null,
-          "scope": null
+          "scope": [
+            "admin:rw"
+          ]
         }
       }
     },
@@ -12898,7 +13238,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": null,
-          "scope": null
+          "scope": [
+            "admin:ro"
+          ]
         }
       }
     },
@@ -12974,7 +13316,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": null,
-          "scope": null
+          "scope": [
+            "admin:ro"
+          ]
         }
       },
       "post": {
@@ -13075,7 +13419,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": null,
-          "scope": null
+          "scope": [
+            "admin:rw"
+          ]
         }
       }
     },
@@ -13151,7 +13497,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": null,
-          "scope": null
+          "scope": [
+            "admin:rw"
+          ]
         }
       }
     },
@@ -13227,7 +13575,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": null,
-          "scope": null
+          "scope": [
+            "admin:rw"
+          ]
         }
       }
     },
@@ -13257,7 +13607,7 @@
         "x-oxicloud-policy": {
           "principal": "public",
           "role": null,
-          "scope": null
+          "scope": "none"
         }
       }
     },
@@ -13305,7 +13655,7 @@
         "x-oxicloud-policy": {
           "principal": "public",
           "role": null,
-          "scope": null
+          "scope": "none"
         }
       }
     },
@@ -13372,7 +13722,7 @@
         "x-oxicloud-policy": {
           "principal": "public",
           "role": null,
-          "scope": null
+          "scope": "none"
         }
       }
     },
@@ -13445,7 +13795,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": null,
-          "scope": null
+          "scope": [
+            "account:ro"
+          ]
         }
       }
     },
@@ -13476,7 +13828,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": null,
-          "scope": null
+          "scope": [
+            "account:rw"
+          ]
         }
       }
     },
@@ -13507,7 +13861,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": null,
-          "scope": null
+          "scope": [
+            "account:ro"
+          ]
         }
       }
     },
@@ -13544,7 +13900,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": null,
-          "scope": null
+          "scope": [
+            "account:rw"
+          ]
         }
       }
     },
@@ -13581,7 +13939,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": null,
-          "scope": null
+          "scope": [
+            "account:rw"
+          ]
         }
       }
     },
@@ -13625,7 +13985,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": null,
-          "scope": null
+          "scope": [
+            "faces:ro"
+          ]
         }
       }
     },
@@ -13659,7 +14021,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": null,
-          "scope": null
+          "scope": [
+            "faces:rw"
+          ]
         }
       }
     },
@@ -13724,7 +14088,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": null,
-          "scope": null
+          "scope": [
+            "faces:ro"
+          ]
         }
       }
     },
@@ -13778,7 +14144,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": null,
-          "scope": null
+          "scope": [
+            "faces:rw"
+          ]
         }
       }
     },
@@ -13817,7 +14185,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": null,
-          "scope": null
+          "scope": [
+            "faces:rw"
+          ]
         }
       }
     },
@@ -13882,7 +14252,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": null,
-          "scope": null
+          "scope": [
+            "faces:rw"
+          ]
         }
       }
     },
@@ -13947,7 +14319,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": null,
-          "scope": null
+          "scope": [
+            "faces:ro"
+          ]
         }
       }
     },
@@ -14023,7 +14397,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": null,
-          "scope": null
+          "scope": [
+            "files:ro"
+          ]
         }
       }
     },
@@ -14176,7 +14552,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": null,
-          "scope": null
+          "scope": [
+            "files:ro"
+          ]
         }
       }
     },
@@ -14250,7 +14628,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": null,
-          "scope": null
+          "scope": [
+            "files:ro"
+          ]
         }
       },
       "post": {
@@ -14309,7 +14689,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": "internal",
-          "scope": null
+          "scope": [
+            "files:rw"
+          ]
         }
       }
     },
@@ -14370,7 +14752,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": null,
-          "scope": null
+          "scope": [
+            "files:ro"
+          ]
         }
       }
     },
@@ -14431,7 +14815,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": null,
-          "scope": null
+          "scope": [
+            "files:ro"
+          ]
         }
       },
       "put": {
@@ -14500,7 +14886,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": null,
-          "scope": null
+          "scope": [
+            "files:rw"
+          ]
         }
       },
       "delete": {
@@ -14552,7 +14940,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": null,
-          "scope": null
+          "scope": [
+            "files:rw"
+          ]
         }
       }
     },
@@ -14616,7 +15006,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": null,
-          "scope": null
+          "scope": [
+            "files:rw"
+          ]
         }
       }
     },
@@ -14680,7 +15072,10 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": null,
-          "scope": null
+          "scope": [
+            "files:rw",
+            "sharing:rw"
+          ]
         }
       }
     },
@@ -14743,7 +15138,10 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": null,
-          "scope": null
+          "scope": [
+            "files:rw",
+            "sharing:rw"
+          ]
         }
       }
     },
@@ -14807,7 +15205,10 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": null,
-          "scope": null
+          "scope": [
+            "files:ro",
+            "sharing:ro"
+          ]
         }
       }
     },
@@ -14871,7 +15272,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": null,
-          "scope": null
+          "scope": [
+            "files:ro"
+          ]
         }
       },
       "post": {
@@ -14943,7 +15346,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": null,
-          "scope": null
+          "scope": [
+            "files:rw"
+          ]
         }
       }
     },
@@ -15006,7 +15411,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": null,
-          "scope": null
+          "scope": [
+            "files:rw"
+          ]
         }
       }
     },
@@ -15037,7 +15444,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": null,
-          "scope": null
+          "scope": [
+            "files:rw"
+          ]
         }
       }
     },
@@ -15141,7 +15550,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": null,
-          "scope": null
+          "scope": [
+            "files:ro"
+          ]
         }
       }
     },
@@ -15202,7 +15613,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": null,
-          "scope": null
+          "scope": [
+            "files:rw"
+          ]
         }
       },
       "delete": {
@@ -15261,7 +15674,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": null,
-          "scope": null
+          "scope": [
+            "files:rw"
+          ]
         }
       }
     },
@@ -15320,7 +15735,7 @@
         "x-oxicloud-policy": {
           "principal": "public",
           "role": null,
-          "scope": null
+          "scope": "none"
         }
       }
     },
@@ -15389,7 +15804,7 @@
         "x-oxicloud-policy": {
           "principal": "public",
           "role": null,
-          "scope": null
+          "scope": "none"
         }
       }
     },
@@ -15580,7 +15995,7 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": null,
-          "scope": null
+          "scope": "none"
         }
       }
     },
@@ -15651,7 +16066,7 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": null,
-          "scope": null
+          "scope": "none"
         }
       }
     },
@@ -15729,7 +16144,7 @@
         "x-oxicloud-policy": {
           "principal": "public",
           "role": null,
-          "scope": null
+          "scope": "none"
         }
       }
     },
@@ -15803,7 +16218,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": null,
-          "scope": null
+          "scope": [
+            "sharing:ro"
+          ]
         }
       },
       "post": {
@@ -15852,7 +16269,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": null,
-          "scope": null
+          "scope": [
+            "sharing:rw"
+          ]
         }
       }
     },
@@ -15904,7 +16323,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": null,
-          "scope": null
+          "scope": [
+            "sharing:ro"
+          ]
         }
       },
       "put": {
@@ -15964,7 +16385,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": null,
-          "scope": null
+          "scope": [
+            "sharing:rw"
+          ]
         }
       },
       "delete": {
@@ -16007,7 +16430,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": null,
-          "scope": null
+          "scope": [
+            "sharing:rw"
+          ]
         }
       }
     },
@@ -16048,7 +16473,7 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": null,
-          "scope": null
+          "scope": "none"
         }
       }
     },
@@ -16112,7 +16537,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": null,
-          "scope": null
+          "scope": [
+            "files:rw"
+          ]
         }
       }
     },
@@ -16153,7 +16580,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": null,
-          "scope": null
+          "scope": [
+            "files:rw"
+          ]
         }
       }
     },
@@ -16205,7 +16634,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": null,
-          "scope": null
+          "scope": [
+            "files:rw"
+          ]
         }
       }
     },
@@ -16257,7 +16688,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": null,
-          "scope": null
+          "scope": [
+            "files:rw"
+          ]
         }
       }
     },
@@ -16371,7 +16804,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": null,
-          "scope": null
+          "scope": [
+            "files:ro"
+          ]
         }
       }
     },
@@ -16423,7 +16858,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": null,
-          "scope": null
+          "scope": [
+            "files:rw"
+          ]
         }
       }
     },
@@ -16475,7 +16912,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": null,
-          "scope": null
+          "scope": [
+            "files:rw"
+          ]
         }
       }
     },
@@ -16539,7 +16978,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": null,
-          "scope": null
+          "scope": [
+            "files:rw"
+          ]
         }
       }
     },
@@ -16586,7 +17027,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": null,
-          "scope": null
+          "scope": [
+            "files:rw"
+          ]
         }
       },
       "head": {
@@ -16638,7 +17081,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": null,
-          "scope": null
+          "scope": [
+            "files:ro"
+          ]
         }
       },
       "patch": {
@@ -16744,7 +17189,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": null,
-          "scope": null
+          "scope": [
+            "files:rw"
+          ]
         }
       }
     },
@@ -16829,7 +17276,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": null,
-          "scope": null
+          "scope": [
+            "files:rw"
+          ]
         }
       }
     },
@@ -16890,7 +17339,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": null,
-          "scope": null
+          "scope": [
+            "sharing:ro"
+          ]
         }
       }
     },
@@ -16972,7 +17423,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": null,
-          "scope": null
+          "scope": [
+            "files:rw"
+          ]
         }
       }
     }

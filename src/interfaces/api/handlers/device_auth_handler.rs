@@ -18,17 +18,27 @@ use std::sync::Arc;
 use uuid::Uuid;
 
 use crate::application::dtos::device_auth_dto::*;
-use crate::application::ports::scope_ports::Condition;
+use crate::application::ports::scope_ports::{Condition, Scope};
 use crate::application::services::device_auth_service::{DeviceAuthService, DeviceInfoDto};
 
 use crate::common::di::AppState;
 use crate::interfaces::api::policy_router::{GatedRouter, delete, get, post};
 
-/// No credential at all.
-const PUBLIC: [Condition; 1] = [Condition::public()];
+/// Public AND scopeless. The two travel together: no credential exists
+/// yet to carry a scope on a login or pre-auth flow, and the compile step
+/// refuses `public` combined with an area in any case. Declaring both
+/// states the scope axis rather than leaving it `Undefined`, which spec
+/// generation refuses.
+const PUBLIC_SCOPELESS: [Condition; 2] = [Condition::public(), Condition::scopeless()];
 use crate::interfaces::errors::AppError;
 use crate::interfaces::middleware::auth::AuthUser;
 use crate::interfaces::middleware::trusted_proxy::client_ip_from_parts;
+
+/// The caller's OWN credentials. The app-password and device ceilings
+/// grant no `security`, which is the whole mechanism by which a
+/// non-interactive credential cannot mint or alter another one — not
+/// anything noticing what kind it is.
+const SECURITY: [Condition; 1] = [Condition::scope_by_verb(Scope::Security)];
 
 /// Create the device auth router.
 ///
@@ -38,17 +48,23 @@ pub fn device_auth_public_routes() -> GatedRouter<Arc<AppState>> {
     GatedRouter::new()
         // Client-facing endpoints: no credential exists yet — acquiring
         // one is what they are for.
-        .route("/authorize", post(device_authorize).policy(PUBLIC))
-        .route("/token", post(device_token).policy(PUBLIC))
+        .route(
+            "/authorize",
+            post(device_authorize).policy(PUBLIC_SCOPELESS),
+        )
+        .route("/token", post(device_token).policy(PUBLIC_SCOPELESS))
 }
 
 pub fn device_auth_protected_routes() -> GatedRouter<Arc<AppState>> {
     GatedRouter::new()
+        // Per route, for the reason in `app_password_handler`: this
+        // router is nested at `/auth/device`, which it shares with the
+        // PUBLIC `authorize` and `token` endpoints.
         // User-facing endpoints (require valid session)
-        .route("/verify", get(device_verify_info))
-        .route("/verify", post(device_verify_action))
-        .route("/devices", get(list_devices))
-        .route("/devices/{id}", delete(revoke_device))
+        .route("/verify", get(device_verify_info).policy(SECURITY))
+        .route("/verify", post(device_verify_action).policy(SECURITY))
+        .route("/devices", get(list_devices).policy(SECURITY))
+        .route("/devices/{id}", delete(revoke_device).policy(SECURITY))
 }
 
 // ============================================================================

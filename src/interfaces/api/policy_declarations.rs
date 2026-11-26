@@ -125,6 +125,21 @@ pub fn declarations() -> PolicyRegistry {
     //
     // `GET /api/files/recent-changes` moved for the same reason.
 
+    // `GET /api/wopi/editor-url` — declared HERE, not at its route,
+    // because `/api/wopi` is mounted separately in `main.rs` rather than
+    // nested into `main_api_router`, so a declaration made on its router
+    // never reaches this registry. The route carries the same
+    // declaration for the gate; this one is what the SPEC and the
+    // generation check see.
+    //
+    // `files:rw` against the verb: it is a GET, but it mints a WOPI token
+    // usable for `POST /wopi/files/{id}/contents`, so a read-only
+    // credential would walk away with write capability.
+    reg.declare(
+        Site::Exact(Op::Rest("GET", "/api/wopi/editor-url")),
+        vec![Condition::scope(Scope::Files, Access::ReadWrite)],
+    );
+
     reg
 }
 
@@ -223,6 +238,13 @@ mod tests {
         let mut ops = dav_ops();
         ops.extend([
             Op::Rest("GET", "/api/folders"),
+            // `/api/wopi/editor-url` is declared here rather than at its
+            // route, because `/api/wopi` is mounted outside
+            // `main_api_router` — so it has to be named here too, or the
+            // orphan check fires on it. That it DID fire is the check
+            // working: a declaration naming no live operation is exactly
+            // what it exists to catch.
+            Op::Rest("GET", "/api/wopi/editor-url"),
             // The three non-DAV internal-user sites, plus the GET
             // siblings that must stay OPEN.
         ]);

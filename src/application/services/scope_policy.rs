@@ -219,32 +219,33 @@ struct Folded {
     scope: Option<ScopeReq>,
 }
 
-/// Fold ONE area declaration into the accumulator.
+/// Append ONE area requirement to the accumulator.
 ///
-/// Shared by `Condition::Scope` and `Condition::ScopeByVerb`, which differ
-/// only in where the access came from — so the conflict and tightening
-/// rules live in one place rather than twice.
-fn fold_scope(op: Op, acc: &mut Option<ScopeReq>, s: Scope, a: Access) -> Result<(), PolicyError> {
-    match *acc {
-        // Same area: tighten the access. `ReadWrite` wins, which
-        // `Access`'s ordering already encodes.
-        Some(ScopeReq::Area(prev, prev_access)) if prev == s => {
-            *acc = Some(ScopeReq::Area(s, prev_access.max(a)));
-        }
-        Some(ScopeReq::Area(first, _)) => {
-            return Err(PolicyError::ConflictingScopes {
-                op,
-                first,
-                second: s,
-            });
-        }
-        // A parent declaring "none required" may be TIGHTENED by a child
-        // naming an area — the direction the other axes also allow.
-        Some(ScopeReq::None) | Some(ScopeReq::Undefined) | None => {
-            *acc = Some(ScopeReq::Area(s, a));
-        }
-    }
-    Ok(())
+/// APPEND, never change — Ed's rule, and it is what makes the fold
+/// monotonic. A leaf under a `files` prefix that also needs `sharing`
+/// ends up requiring BOTH, so a credential must carry both. Two
+/// consequences worth knowing:
+///
+/// - there is no `ConflictingScopes` error any more. Two areas in a chain
+///   used to be a contradiction; they are now a conjunction, which is
+///   strictly tighter and cannot surprise anyone in the unsafe direction.
+/// - a MIXED subtree must declare per route rather than at its prefix,
+///   because a leaf cannot shed what the prefix imposed. `/api/groups` is
+///   the worked case: its mutations are `admin` and `/search` is
+///   `sharing`, so declaring `admin` on the prefix would make the share
+///   picker require admin scope.
+///
+/// Same area twice tightens the access by `max`, which `ScopeSet::insert`
+/// already does.
+fn append_scope(acc: &mut Option<ScopeReq>, s: Scope, a: Access) {
+    let mut set = match *acc {
+        Some(ScopeReq::Areas(set)) => set,
+        // A scopeless parent may be TIGHTENED by a child naming an area;
+        // the reverse is `ScopeWidens`.
+        Some(ScopeReq::None) | Some(ScopeReq::Undefined) | None => ScopeSet::empty(),
+    };
+    set.insert(s, a);
+    *acc = Some(ScopeReq::Areas(set));
 }
 
 /// Fold `chain` — ordered ROOT first, leaf last — into one total
@@ -290,20 +291,23 @@ pub fn compile(op: Op, chain: &[&[Condition]]) -> Result<Policy, PolicyError> {
                     }
                     acc.principal = Some(acc.principal.map_or(p, |q| q.max(p)));
                 }
-                Condition::Scope(s, a) => fold_scope(op, &mut acc.scope, s, a)?,
+                Condition::Scope(s, a) => append_scope(&mut acc.scope, s, a),
                 // Resolved HERE rather than at request time: `op` carries
                 // the method, so the compiled policy holds a plain
                 // `Access` and evaluate stays field reads.
                 Condition::ScopeByVerb(s) => {
                     let a = Access::from_method(op.method());
-                    fold_scope(op, &mut acc.scope, s, a)?;
+                    append_scope(&mut acc.scope, s, a);
                 }
                 Condition::Scopeless => match acc.scope {
                     // A parent that required an area cannot be WIDENED to
                     // "none required" by a child — the same rule the role
                     // and principal axes enforce with a `max`.
-                    Some(ScopeReq::Area(first, _)) => {
-                        return Err(PolicyError::ScopeWidens { op, parent: first });
+                    Some(ScopeReq::Areas(set)) => {
+                        return Err(PolicyError::ScopeWidens {
+                            op,
+                            parent: set.iter().next().map_or(Scope::Files, |(s, _)| s),
+                        });
                     }
                     // Repeating it down the chain is harmless.
                     Some(ScopeReq::None) | Some(ScopeReq::Undefined) | None => {
@@ -357,12 +361,27 @@ fn reject_unsatisfiable(op: Op, policy: &Policy) -> Result<(), PolicyError> {
                 role,
             });
         }
-        if let Some((scope, _)) = policy.scope.area() {
-            return Err(PolicyError::PublicWithScope {
-                op,
-                principal: policy.principal,
-                scope,
-            });
+        if let Some(required) = policy.scope.areas() {
+            // A PUBLIC caller has no credential at all, so no area is
+            // reachable. A VISITOR holds a ring, which carries `files:ro`
+            // and only that — so `files:ro` is satisfiable and anything
+            // beyond it is not.
+            //
+            // This is the compile step turning "a ring can never satisfy
+            // this" into a generation failure instead of a 403 that only
+            // appears when someone opens a share link.
+            let ceiling = if policy.principal == MinPrincipal::Visitor {
+                ScopeSet::ring()
+            } else {
+                ScopeSet::empty()
+            };
+            if let Some((scope, _)) = ceiling.first_unmet(required) {
+                return Err(PolicyError::PublicWithScope {
+                    op,
+                    principal: policy.principal,
+                    scope,
+                });
+            }
         }
     }
     Ok(())
@@ -489,12 +508,18 @@ pub fn evaluate(
     // 403 every request on the instance. The refusal lands with the
     // declarations, in PR 2 step 4 — as a GENERATION failure, with a
     // runtime deny beside it as defence in depth. Until then `Undefined`
-    // and `None` behave alike, which `ScopeReq::area()` encodes.
-    if let Some((scope, access)) = policy.scope.area() {
+    // and `None` behave alike, which `ScopeReq::areas()` encodes.
+    if let Some(required) = policy.scope.areas() {
         // No scope set means a credential minted before the claim
         // existed, and those predate any restriction — § Defaults.
         let granted = scopes.unwrap_or_else(ScopeSet::full);
-        if !granted.allows(scope, access) {
+        if !granted.satisfies(required)
+            && let Some((scope, access)) = granted.first_unmet(required)
+        {
+            // The FIRST unmet requirement, not the whole set: a denial
+            // names one thing to fix, and an operation requiring both
+            // `files` and `sharing` is unhelpful if it reports both when
+            // only one is missing.
             return Err(Denial::ScopeNotGranted { scope, access });
         }
     }
@@ -517,10 +542,16 @@ mod tests {
         let decl = [Condition::scope_by_verb(Scope::Files)];
 
         let read = compile(Op::Rest("GET", "/api/files/{id}"), &[&decl]).expect("compiles");
-        assert_eq!(read.scope, ScopeReq::Area(Scope::Files, Access::ReadOnly));
+        assert_eq!(
+            read.scope,
+            ScopeReq::Areas(ScopeSet::empty().with(Scope::Files, Access::ReadOnly))
+        );
 
         let write = compile(Op::Rest("DELETE", "/api/files/{id}"), &[&decl]).expect("compiles");
-        assert_eq!(write.scope, ScopeReq::Area(Scope::Files, Access::ReadWrite));
+        assert_eq!(
+            write.scope,
+            ScopeReq::Areas(ScopeSet::empty().with(Scope::Files, Access::ReadWrite))
+        );
     }
 
     /// An unknown method is a WRITE, and `LOCK` is the case most likely
@@ -549,6 +580,106 @@ mod tests {
         assert_eq!(silent.scope, ScopeReq::Undefined);
     }
 
+    /// A leaf APPENDS to its prefix's area, it does not replace it.
+    ///
+    /// This is the rule that decides where a route may be mounted, and it
+    /// is why `/api/drives/{id}/members` requires `files` AND `sharing`:
+    /// listing drive members reads drive metadata and reads grants, so a
+    /// credential needs both. The fold is monotonic — every declaration
+    /// down the chain only tightens — which is what removed the old
+    /// `ConflictingScopes` error entirely.
+    ///
+    /// The cost, pinned by the second half: a MIXED subtree cannot declare
+    /// at its prefix, because a leaf can never shed what the prefix
+    /// imposed. `/api/groups` is the live case — declaring `admin` on the
+    /// nest made the share picker's `/search` require admin scope.
+    #[test]
+    fn a_leaf_appends_an_area_rather_than_replacing_it() {
+        let p = compile(
+            Op::Rest("GET", "/api/drives/{id}/members"),
+            &[
+                &[Condition::scope_by_verb(Scope::Files)],
+                &[Condition::scope_by_verb(Scope::Sharing)],
+            ],
+        )
+        .expect("two areas are a conjunction, not a conflict");
+
+        let required = p.scope.areas().expect("areas");
+        assert!(required.allows(Scope::Files, Access::ReadOnly));
+        assert!(required.allows(Scope::Sharing, Access::ReadOnly));
+
+        // A credential holding only one of them is refused, and the
+        // denial names the one that is MISSING rather than the whole set.
+        let files_only = ScopeSet::empty().with(Scope::Files, Access::ReadOnly);
+        assert!(!files_only.satisfies(required));
+        assert_eq!(
+            files_only.first_unmet(required),
+            Some((Scope::Sharing, Access::ReadOnly))
+        );
+
+        // And the same area twice tightens the ACCESS by max.
+        let tightened = compile(
+            Op::Rest("POST", "/api/files/{id}"),
+            &[
+                &[Condition::scope(Scope::Files, Access::ReadOnly)],
+                &[Condition::scope_by_verb(Scope::Files)],
+            ],
+        )
+        .expect("compiles");
+        assert!(
+            tightened
+                .scope
+                .areas()
+                .expect("areas")
+                .allows(Scope::Files, Access::ReadWrite),
+            "a rw leaf under a ro prefix must yield rw"
+        );
+    }
+
+    /// A visitor-admitting operation may require `files:ro` and nothing
+    /// more, because that is exactly what a ring carries.
+    ///
+    /// Caught at COMPILE time rather than as a 403 when someone opens a
+    /// share link — which is the whole value of the ceiling being a
+    /// constant the compile step can consult.
+    #[test]
+    fn a_visitor_route_may_require_files_ro_and_no_more() {
+        let ok = compile(
+            Op::Rest("GET", "/api/files/{id}"),
+            &[
+                &[Condition::scope_by_verb(Scope::Files)],
+                &[Condition::visitor_allowed()],
+            ],
+        );
+        assert!(ok.is_ok(), "files:ro is within a ring's ceiling: {ok:?}");
+
+        for (area, why) in [
+            (Scope::Sharing, "a ring has no account, so no grants"),
+            (Scope::Account, "a ring has no profile"),
+            (Scope::Admin, "a ring cannot administer anything"),
+        ] {
+            let refused = compile(
+                Op::Rest("GET", "/api/whatever"),
+                &[
+                    &[Condition::scope(area, Access::ReadOnly)],
+                    &[Condition::visitor_allowed()],
+                ],
+            );
+            assert!(refused.is_err(), "{area:?}: {why} — must be refused");
+        }
+
+        // Write access is beyond a ring too: a `Share` has no write
+        // permission at all, only `max_downloads`.
+        let write = compile(
+            Op::Rest("DELETE", "/api/files/{id}"),
+            &[
+                &[Condition::scope(Scope::Files, Access::ReadWrite)],
+                &[Condition::visitor_allowed()],
+            ],
+        );
+        assert!(write.is_err(), "files:rw exceeds a ring: {write:?}");
+    }
+
     /// The scope axis TIGHTENS down a chain, like role and principal.
     ///
     /// A parent saying "no scope required" may be narrowed by a child
@@ -567,7 +698,7 @@ mod tests {
         .expect("narrowing a scopeless parent is legal");
         assert_eq!(
             tightened.scope,
-            ScopeReq::Area(Scope::Files, Access::ReadOnly)
+            ScopeReq::Areas(ScopeSet::empty().with(Scope::Files, Access::ReadOnly))
         );
 
         let widened = compile(
@@ -614,7 +745,10 @@ mod tests {
         .expect("adding a second axis is ordinary inheritance");
 
         assert_eq!(p.role, Some(MinRole::Admin));
-        assert_eq!(p.scope, ScopeReq::Area(Scope::Security, Access::ReadWrite));
+        assert_eq!(
+            p.scope,
+            ScopeReq::Areas(ScopeSet::empty().with(Scope::Security, Access::ReadWrite))
+        );
         assert_eq!(p.principal, MinPrincipal::User);
     }
 
@@ -725,18 +859,36 @@ mod tests {
         assert!(err.to_string().contains("/api/admin/public-thing"));
     }
 
-    /// A visitor carries no `ScopeSet`, so a scope requirement can never
-    /// be met — the same unsatisfiability as the role case.
+    /// A visitor carries EXACTLY `files:ro`, so that much is satisfiable
+    /// and anything beyond it refuses to boot.
+    ///
+    /// This test used to assert that any scope on a visitor route was
+    /// unsatisfiable, on the premise that a ring carries no scopes at
+    /// all. It does carry one — `ScopeSet::ring()` — which is what lets
+    /// the seven share-browsing GETs sit under the `files` prefix instead
+    /// of having to declare themselves scopeless and widen for everyone
+    /// else.
     #[test]
-    fn a_visitor_with_a_scope_requirement_refuses_to_boot() {
-        let err = compile(
+    fn a_visitor_route_is_bounded_by_the_rings_ceiling() {
+        compile(
             Op::Rest("GET", "/api/files/{id}"),
             &[&[
                 Condition::visitor_allowed(),
                 Condition::scope(Scope::Files, Access::ReadOnly),
             ]],
         )
-        .expect_err("a ring has no scope set");
+        .expect("files:ro is exactly what a ring carries");
+
+        // `files:rw` is not: a `Share` has `max_downloads` and no write
+        // permission at all, so there is no write-capable ring.
+        let err = compile(
+            Op::Rest("DELETE", "/api/files/{id}"),
+            &[&[
+                Condition::visitor_allowed(),
+                Condition::scope(Scope::Files, Access::ReadWrite),
+            ]],
+        )
+        .expect_err("a ring is read-only");
 
         assert!(matches!(
             err,
@@ -807,7 +959,10 @@ mod tests {
         .expect("role and scope are different axes and intersect");
 
         assert_eq!(p.role, Some(MinRole::Admin));
-        assert_eq!(p.scope, ScopeReq::Area(Scope::Files, Access::ReadOnly));
+        assert_eq!(
+            p.scope,
+            ScopeReq::Areas(ScopeSet::empty().with(Scope::Files, Access::ReadOnly))
+        );
     }
 
     /// The same area twice tightens access: `ro` then `rw` yields `rw`.
@@ -822,34 +977,46 @@ mod tests {
         )
         .expect("same area, stricter access");
 
-        assert_eq!(p.scope, ScopeReq::Area(Scope::Security, Access::ReadWrite));
+        assert_eq!(
+            p.scope,
+            ScopeReq::Areas(ScopeSet::empty().with(Scope::Security, Access::ReadWrite))
+        );
     }
 
-    /// Two DIFFERENT areas in one chain are refused rather than silently
-    /// reduced to one. § 2. Compile says scope folds as a union, but
-    /// `Policy::scope` holds a single pair — so a real two-area operation
+    /// Two DIFFERENT areas in one chain are a CONJUNCTION — both are
+    /// required, and neither is dropped.
+    ///
+    /// This test previously asserted a `ConflictingScopes` error, and its
+    /// own comment predicted what replaced it: "a real two-area operation
     /// should force that field to become a `ScopeSet` rather than lose a
-    /// requirement here.
+    /// requirement here." A real one arrived —
+    /// `/api/drives/{id}/members` reads drive metadata and reads grants —
+    /// so `Policy::scope` became a set and a leaf APPENDS rather than
+    /// conflicting. The error is gone, not relaxed: requiring both is
+    /// strictly tighter than requiring either.
     #[test]
-    fn two_different_scopes_are_refused_rather_than_one_dropped() {
-        let op = Op::Rest("POST", "/api/two-areas");
-        let err = compile(
-            op,
+    fn two_different_scopes_are_both_required() {
+        let p = compile(
+            Op::Rest("POST", "/api/two-areas"),
             &[
                 &[Condition::scope(Scope::Files, Access::ReadOnly)],
                 &[Condition::scope(Scope::Calendar, Access::ReadOnly)],
             ],
         )
-        .expect_err("a policy holds one scope");
+        .expect("two areas are a conjunction");
 
-        assert_eq!(
-            err,
-            PolicyError::ConflictingScopes {
-                op,
-                first: Scope::Files,
-                second: Scope::Calendar
-            }
-        );
+        let required = p.scope.areas().expect("areas");
+        assert!(required.allows(Scope::Files, Access::ReadOnly));
+        assert!(required.allows(Scope::Calendar, Access::ReadOnly));
+
+        // Neither alone satisfies it — the point of the conjunction.
+        for one in [Scope::Files, Scope::Calendar] {
+            let partial = ScopeSet::empty().with(one, Access::ReadOnly);
+            assert!(
+                !partial.satisfies(required),
+                "{one:?} alone must not satisfy a two-area requirement"
+            );
+        }
     }
 
     /// Declaration order within a chain must not change the result, or a
@@ -987,7 +1154,7 @@ mod tests {
     #[test]
     fn an_absent_scope_set_grandfathers_to_full() {
         let p = Policy {
-            scope: ScopeReq::Area(Scope::Security, Access::ReadWrite),
+            scope: ScopeReq::Areas(ScopeSet::empty().with(Scope::Security, Access::ReadWrite)),
             ..Policy::default()
         };
 
@@ -1015,7 +1182,7 @@ mod tests {
     #[test]
     fn a_scope_narrowed_credential_is_refused_without_naming_its_kind() {
         let p = Policy {
-            scope: ScopeReq::Area(Scope::Security, Access::ReadWrite),
+            scope: ScopeReq::Areas(ScopeSet::empty().with(Scope::Security, Access::ReadWrite)),
             ..Policy::default()
         };
         let app_password = ScopeSet::empty()
@@ -1026,7 +1193,7 @@ mod tests {
 
         // Read-only where write is required is the same refusal.
         let files_rw = Policy {
-            scope: ScopeReq::Area(Scope::Files, Access::ReadWrite),
+            scope: ScopeReq::Areas(ScopeSet::empty().with(Scope::Files, Access::ReadWrite)),
             ..Policy::default()
         };
         let ro = ScopeSet::empty().with(Scope::Files, Access::ReadOnly);

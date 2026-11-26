@@ -318,21 +318,23 @@ pub enum ScopeReq {
     Undefined,
     /// No scope required, stated deliberately.
     None,
-    /// This area, at least this access.
-    Area(Scope, Access),
+    /// These areas, each at least the given access. A SET, because a
+    /// leaf cannot change an inherited requirement — only append to it,
+    /// so an operation under two declarations requires both.
+    Areas(ScopeSet),
 }
 
 impl ScopeReq {
-    /// The area and access, when one is required.
+    /// The areas required, if any.
     ///
     /// `Undefined` and `None` both yield `Option::None` — they differ in
     /// what the COMPILE step does about them, not in what a satisfied
-    /// request needs, so a caller checking "is there an area to verify?"
+    /// request needs, so a caller checking "is there anything to verify?"
     /// treats them alike.
     #[must_use]
-    pub fn area(self) -> Option<(Scope, Access)> {
+    pub fn areas(self) -> Option<ScopeSet> {
         match self {
-            Self::Area(s, a) => Some((s, a)),
+            Self::Areas(set) => Some(set),
             Self::Undefined | Self::None => Option::None,
         }
     }
@@ -547,6 +549,65 @@ impl ScopeSet {
     }
 
     /// Does this set permit `scope` at `access`?
+    /// What a public-share session (the RING) may ever carry: `files:ro`
+    /// and nothing else.
+    ///
+    /// Read-only because a share IS read-only — `domain::entities::Share`
+    /// has `max_downloads` and `download_count` and no upload or write
+    /// permission at all, so there is no such thing as a write-capable
+    /// ring to provide for.
+    ///
+    /// `files` and nothing else because a ring holds a TOKEN for one
+    /// shared item; it has no account behind it, so `account`,
+    /// `security`, `admin`, `sharing`, `calendar`, `contacts` and `faces`
+    /// are not merely ungranted but unreachable.
+    ///
+    /// The compile step uses this to refuse a visitor-admitting operation
+    /// that requires more — which turns "a ring cannot satisfy this" from
+    /// a runtime 403 into a generation failure.
+    pub const fn ring() -> Self {
+        Self {
+            readable: Scope::Files.bit(),
+            writable: 0,
+        }
+    }
+
+    /// Every (area, access) this set carries, weakest-first by area.
+    ///
+    /// For rendering a requirement — the dump and the spec both publish
+    /// the resolved set — and for naming the first unmet one in a denial.
+    pub fn iter(self) -> impl Iterator<Item = (Scope, Access)> {
+        Scope::ALL.into_iter().filter_map(move |s| {
+            if self.allows(s, Access::ReadWrite) {
+                Some((s, Access::ReadWrite))
+            } else if self.allows(s, Access::ReadOnly) {
+                Some((s, Access::ReadOnly))
+            } else {
+                None
+            }
+        })
+    }
+
+    /// Does this set satisfy everything `required` asks for?
+    ///
+    /// A superset test, which is what makes the APPEND-only fold work: a
+    /// policy accumulates requirements down the chain, and a credential
+    /// must carry all of them. Both sides are the same type on purpose —
+    /// a requirement and a grant are the same shape, so the check is two
+    /// mask comparisons rather than a loop with a special case.
+    #[must_use]
+    pub const fn satisfies(self, required: Self) -> bool {
+        (self.readable & required.readable) == required.readable
+            && (self.writable & required.writable) == required.writable
+    }
+
+    /// The first (area, access) in `required` that this set does NOT
+    /// carry, for naming in a denial.
+    #[must_use]
+    pub fn first_unmet(self, required: Self) -> Option<(Scope, Access)> {
+        required.iter().find(|&(s, a)| !self.allows(s, a))
+    }
+
     pub const fn allows(self, scope: Scope, access: Access) -> bool {
         let bit = scope.bit();
         match access {

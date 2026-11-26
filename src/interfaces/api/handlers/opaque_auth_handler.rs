@@ -102,18 +102,28 @@ use utoipa::ToSchema;
 use uuid::Uuid;
 
 use crate::application::dtos::user_dto::AuthResponseDto;
-use crate::application::ports::scope_ports::Condition;
+use crate::application::ports::scope_ports::{Condition, Scope};
 
 use crate::common::di::AppState;
 use crate::interfaces::api::policy_router::{GatedRouter, get, post};
 
-/// No credential at all — these ARE the login handshake.
-const PUBLIC: [Condition; 1] = [Condition::public()];
+/// Public AND scopeless. The two travel together: no credential exists
+/// yet to carry a scope on a login or pre-auth flow, and the compile step
+/// refuses `public` combined with an area in any case. Declaring both
+/// states the scope axis rather than leaving it `Undefined`, which spec
+/// generation refuses.
+const PUBLIC_SCOPELESS: [Condition; 2] = [Condition::public(), Condition::scopeless()];
 use crate::infrastructure::services::opaque_login_exchange::{ExchangeId, OpaqueLoginExchange};
 use crate::infrastructure::services::opaque_service::{OpaqueService, OxiCloudSuite};
 use crate::interfaces::api::cookie_auth;
 use crate::interfaces::errors::AppError;
 use crate::interfaces::middleware::auth::CurrentUserId;
+
+/// The caller's OWN credentials. The app-password and device ceilings
+/// grant no `security`, which is the whole mechanism by which a
+/// non-interactive credential cannot mint or alter another one — not
+/// anything noticing what kind it is.
+const SECURITY: [Condition; 1] = [Condition::scope_by_verb(Scope::Security)];
 
 /// Session-required OPAQUE routes. Callers layer the auth + CSRF
 /// middlewares in `main.rs` (mirrors [`auth_protected_routes`]).
@@ -129,8 +139,13 @@ use crate::interfaces::middleware::auth::CurrentUserId;
 /// KE1. Separate prefixes side-step the composition rule cleanly.
 pub fn opaque_register_routes() -> GatedRouter<Arc<AppState>> {
     GatedRouter::new()
-        .route("/start", post(register_start))
-        .route("/finish", post(register_finish))
+        // Per route, for the reason in `app_password_handler`. This
+        // router IS mounted at its own `/auth/opaque/register` prefix, so
+        // the router-level form would be safe here — but keeping the two
+        // halves of the OPAQUE handshake symmetric matters more, and the
+        // login half declares per route because it is public.
+        .route("/start", post(register_start).policy(SECURITY))
+        .route("/finish", post(register_finish).policy(SECURITY))
 }
 
 /// Public (unauthenticated) OPAQUE login routes. Mount under
@@ -146,9 +161,9 @@ pub fn opaque_register_routes() -> GatedRouter<Arc<AppState>> {
 /// limit closes the secondary "how fast can I ask" leak.
 pub fn opaque_login_routes() -> GatedRouter<Arc<AppState>> {
     GatedRouter::new()
-        .route("/lookup", post(login_lookup).policy(PUBLIC))
-        .route("/ke1", post(login_ke1).policy(PUBLIC))
-        .route("/ke3", post(login_ke3).policy(PUBLIC))
+        .route("/lookup", post(login_lookup).policy(PUBLIC_SCOPELESS))
+        .route("/ke1", post(login_ke1).policy(PUBLIC_SCOPELESS))
+        .route("/ke3", post(login_ke3).policy(PUBLIC_SCOPELESS))
 }
 
 /// Public config-publish endpoint. Mount under `/api/auth/opaque`
@@ -157,7 +172,7 @@ pub fn opaque_login_routes() -> GatedRouter<Arc<AppState>> {
 /// login mount to avoid layering the login rate limiter on a read
 /// that isn't a login attempt.
 pub fn opaque_params_routes() -> GatedRouter<Arc<AppState>> {
-    GatedRouter::new().route("/params", get(opaque_params).policy(PUBLIC))
+    GatedRouter::new().route("/params", get(opaque_params).policy(PUBLIC_SCOPELESS))
 }
 
 /// Client → server on register KE1. `registrationRequest` is the

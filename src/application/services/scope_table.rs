@@ -81,7 +81,14 @@ impl PolicyTable {
             // read to find what is not classified, so the two must not
             // look alike.
             let scope = match p.scope {
-                ScopeReq::Area(s, a) => format!("{s:?}:{a:?}"),
+                // Every requirement, joined — an operation can require
+                // more than one area now that a leaf appends rather than
+                // replaces.
+                ScopeReq::Areas(set) => set
+                    .iter()
+                    .map(|(s, a)| format!("{s:?}:{a:?}"))
+                    .collect::<Vec<_>>()
+                    .join("+"),
                 ScopeReq::None => "-".to_string(),
                 ScopeReq::Undefined => "?".to_string(),
             };

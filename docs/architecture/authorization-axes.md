@@ -254,6 +254,81 @@ Three things worth reading off the diagram:
 - **A DB failure in a Gate-axis check answers 503, never a denial.** A transient
   fault must not read as "you are not an admin" — see `auth-model.md`.
 
+## Scope APPENDS — a leaf cannot change what its prefix requires
+
+**Read this before adding a route.** It is the one rule that decides where
+a route may be mounted, and getting it wrong is silent until someone's
+credential is refused.
+
+A declaration on a nest applies to everything beneath it. A declaration
+on a route **adds** to that. It never replaces it:
+
+```rust
+// /api/drives declares files; the members route adds sharing
+.nest("/drives", drives_router.policy([Condition::scope_by_verb(Scope::Files)]))
+// …inside drives_router:
+.route("/{id}/members", get(list_members)
+    .policy([Condition::scope_by_verb(Scope::Sharing)]))
+```
+
+`GET /api/drives/{id}/members` then requires **`files:ro` AND
+`sharing:ro`** — a credential must carry both. That is deliberate: listing
+drive members reads drive metadata *and* reads grants, so requiring both
+is honest, and the fold is monotonic — every declaration down the chain
+only ever tightens.
+
+Three things follow, and the third is the one that bites:
+
+1. **There is no conflict to resolve.** Two areas in a chain used to be a
+   boot error. They are now a conjunction, which is strictly tighter, so
+   no precedence rule is needed and no declaration can be weakened from
+   below.
+2. **The same area twice tightens the ACCESS** by `max` — a `files:ro`
+   prefix with a `files:rw` leaf yields `files:rw`.
+3. **A MIXED subtree must declare per route, never at its prefix.** A leaf
+   cannot shed what a prefix imposed, so a prefix declaration is a
+   commitment binding every route beneath it, including ones not written
+   yet.
+
+### The worked case: `/api/groups`
+
+The group CRUD is the `admin` control surface. `/api/groups/search` is
+recipient lookup for the share picker, which an ordinary user does.
+Declaring `admin` on the `/api/groups` nest made `search` require
+`["admin:ro", "sharing:ro"]` — the spec showed it, and it would have meant
+a share picker demanding admin scope.
+
+So `/api/groups` declares **nothing** at the prefix: the CRUD routes
+declare `admin` each, and `search` declares `sharing`. Verbose, and
+correct. The prefix form is for subtrees that are homogeneous, like
+`/api/calendars`.
+
+### Consequences for the API tree
+
+- **Where you mount a route decides what it requires.** The tree shape is
+  part of the policy, not just addressing. Adding `/api/files/share` would
+  silently require `files` on an operation that is about grants.
+- **Adding a route under an existing prefix inherits silently.** That is
+  the desired default — it is what stops a new route being `Undefined` —
+  but it means checking that the prefix's area actually fits before
+  mounting there, rather than after.
+- **A route that fits no existing prefix wants its own**, or a per-route
+  declaration. Reaching for a prefix that is nearly right is how an
+  operation ends up requiring an area it has nothing to do with.
+
+### Visitors carry exactly `files:ro`
+
+A public-share session (the ring) holds a token for one shared item, with
+no account behind it. `ScopeSet::ring()` is therefore `files:ro` and
+nothing else — read-only because a `Share` has `max_downloads` and
+`download_count` and no write permission at all, and `files`-only because
+no other area is reachable without an account.
+
+The compile step enforces it: a visitor-admitting operation that requires
+more than `files:ro` is a GENERATION failure, not a 403 discovered when
+someone opens a share link. So the seven visitor-reachable GETs may
+require `files:ro` and nothing further.
+
 ## One place to declare a route and its policy
 
 **`src/interfaces/api/routes.rs`.** Route, layer and policy are written

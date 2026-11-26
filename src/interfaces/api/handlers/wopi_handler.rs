@@ -928,7 +928,19 @@ pub fn wopi_routes(
     let api_router = crate::interfaces::api::policy_router::GatedRouter::new()
         .route(
             "/editor-url",
-            crate::interfaces::api::policy_router::get(get_editor_url),
+            // `files:rw` EXPLICITLY, against the verb. This is a GET, so
+            // verb-derivation would make it `files:ro` — but it mints a
+            // WOPI token usable for `POST /wopi/files/{id}/contents`, so a
+            // read-only credential would walk away with write capability.
+            // A credential-minting GET is the case § Access follows the
+            // VERB names: the method reads as harmless exactly when it is
+            // not.
+            crate::interfaces::api::policy_router::get(get_editor_url).policy([
+                crate::application::ports::scope_ports::Condition::scope(
+                    crate::application::ports::scope_ports::Scope::Files,
+                    crate::application::ports::scope_ports::Access::ReadWrite,
+                ),
+            ]),
         )
         .with_state(wopi_state);
 
