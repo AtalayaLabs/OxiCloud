@@ -151,7 +151,7 @@ it('createAppPassword unwraps .password out of the DTO envelope', async () => {
 		label: 'test',
 		password: 'oxicloud-ABCDEFGHIJKLMNOPQRSTUVWXYZ012345',
 		username: 'alice',
-		scopes: 'webdav,caldav,carddav',
+		scopes: 'oxicloud:files:rw,oxicloud:calendar:rw,oxicloud:contacts:rw',
 		expires_at: null,
 		instructions: {} as never
 	});

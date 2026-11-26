@@ -1049,6 +1049,11 @@ async fn run(config: common::config::AppConfig) -> Result<(), Box<dyn std::error
         // Protected auth routes (/me, /change-password, /logout) — require auth + CSRF
         api_subs.auth_protected = api_subs
             .auth_protected
+            // The gate, as on `app_passwords` above.
+            .route_layer(axum::middleware::from_fn_with_state(
+                app_state.clone(),
+                oxicloud::interfaces::middleware::policy::policy_gate_layer,
+            ))
             .layer(axum::middleware::from_fn_with_state(
                 app_state.clone(),
                 require_no_password_change_pending_layer,
@@ -1066,6 +1071,30 @@ async fn run(config: common::config::AppConfig) -> Result<(), Box<dyn std::error
         // App password management routes — require auth + CSRF
         api_subs.app_passwords = api_subs
             .app_passwords
+            // The gate, so the policy this subtree PUBLISHES is the one
+            // ENFORCED. It was attached to `protected` alone, which left
+            // every declaration on the auth family inert: published in
+            // the spec, backed by no router check — the exact failure the
+            // engine exists to remove, and the one the WOPI note below
+            // names in the same words.
+            //
+            // The three `Scope::Security` declarations here are why it
+            // matters. Without the gate a `files:rw` app password could
+            // LIST and MINT app passwords, so the ceiling that withholds
+            // `security` was one API call from irrelevant — a credential
+            // minted for DAVx5 could mint itself a wider one. Found by
+            // `credential_scopes.hurl` step 4, which asserted 403 and got
+            // 200.
+            //
+            // `route_layer`, and FIRST in the chain so it is INNERMOST
+            // and therefore runs AFTER `auth_middleware`: the gate needs
+            // the caller that middleware inserts, and it reads
+            // `MatchedPath`, so an unmatched path must stay a 404 rather
+            // than become a 403.
+            .route_layer(axum::middleware::from_fn_with_state(
+                app_state.clone(),
+                oxicloud::interfaces::middleware::policy::policy_gate_layer,
+            ))
             .layer(axum::middleware::from_fn_with_state(
                 app_state.clone(),
                 require_no_password_change_pending_layer,
@@ -1092,6 +1121,11 @@ async fn run(config: common::config::AppConfig) -> Result<(), Box<dyn std::error
         // is safe.
         api_subs.opaque_register = api_subs
             .opaque_register
+            // The gate, as on `app_passwords` above.
+            .route_layer(axum::middleware::from_fn_with_state(
+                app_state.clone(),
+                oxicloud::interfaces::middleware::policy::policy_gate_layer,
+            ))
             .layer(axum::middleware::from_fn_with_state(
                 app_state.clone(),
                 require_no_password_change_pending_layer,
@@ -1132,6 +1166,11 @@ async fn run(config: common::config::AppConfig) -> Result<(), Box<dyn std::error
         // Protected endpoints: /api/auth/device/verify, /api/auth/device/devices
         api_subs.device_protected = api_subs
             .device_protected
+            // The gate, as on `app_passwords` above.
+            .route_layer(axum::middleware::from_fn_with_state(
+                app_state.clone(),
+                oxicloud::interfaces::middleware::policy::policy_gate_layer,
+            ))
             .layer(axum::middleware::from_fn_with_state(
                 app_state.clone(),
                 require_no_password_change_pending_layer,

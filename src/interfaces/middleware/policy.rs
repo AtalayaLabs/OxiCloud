@@ -306,51 +306,16 @@ pub async fn policy_gate_layer(
     let caller = request.extensions().get::<Arc<CurrentCaller>>().cloned();
     let kind = caller.as_ref().map(|c| c.kind);
 
-    // ── SHADOW: the scope axis, measured but not enforced ────────────
+    // The caller's real scope set. `None` here means no credential at
+    // all, which `evaluate` grandfathers to FULL — and that is correct
+    // rather than a hole: an operation reachable WITHOUT a credential has
+    // nothing to narrow, and one that needs a credential is already
+    // refused by the PRINCIPAL axis before the scope check is reached.
     //
-    // Evaluate with the caller's REAL set and log what step 10 would
-    // refuse. The authoritative call below still passes `None`, so no
-    // request is denied on scope yet — this exists to find misdeclared
-    // areas against live traffic, which is what caught the visitor
-    // `DELETE` hole when PR 1 shadowed the role axis the same way.
-    //
-    // **A `ScopeNotGranted` result proves the other two axes passed**, so
-    // no second call is needed to isolate the scope axis: `evaluate`
-    // checks principal, then role, then scope, returning early each time.
-    // Matching the variant IS the isolation. An earlier draft of this
-    // called `evaluate(&policy, kind, None)` again to confirm the request
-    // passes today — provably redundant, and it would have doubled the
-    // cost of the shadow on the hot path.
-    if let Some(granted) = caller.as_ref().map(|c| c.scopes)
-        && let Err(crate::application::services::scope_policy::Denial::ScopeNotGranted {
-            scope,
-            access,
-        }) = evaluate(&policy, kind, Some(granted))
-    {
-        // WARN, not the `info!` denials use: this is a finding an
-        // operator must act on BEFORE enforcement lands, not a refusal
-        // that already happened. Same level as `authz.scope_undeclared`
-        // for the same reason.
-        tracing::warn!(
-            target: "audit",
-            event = "authz.scope_would_deny",
-            reason = "shadow_not_enforced",
-            op = %op,
-            // The area and access as the wire spells them, so this line
-            // can be compared with a credential's `scopes` column by eye.
-            required_area = scope.name(),
-            required_access = access.as_str(),
-            granted = %granted.to_wire(),
-            "👮🏻‍♂️ scope shadow: this credential lacks the area and WOULD be \
-             refused once enforcement lands — widen the credential or fix \
-             the declaration",
-        );
-    }
-
-    // `None` scopes: the shadow above measures the real set; this call
-    // stays grandfathered to FULL so step 9 enforces nothing. Step 10
-    // swaps this `None` for the caller's set and deletes the shadow.
-    if let Err(denial) = evaluate(&policy, kind, None) {
+    // The shadow this replaces logged `authz.scope_would_deny` for two
+    // commits. A `scope_would_deny` line in a log from BEFORE this commit
+    // names an operation that is now a 403.
+    if let Err(denial) = evaluate(&policy, kind, caller.as_ref().map(|c| c.scopes)) {
         let (event, reason) = denial.audit();
         tracing::info!(
             target: "audit",
@@ -791,6 +756,110 @@ mod tests {
             Ok(()) => next.run(request).await,
             Err(d) => deny(d),
         }
+    }
+}
+
+/// Does the audit channel actually REACH the log under the filter the
+/// API harness runs the server with?
+///
+/// Three separate symptoms said it might not: a 401 that logged no
+/// `client_error`, an `authz.denied` nobody could find, and a gate 403
+/// from `credential_scopes.hurl` that produced no line at all. AGENTS.md
+/// makes the audit line part of the contract for every denial — "without
+/// one, security-relevant outcomes are invisible to operators" — so a
+/// silent channel is a defect in its own right, not a logging nicety.
+///
+/// Reading the code could not settle it: the emit site is plainly
+/// correct, so the question is whether the FILTER passes it. This builds
+/// the exact string `tests/common/server.env` sets, plus the two
+/// directives `main.rs` appends, and asserts an audit event survives it.
+#[cfg(test)]
+mod audit_channel_reaches_the_log {
+    use std::io;
+    use std::sync::{Arc, Mutex};
+
+    /// The filter the API harness runs with: `RUST_LOG` from
+    /// `tests/common/server.env`, plus the `http` defaults `main.rs`
+    /// appends when the operator has not named them.
+    const HARNESS_FILTER: &str = "warn,audit=info,sqlx::migrate=info,http=warn,http::web=error";
+
+    #[derive(Clone)]
+    struct Buffer(Arc<Mutex<Vec<u8>>>);
+
+    impl io::Write for Buffer {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            self.0.lock().expect("buffer lock").extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for Buffer {
+        type Writer = Self;
+        fn make_writer(&'a self) -> Self::Writer {
+            self.clone()
+        }
+    }
+
+    fn capture(filter: &str, emit: impl FnOnce()) -> String {
+        let buffer = Buffer(Arc::new(Mutex::new(Vec::new())));
+        let subscriber = tracing_subscriber::fmt()
+            .with_env_filter(tracing_subscriber::EnvFilter::new(filter))
+            .with_writer(buffer.clone())
+            .without_time()
+            .finish();
+        tracing::subscriber::with_default(subscriber, emit);
+        let bytes = buffer.0.lock().expect("buffer lock").clone();
+        String::from_utf8(bytes).expect("utf8 log output")
+    }
+
+    /// An `info!` on `target: "audit"` passes a filter whose GLOBAL level
+    /// is `warn`, because `audit=info` raises it for that target alone.
+    ///
+    /// This is the assertion that had to be made before enforcing the
+    /// scope axis: the engine's whole denial story is "the operator sees
+    /// it in the audit channel", and that was unverified.
+    #[test]
+    fn a_denial_passes_the_harness_filter() {
+        let logged = capture(HARNESS_FILTER, || {
+            tracing::info!(
+                target: "audit",
+                event = "authz.denied",
+                reason = "scope_not_granted",
+                op = "GET /api/auth/app-passwords",
+                "👮🏻‍♂️ denial under test",
+            );
+        });
+
+        assert!(
+            logged.contains("authz.denied"),
+            "the audit channel must survive the harness filter; got: {logged:?}"
+        );
+        assert!(
+            logged.contains("scope_not_granted"),
+            "structured fields must survive too — `reason` is what an \
+             operator filters on; got: {logged:?}"
+        );
+    }
+
+    /// The control: an ordinary `info!` on an un-named target is dropped
+    /// by the same filter. Without this, the test above would pass just
+    /// as well against a filter that let EVERYTHING through, and would
+    /// say nothing about the `audit=info` directive.
+    #[test]
+    fn an_ordinary_info_event_is_still_filtered_out() {
+        let logged = capture(HARNESS_FILTER, || {
+            tracing::info!(target: "oxicloud::files", "ordinary chatter");
+        });
+
+        assert!(
+            !logged.contains("ordinary chatter"),
+            "the global level is `warn`, so a non-audit info event must \
+             NOT appear — otherwise the audit assertion proves nothing; \
+             got: {logged:?}"
+        );
     }
 }
 

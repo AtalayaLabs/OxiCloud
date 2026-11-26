@@ -1286,14 +1286,16 @@ mod tests {
     /// Every operation kind must render identifiably in a boot message,
     /// because the message is the only thing an implementor gets — and
     /// three of the four surfaces have no route to grep for.
-    /// **Step 9 pin: the shadow phase's two outcomes, side by side.**
+    /// **The two scope outcomes, side by side.**
     ///
-    /// Step 9 passes `None` to the authoritative `evaluate`, so nothing
-    /// is refused on scope; the shadow calls it again with the caller's
-    /// real set purely to log what step 10 will refuse. Both halves are
-    /// asserted here because each is meaningless without the other: the
-    /// `None` call proves the phase enforces nothing, the real-set call
-    /// proves the axis would actually bite.
+    /// `None` grandfathers to FULL, a real set is enforced. Both halves
+    /// are asserted because each is meaningless without the other: the
+    /// `None` call proves a credential predating the claim still works,
+    /// the real-set call proves the axis actually bites.
+    ///
+    /// Written during the step-9 shadow, when the gate passed `None`
+    /// here; it survived step 10 unchanged, because it describes
+    /// `evaluate` rather than which argument the gate hands it.
     ///
     /// **This lives at `evaluate`, not at the gate, and that is the
     /// point.** The first version of this pin drove a request through the
@@ -1304,25 +1306,22 @@ mod tests {
     /// fired, and the 200 said nothing about scope. A pin that cannot
     /// fail is worse than no pin, because it reads as coverage.
     ///
-    /// **Step 10 inverts the GATE, not this test.** This pair stays true
-    /// afterwards — it describes `evaluate`, which does not change.
     #[test]
-    fn the_shadow_phase_enforces_nothing_while_the_axis_would_bite() {
+    fn an_absent_scope_passes_where_a_narrow_one_is_refused() {
         let policy = Policy {
             scope: ScopeReq::Areas(ScopeSet::empty().with(Scope::Files, Access::ReadWrite)),
             ..Policy::default()
         };
 
-        // What the gate does in step 9: grandfathered to FULL, so the
-        // request is allowed however narrow the credential really is.
+        // A credential minted before the scope claim existed: allowed,
+        // however narrow a set it would have carried.
         assert_eq!(
             evaluate(&policy, USER, None),
             Ok(()),
-            "step 9 must enforce nothing on the scope axis"
+            "an absent scope set must grandfather to FULL"
         );
 
-        // What the shadow measures, and what step 10 will enforce: a
-        // `files:ro` credential cannot satisfy a `files:rw` operation.
+        // A `files:ro` credential cannot satisfy a `files:rw` operation.
         assert_eq!(
             evaluate(&policy, USER, Some(ScopeSet::ring())),
             Err(Denial::ScopeNotGranted {
@@ -1333,11 +1332,13 @@ mod tests {
              above is vacuous"
         );
 
-        // And the shadow's isolation argument: a `ScopeNotGranted` result
-        // PROVES the principal and role axes passed, because `evaluate`
-        // checks them first and returns early. That is why the gate needs
-        // only one call to tell a scope-only difference from a role
-        // denial, rather than evaluating twice on the hot path.
+        // Axis ORDER: a `ScopeNotGranted` result proves the principal and
+        // role axes passed, because `evaluate` checks them first and
+        // returns early. The step-9 shadow relied on this to tell a
+        // scope-only difference from a role denial with ONE call; it
+        // still matters, because a denial must name the axis an operator
+        // has to act on, and naming scope where the role was the real
+        // blocker sends them to the wrong fix.
         let role_gated = Policy {
             role: Some(MinRole::Admin),
             ..policy

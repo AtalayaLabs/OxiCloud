@@ -2592,9 +2592,9 @@ way PR 1 was. Two orderings are load-bearing rather than tidy:
 | 8 | `CurrentCaller` carries the `ScopeSet` | not started |
 | 8b | the message bus, per TOPIC: a topic-class → area map, the `/api/rt/ticket` mint carrying the credential's `ScopeSet`, `rt.error` as the refusal | not started — DECIDED design, § The two surfaces with no caller |
 | 8c | WOPI: intersect the minted token's `can_write` with the caller's scope, so `/wopi/*` needs no gate | not started — after 8b, per Ed |
-| 9 | SHADOW: pass the scopes to `evaluate` and LOG what would be denied, enforcing nothing | not started — the step that found PR 1's visitor-DELETE hole |
-| 10 | ENFORCE: the gate refuses on `authz.scope_denied` / `scope_not_granted` | not started |
-| 11 | Hurl pins: an app-password credential refused OUTSIDE its areas and allowed INSIDE; a device credential likewise; an interactive session unaffected | not started |
+| 9 | SHADOW: pass the scopes to `evaluate` and LOG what would be denied, enforcing nothing | SHIPPED |
+| 10 | ENFORCE: the gate refuses on `authz.scope_denied` / `scope_not_granted` | SHIPPED |
+| 11 | Hurl pins: an app-password credential refused OUTSIDE its areas and allowed INSIDE; a device credential likewise; an interactive session unaffected | SHIPPED |
 
 **Step 3 has a mechanical acceptance, which is why it is worth doing
 before the boot refusal rather than alongside it.** Every operation
@@ -3021,3 +3021,44 @@ At PR #853, which adds `POST /api/calendars` and the events surface —
 the third hand-written copy of the per-route gate. Three is where the
 duplication is real and the abstraction pays. Before that, this is
 building the frame before there is a third wall.
+
+## The gate was attached to one sub-router, not to `/api`
+
+Found by `credential_scopes.hurl` step 4 on the enforcement commit: a
+`files:rw` app password listed app passwords and got **200** where the
+spec published `security:ro`.
+
+`policy_gate_layer` was attached to `api_subs.protected` (plus the DAV
+nests and WOPI), and the auth family is nested into `main_api_router`
+SEPARATELY — `login`, `register`, `refresh`, `auth_public`,
+`auth_protected`, `app_passwords`, `opaque_*`, `device_*`. So ~31 route
+declarations were published in the spec and backed by no router check:
+the exact failure the engine exists to remove, in the words `main.rs`
+already used about WOPI — "a claim no router check backed".
+
+The consequence was not cosmetic. Three `Scope::Security` declarations
+live on the app-password routes, and without the gate a credential minted
+for DAVx⁵ could **mint itself a wider one**, so the ceiling that withholds
+`security` was one API call from irrelevant.
+
+Fixed by attaching the gate to the four sub-routers that already run
+`auth_middleware`: `app_passwords`, `auth_protected`, `opaque_register`,
+`device_protected`. First in each chain, so it is innermost and runs
+AFTER the caller is inserted.
+
+**Still open — the eight public auth sub-routers have no gate**, because
+they have no `auth_middleware` and therefore never hold a caller:
+`login`, `register`, `refresh`, `auth_public`, `opaque_login`,
+`opaque_params`, `setup`, `device_public`. A gate there would be a no-op
+for a correctly-declared public route and a 401 for anything else — and
+since the DEFAULT policy is `principal: user`, an undeclared route among
+them is published as requiring a user while being reachable without one.
+Closing it means auditing those declarations first, not attaching a
+layer.
+
+**Why no unit test caught it.** The spec and the gate read the same
+table, but only the gate also needs the LAYER. `cargo test` was green,
+`just gen-openapi` was clean, and the published policy was correct —
+every signal available short of a request. The first draft of the Hurl
+pin would have missed it too, by asserting a 200 through a router whose
+declarations a unit test cannot see.

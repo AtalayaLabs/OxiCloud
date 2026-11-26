@@ -499,6 +499,11 @@ HURL_FILES=( \
   "$API_DIR/auth_magic_link_login.hurl" \
   "$API_DIR/auth_upgrade_to_internal.hurl" \
   "$API_DIR/app_passwords.hurl" \
+  # The SCOPE axis: a narrow credential refused on an area it lacks
+  # and allowed on the one it holds. Runs AFTER app_passwords.hurl so
+  # a shape failure there is attributed to that file; this one creates
+  # and revokes its own credentials.
+  "$API_DIR/credential_scopes.hurl" \
   # Cross-door gate pin: a deactivated account is refused by every
   # surface that can grant a credential. Runs AFTER app_passwords.hurl
   # so a failure there is attributed to that file rather than to this
