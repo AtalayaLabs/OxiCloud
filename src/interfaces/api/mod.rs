@@ -882,18 +882,14 @@ impl Modify for SecurityAddon {
 
 /// The wire name of a scope area, as it appears in a credential's scope
 /// set — lowercase, so `files:ro` rather than `Files:ReadOnly`.
+/// The area's wire name.
+///
+/// Delegates to `Scope::name`, which owns the one table. This used to
+/// keep its own copy, and a duplicated name table is a name that can
+/// disagree with itself — the parser, the dump and this marker must all
+/// say `files`.
 fn area_name(scope: crate::application::ports::scope_ports::Scope) -> &'static str {
-    use crate::application::ports::scope_ports::Scope as S;
-    match scope {
-        S::Files => "files",
-        S::Calendar => "calendar",
-        S::Contacts => "contacts",
-        S::Faces => "faces",
-        S::Admin => "admin",
-        S::Sharing => "sharing",
-        S::Account => "account",
-        S::Security => "security",
-    }
+    scope.name()
 }
 
 /// Operations whose `security(...)` annotation disagrees with the compiled

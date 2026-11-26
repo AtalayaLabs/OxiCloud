@@ -284,6 +284,154 @@ impl Access {
     }
 }
 
+/// What KIND of credential a scope set is being minted for.
+///
+/// Credential kind is a MINT-time input, not a request-time axis. Every
+/// ceiling below is applied once, when the credential is created — so
+/// nothing at request time has to notice what kind of credential it is
+/// holding, and the two cannot drift. § Credential-kind gating argues
+/// this at length; the short version is that a request-time condition
+/// would be a second implementation of the same decision.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CredentialKind {
+    /// Basic-auth credential for DAV and NC clients — DAVx⁵,
+    /// Thunderbird, rclone, NC desktop.
+    AppPassword,
+    /// RFC 8628 device grant, for clients that cannot open a browser.
+    DeviceFlow,
+    /// The browser's own session. Never requests scopes.
+    InteractiveSession,
+}
+
+impl CredentialKind {
+    /// What this kind gets when it asks for nothing.
+    ///
+    /// An omitted scope does NOT mean every scope — that is the
+    /// fail-open shape this axis exists to remove. RFC 6749 §3.3 requires
+    /// an omitted `scope` to resolve to a PRE-DEFINED default or fail the
+    /// request, and this is that default.
+    #[must_use]
+    pub fn default_scopes(self) -> ScopeSet {
+        match self {
+            // The three areas a sync client needs: NC desktop wants
+            // files, DAVx⁵ wants calendars and contacts.
+            Self::AppPassword | Self::DeviceFlow => ScopeSet::empty()
+                .with(Scope::Files, Access::ReadWrite)
+                .with(Scope::Calendar, Access::ReadWrite)
+                .with(Scope::Contacts, Access::ReadWrite),
+            Self::InteractiveSession => ScopeSet::full(),
+        }
+    }
+
+    /// The most this kind may EVER hold, however much it asks for.
+    ///
+    /// An ALLOWLIST, not a denylist: a credential kind gets only what its
+    /// arm names. A kind added later without thought about `security`
+    /// therefore gets it withheld, which is the safe direction to be
+    /// careless in.
+    #[must_use]
+    pub fn ceiling(self) -> ScopeSet {
+        match self {
+            // No `security`, so an app password cannot mint or revoke
+            // another one — not because anything notices it is an app
+            // password, but because its set lacks the area those routes
+            // require. No `admin`: a role is read from the USER row, so
+            // an admin's app password carries the admin role and only the
+            // scope axis stops it administering the instance. No
+            // `account` (avatars are scopeless, so nothing needs it) and
+            // no `sharing` (the recipient picker enumerates the roster).
+            Self::AppPassword => Self::AppPassword.default_scopes(),
+            // Same, plus `account`: a device-flow client is interactive
+            // enough to consent to profile access on the verify screen.
+            Self::DeviceFlow => Self::DeviceFlow
+                .default_scopes()
+                .with(Scope::Account, Access::ReadWrite),
+            Self::InteractiveSession => ScopeSet::full(),
+        }
+    }
+
+    /// The set a credential of this kind actually gets:
+    ///
+    /// ```text
+    /// effective = (requested ?? default) ∩ ceiling
+    /// ```
+    ///
+    /// Both halves bounded, so neither an omitted scope nor a greedy
+    /// request can escalate. A request for more than the ceiling is
+    /// SILENTLY narrowed rather than refused, which is RFC 6749 §3.3's
+    /// prescribed behaviour ("the authorization server MAY fully or
+    /// partially ignore the scope requested") and is also the only option
+    /// that lets a client ask for a superset without having to know each
+    /// kind's ceiling.
+    ///
+    /// A MALFORMED request is still an error — narrowing applies to what
+    /// a client may have, never to what it managed to say.
+    pub fn effective(self, requested: Option<&str>) -> Result<ScopeSet, ScopeParseError> {
+        let asked = match requested {
+            Some(raw) => ScopeSet::parse(raw)?,
+            None => self.default_scopes(),
+        };
+        Ok(asked.intersect(self.ceiling()))
+    }
+}
+
+/// Why a wire scope string was refused.
+///
+/// Every variant is a REFUSAL, never a silent narrowing. RFC 6749 §3.3
+/// allows a server to ignore unrecognised scope values; this does not,
+/// because the failure mode is a client that believes it holds access it
+/// does not. A partial parse that resolves the one token it recognised is
+/// worse than a clean error — see § Wire format on `scope=openid profile
+/// email`, where `profile` would have matched with the opposite meaning.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ScopeParseError {
+    /// Present but empty. NOT treated as "use the default": silently
+    /// defaulting hides a client bug, and a zero-scope credential would
+    /// be useless anyway.
+    Empty,
+    /// No `oxicloud:` prefix. These values live in the OAuth scope
+    /// namespace, where unprefixed names are reserved — so an unprefixed
+    /// token is not an OxiCloud resource at all.
+    Unprefixed { token: String },
+    /// Prefixed, but the area is not one of ours.
+    UnknownArea { name: String },
+    /// A name RESERVED for a resource that does not exist yet.
+    Reserved { name: String },
+    /// The access qualifier was neither `ro` nor `rw`.
+    UnknownAccess { token: String },
+}
+
+impl std::fmt::Display for ScopeParseError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Empty => write!(
+                f,
+                "scope is present but empty — omit it to take the default, \
+                 or name the areas wanted"
+            ),
+            Self::Unprefixed { token } => write!(
+                f,
+                "`{token}` has no `oxicloud:` prefix — OxiCloud scopes are \
+                 namespaced so they cannot collide with OIDC's reserved names"
+            ),
+            Self::UnknownArea { name } => {
+                write!(f, "`{name}` is not an OxiCloud area")
+            }
+            Self::Reserved { name } => write!(
+                f,
+                "`{name}` is reserved for a resource that does not exist yet"
+            ),
+            Self::UnknownAccess { token } => write!(
+                f,
+                "`{token}` ends in an unknown access — use `:ro`, `:rw`, or \
+                 omit it for read-write"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for ScopeParseError {}
+
 /// What an operation requires on the SCOPE axis — a TOTAL enum, because
 /// the absence of a requirement must be WRITTEN rather than fallen into.
 ///
@@ -472,6 +620,51 @@ pub enum Scope {
 }
 
 impl Scope {
+    /// The wire and display name, WITHOUT the `oxicloud:` prefix.
+    ///
+    /// One table, used by the parser, the dump and the OpenAPI marker —
+    /// `interfaces::api::area_name` delegates here rather than keeping a
+    /// second copy. A name that appears twice is a name that can disagree
+    /// with itself.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Files => "files",
+            Self::Calendar => "calendar",
+            Self::Contacts => "contacts",
+            Self::Faces => "faces",
+            Self::Admin => "admin",
+            Self::Sharing => "sharing",
+            Self::Account => "account",
+            Self::Security => "security",
+        }
+    }
+
+    /// The area a wire name denotes, or an error naming why not.
+    ///
+    /// `mail` is REJECTED rather than unknown, and the distinction is
+    /// deliberate: a reserved name that parses but grants nothing would
+    /// let a client believe it had asked for something. There is no
+    /// mailbox, so asking for one is a client bug worth reporting.
+    pub fn parse(name: &str) -> Result<Self, ScopeParseError> {
+        match name {
+            "files" => Ok(Self::Files),
+            "calendar" => Ok(Self::Calendar),
+            "contacts" => Ok(Self::Contacts),
+            "faces" => Ok(Self::Faces),
+            "admin" => Ok(Self::Admin),
+            "sharing" => Ok(Self::Sharing),
+            "account" => Ok(Self::Account),
+            "security" => Ok(Self::Security),
+            "mail" => Err(ScopeParseError::Reserved {
+                name: name.to_owned(),
+            }),
+            _ => Err(ScopeParseError::UnknownArea {
+                name: name.to_owned(),
+            }),
+        }
+    }
+
     /// Every scope, for building a ceiling. Hand-written rather than
     /// derived so adding a variant without deciding its place in a
     /// ceiling is a compile error in `ALL`, not a silently-omitted scope.
@@ -588,6 +781,99 @@ impl ScopeSet {
         })
     }
 
+    /// Parse a wire scope string into a set.
+    ///
+    /// ```text
+    /// oxicloud:files:rw oxicloud:calendar:ro     // RFC 6749 §3.3 form
+    /// oxicloud:files:rw,oxicloud:calendar:ro     // what our clients send
+    /// ```
+    ///
+    /// **Both delimiters**, because the two disagree today and the client
+    /// is not at fault: RFC 6749 specifies space-delimited, and
+    /// `DeviceAuthorizeRequestDto` has always documented and parsed
+    /// commas. Accepting both costs one `matches!` and breaks nobody.
+    ///
+    /// **Access defaults to `:rw` when unqualified**, which is forced
+    /// rather than chosen: the rows this replaced carried no qualifier
+    /// and those credentials have full write access today, so defaulting
+    /// to `:ro` would retroactively break every sync client in the field.
+    /// It also matches convention — Google's bare `drive` is full access
+    /// and `drive.readonly` is the explicit narrowing.
+    ///
+    /// Every malformed token is an ERROR, never a silent skip. See
+    /// [`ScopeParseError`] on why a partial parse is the worse failure.
+    pub fn parse(raw: &str) -> Result<Self, ScopeParseError> {
+        let tokens: Vec<&str> = raw
+            .split([' ', ',', '\t'])
+            .filter(|t| !t.is_empty())
+            .collect();
+        if tokens.is_empty() {
+            return Err(ScopeParseError::Empty);
+        }
+
+        let mut out = Self::empty();
+        for token in tokens {
+            let rest =
+                token
+                    .strip_prefix("oxicloud:")
+                    .ok_or_else(|| ScopeParseError::Unprefixed {
+                        token: token.to_owned(),
+                    })?;
+
+            // `area` or `area:access`. Splitting from the RIGHT would be
+            // wrong: an area name never contains a colon, but a future
+            // one might, and the access is always the last segment.
+            let (area, access) = match rest.rsplit_once(':') {
+                Some((area, "ro")) => (area, Access::ReadOnly),
+                Some((area, "rw")) => (area, Access::ReadWrite),
+                // A trailing segment that is not an access is either a
+                // typo or an area we do not know — report the whole
+                // token, since reporting the fragment would be cryptic.
+                Some(_) => {
+                    return Err(ScopeParseError::UnknownAccess {
+                        token: token.to_owned(),
+                    });
+                }
+                None => (rest, Access::ReadWrite),
+            };
+
+            out.insert(Scope::parse(area)?, access);
+        }
+        Ok(out)
+    }
+
+    /// Render back to the wire form, for round-tripping and for logs.
+    ///
+    /// Comma-delimited and fully qualified, so the output is accepted by
+    /// [`Self::parse`] and says exactly what it means — a bare `files`
+    /// would mean `files:rw` but a reader should not have to know that.
+    #[must_use]
+    pub fn to_wire(self) -> String {
+        self.iter()
+            .map(|(s, a)| {
+                let access = match a {
+                    Access::ReadOnly => "ro",
+                    Access::ReadWrite => "rw",
+                };
+                format!("oxicloud:{}:{access}", s.name())
+            })
+            .collect::<Vec<_>>()
+            .join(",")
+    }
+
+    /// Everything in BOTH sets, per area and per access.
+    ///
+    /// The mask form makes this two `&`s, and the `writable ⊆ readable`
+    /// invariant survives because intersecting two sets that hold it
+    /// cannot produce one that does not.
+    #[must_use]
+    pub const fn intersect(self, other: Self) -> Self {
+        Self {
+            readable: self.readable & other.readable,
+            writable: self.writable & other.writable,
+        }
+    }
+
     /// Does this set satisfy everything `required` asks for?
     ///
     /// A superset test, which is what makes the APPEND-only fold work: a
@@ -627,6 +913,165 @@ impl ScopeSet {
 // operation has an opinion about it (§ Not axes).
 //
 // pub enum Elevation { Required }
+
+#[cfg(test)]
+mod parse_tests {
+    use super::*;
+
+    /// Both delimiters, because the two disagree today and neither client
+    /// is at fault: RFC 6749 §3.3 says space, `DeviceAuthorizeRequestDto`
+    /// has always documented comma.
+    #[test]
+    fn space_and_comma_both_parse() {
+        let want = ScopeSet::empty()
+            .with(Scope::Files, Access::ReadWrite)
+            .with(Scope::Calendar, Access::ReadOnly);
+
+        for raw in [
+            "oxicloud:files:rw oxicloud:calendar:ro",
+            "oxicloud:files:rw,oxicloud:calendar:ro",
+            "oxicloud:files:rw, oxicloud:calendar:ro",
+        ] {
+            assert_eq!(ScopeSet::parse(raw).expect(raw), want, "{raw}");
+        }
+    }
+
+    /// An unqualified area is READ-WRITE, and this is forced rather than
+    /// chosen: the rows this vocabulary replaced carried no qualifier and
+    /// those credentials have full write access today, so `:ro` would
+    /// retroactively break every sync client in the field.
+    #[test]
+    fn an_unqualified_area_is_read_write() {
+        let set = ScopeSet::parse("oxicloud:files").expect("parses");
+        assert!(set.allows(Scope::Files, Access::ReadWrite));
+    }
+
+    /// Every malformed token is an ERROR, never a silent skip.
+    ///
+    /// § Wire format's worked case is why: a client sending the textbook
+    /// `scope=openid profile email` must fail cleanly, because `profile`
+    /// is a reserved OIDC name that would otherwise have matched with the
+    /// OPPOSITE meaning — read-only identity claims there, write access
+    /// to user data here. A partial parse that resolves the one token it
+    /// recognised is the worst outcome available.
+    #[test]
+    fn every_malformed_token_is_refused_not_skipped() {
+        assert_eq!(ScopeSet::parse(""), Err(ScopeParseError::Empty));
+        assert_eq!(ScopeSet::parse("   "), Err(ScopeParseError::Empty));
+
+        // The OIDC collision case, end to end.
+        assert!(matches!(
+            ScopeSet::parse("openid profile email"),
+            Err(ScopeParseError::Unprefixed { .. })
+        ));
+        // Even alongside a token that WOULD have parsed.
+        assert!(matches!(
+            ScopeSet::parse("oxicloud:files:rw profile"),
+            Err(ScopeParseError::Unprefixed { .. })
+        ));
+
+        assert!(matches!(
+            ScopeSet::parse("oxicloud:mail"),
+            Err(ScopeParseError::Reserved { .. })
+        ));
+        assert!(matches!(
+            ScopeSet::parse("oxicloud:nonsense"),
+            Err(ScopeParseError::UnknownArea { .. })
+        ));
+        assert!(matches!(
+            ScopeSet::parse("oxicloud:files:readonly"),
+            Err(ScopeParseError::UnknownAccess { .. })
+        ));
+    }
+
+    /// `to_wire` round-trips and is fully qualified — a bare `files`
+    /// would mean `files:rw`, and a reader should not have to know that.
+    #[test]
+    fn the_wire_form_round_trips_fully_qualified() {
+        let set = ScopeSet::parse("oxicloud:files,oxicloud:calendar:ro").expect("parses");
+        let wire = set.to_wire();
+        assert!(wire.contains("oxicloud:files:rw"), "{wire}");
+        assert!(wire.contains("oxicloud:calendar:ro"), "{wire}");
+        assert_eq!(ScopeSet::parse(&wire).expect("re-parses"), set);
+    }
+
+    /// `effective = (requested ?? default) ∩ ceiling` — both halves
+    /// bounded, so neither an omitted scope nor a greedy request can
+    /// escalate.
+    #[test]
+    fn a_greedy_request_is_narrowed_to_the_ceiling() {
+        // Everything, asked for by an app password.
+        let got = CredentialKind::AppPassword
+            .effective(Some(
+                "oxicloud:files:rw oxicloud:security:rw oxicloud:admin:rw",
+            ))
+            .expect("parses");
+
+        assert!(got.allows(Scope::Files, Access::ReadWrite));
+        assert!(
+            !got.allows(Scope::Security, Access::ReadOnly),
+            "an app password must never hold `security` — it is how one \
+             would mint another"
+        );
+        assert!(
+            !got.allows(Scope::Admin, Access::ReadOnly),
+            "an admin's app password carries the admin ROLE, so only the \
+             scope axis stops it administering the instance"
+        );
+    }
+
+    /// An omitted scope takes the kind's DEFAULT, not everything. That
+    /// fail-open shape is the bug this axis exists to close.
+    #[test]
+    fn an_omitted_scope_is_the_default_not_everything() {
+        let got = CredentialKind::AppPassword
+            .effective(None)
+            .expect("defaults");
+
+        for area in [Scope::Files, Scope::Calendar, Scope::Contacts] {
+            assert!(got.allows(area, Access::ReadWrite), "{area:?}");
+        }
+        for area in [
+            Scope::Security,
+            Scope::Admin,
+            Scope::Sharing,
+            Scope::Account,
+        ] {
+            assert!(
+                !got.allows(area, Access::ReadOnly),
+                "{area:?} must be withheld"
+            );
+        }
+    }
+
+    /// A device-flow credential may hold `account`; an app password may
+    /// not. The difference is consent: the device verify screen shows the
+    /// user what is being granted, an app password dialog does not.
+    #[test]
+    fn the_device_flow_ceiling_admits_account_and_the_app_password_one_does_not() {
+        let device = CredentialKind::DeviceFlow
+            .effective(Some("oxicloud:account:ro"))
+            .expect("parses");
+        assert!(device.allows(Scope::Account, Access::ReadOnly));
+
+        let app = CredentialKind::AppPassword
+            .effective(Some("oxicloud:account:ro"))
+            .expect("parses");
+        assert!(!app.allows(Scope::Account, Access::ReadOnly));
+    }
+
+    /// A malformed request is an ERROR even for a kind whose ceiling
+    /// would have narrowed it away. Narrowing applies to what a client
+    /// may HAVE, never to what it managed to SAY.
+    #[test]
+    fn narrowing_does_not_excuse_a_malformed_request() {
+        assert!(
+            CredentialKind::AppPassword
+                .effective(Some("oxicloud:security:nonsense"))
+                .is_err()
+        );
+    }
+}
 
 #[cfg(test)]
 mod tests {
