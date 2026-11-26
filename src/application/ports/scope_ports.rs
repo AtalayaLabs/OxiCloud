@@ -175,20 +175,79 @@ pub struct Policy {
     /// condition, because it is checked against the credential instead of
     /// the user row — a distinction that matters the moment the same user
     /// holds both a session and an app password.
-    pub scope: Option<(Scope, Access)>,
+    pub scope: ScopeReq,
     // pub elevation: Option<Elevation>,  // with auth.sessions.elevated_at
 }
 
 impl Default for Policy {
     /// The policy of an operation that declares NOTHING: an authenticated
-    /// user, no role floor, no scope. This is the one that makes the
-    /// default safe — a forgotten declaration demands a session, so the
-    /// failure mode of forgetting is a 401, not an open door.
+    /// user, no role floor, and an UNSATISFIABLE scope.
+    ///
+    /// The two axes reach safety by opposite routes, which is the design
+    /// rather than an inconsistency. `principal` defaults to a real
+    /// requirement, so a forgotten declaration fails closed with a 401.
+    /// `scope` has no such candidate — "no scope required" would be
+    /// fail-open — so it defaults to `Undefined`, which spec generation
+    /// refuses. See [`ScopeReq`].
     fn default() -> Self {
         Self {
             role: None,
             principal: MinPrincipal::User,
-            scope: None,
+            scope: ScopeReq::Undefined,
+        }
+    }
+}
+
+/// What an operation requires on the SCOPE axis — a TOTAL enum, because
+/// the absence of a requirement must be WRITTEN rather than fallen into.
+///
+/// The gate axis can have a safe default: `MinPrincipal::User` is itself a
+/// requirement, and it happens to be the common case. Scope has no such
+/// candidate value. The only plausible default is "no scope required",
+/// which is fail-open — and that is precisely the live bug this axis
+/// exists to close, where a credential restricted to `files` reaches a
+/// surface nobody classified. So instead of choosing a default, the
+/// absence is made unrepresentable:
+///
+/// - [`ScopeReq::Undefined`] is the default and is UNSATISFIABLE. Spec
+///   generation refuses it, so an unclassified operation fails CI rather
+///   than shipping reachable. Not a boot check: the operation list comes
+///   from the specs while a feature-gated router only exists when its
+///   feature is on, so a stock deployment with `enable_photos=false`
+///   would refuse to start over a feature the operator turned off.
+/// - [`ScopeReq::None`] is "no scope required", DECLARED — greppable, and
+///   written the way `public()` is written on the principal axis.
+/// - [`ScopeReq::Area`] names the area and the access.
+///
+/// **Not `Option<(Scope, Access)>` plus a `Scope::None` variant**, which
+/// would be the `CallerKind` mistake repeated: `Option::None` and
+/// `Scope::None` would both be reachable and mean different things.
+/// Naming all three states is what makes the wrong one unrepresentable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ScopeReq {
+    /// Nothing declared. Unsatisfiable — see the type doc. `#[default]`
+    /// rather than a hand-written `impl`, so the unsatisfiable state is
+    /// visibly the default at the point the variants are declared.
+    #[default]
+    Undefined,
+    /// No scope required, stated deliberately.
+    None,
+    /// This area, at least this access.
+    Area(Scope, Access),
+}
+
+impl ScopeReq {
+    /// The area and access, when one is required.
+    ///
+    /// `Undefined` and `None` both yield `Option::None` — they differ in
+    /// what the COMPILE step does about them, not in what a satisfied
+    /// request needs, so a caller checking "is there an area to verify?"
+    /// treats them alike.
+    #[must_use]
+    pub fn area(self) -> Option<(Scope, Access)> {
+        match self {
+            Self::Area(s, a) => Some((s, a)),
+            Self::Undefined | Self::None => Option::None,
         }
     }
 }
@@ -417,7 +476,7 @@ mod tests {
         let p = Policy::default();
         assert_eq!(p.principal, MinPrincipal::User);
         assert_eq!(p.role, None);
-        assert_eq!(p.scope, None);
+        assert_eq!(p.scope, ScopeReq::Undefined);
         assert!(!p.principal.satisfied_by(None));
     }
 

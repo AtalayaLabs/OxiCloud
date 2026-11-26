@@ -19,7 +19,7 @@
 
 use std::collections::BTreeMap;
 
-use crate::application::ports::scope_ports::{Condition, Op, Policy};
+use crate::application::ports::scope_ports::{Condition, Op, Policy, ScopeReq};
 use crate::application::services::scope_policy::{PolicyError, compile};
 
 /// Where a declaration was written.
@@ -77,9 +77,13 @@ impl PolicyTable {
                 Some(r) => format!("{r:?}"),
                 None => "-".to_string(),
             };
+            // `?` for UNDEFINED and `-` for a declared none: the dump is
+            // read to find what is not classified, so the two must not
+            // look alike.
             let scope = match p.scope {
-                Some((s, a)) => format!("{s:?}:{a:?}"),
-                None => "-".to_string(),
+                ScopeReq::Area(s, a) => format!("{s:?}:{a:?}"),
+                ScopeReq::None => "-".to_string(),
+                ScopeReq::Undefined => "?".to_string(),
             };
             out.push_str(&format!(
                 "{op}\tprincipal={:?}\trole={role}\tscope={scope}\n",
@@ -595,11 +599,22 @@ mod tests {
             .expect("compiles")
             .render();
 
+        // `scope=?`, not `scope=-`. The dump's job is to show what is
+        // NOT classified, so "nobody declared a scope" (unsatisfiable,
+        // and a generation failure once PR 2 step 4 lands) must not read
+        // the same as "no scope required, declared" — which renders `-`.
+        // Collapsing the two is how an unclassified operation would hide
+        // in a dump someone was reading to find exactly that.
         assert!(
-            dump.contains("GET /api/whatever\tprincipal=User\trole=-\tscope=-"),
-            "an undeclared op must render its defaults explicitly:\n{dump}"
+            dump.contains("GET /api/whatever\tprincipal=User\trole=-\tscope=?"),
+            "an undeclared op must render its defaults explicitly, with an \
+             UNDEFINED scope distinguishable from a declared none:\n{dump}"
         );
-        assert!(dump.contains("GET /api/admin/x\tprincipal=User\trole=Admin\tscope=-"));
+        // Also `?`: declaring a ROLE says nothing about the scope axis,
+        // so this operation is unclassified there too. PR 2 step 3 is
+        // what turns every `?` in this dump into an area or a declared
+        // none.
+        assert!(dump.contains("GET /api/admin/x\tprincipal=User\trole=Admin\tscope=?"));
 
         // Sorted, so the diff of two dumps is readable.
         let lines: Vec<&str> = dump.lines().collect();

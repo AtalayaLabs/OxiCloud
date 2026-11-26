@@ -966,7 +966,7 @@ pub fn mark_policies(
     openapi: &mut utoipa::openapi::OpenApi,
     registry: &crate::application::services::scope_table::PolicyRegistry,
 ) {
-    use crate::application::ports::scope_ports::{Access, MinPrincipal, MinRole, Op};
+    use crate::application::ports::scope_ports::{Access, MinPrincipal, MinRole, Op, ScopeReq};
 
     const SHARE_NOTE: &str = "Reachable by a public-share VISITOR: someone holding an \
                               unlocked share link may call this, scoped to what that share \
@@ -1052,7 +1052,6 @@ pub fn mark_policies(
                     MinPrincipal::User => serde_json::json!("user"),
                 },
             );
-            policy_obj.insert("scope".to_string(), serde_json::Value::Null);
 
             if let Some(role) = policy.role {
                 notes.push(match role {
@@ -1067,16 +1066,33 @@ pub fn mark_policies(
                 MinPrincipal::User => {}
             }
 
-            if let Some((scope, access)) = policy.scope {
-                let access = match access {
-                    Access::ReadOnly => "ro",
-                    Access::ReadWrite => "rw",
-                };
-                policy_obj.insert(
-                    "scope".to_string(),
-                    serde_json::json!(format!("{}:{access}", area_name(scope))),
-                );
-            }
+            // Three states, three renderings — and `Undefined` as `null`
+            // is load-bearing, not cosmetic. It makes
+            //
+            //     jq '[.. | objects | select(has("x-oxicloud-policy"))
+            //          | .["x-oxicloud-policy"].scope]
+            //         | map(select(. == null)) | length'
+            //
+            // a count of operations NOBODY CLASSIFIED, which is the same
+            // fact PR 2 step 4 turns into a generation failure — but
+            // visible as a reviewable diff, attributable to a path,
+            // before it can fail a build. Rendering `Undefined` as
+            // `"undefined"` instead would make that query silently
+            // return 0 forever.
+            policy_obj.insert(
+                "scope".to_string(),
+                match policy.scope {
+                    ScopeReq::Undefined => serde_json::Value::Null,
+                    ScopeReq::None => serde_json::json!("none"),
+                    ScopeReq::Area(scope, access) => {
+                        let access = match access {
+                            Access::ReadOnly => "ro",
+                            Access::ReadWrite => "rw",
+                        };
+                        serde_json::json!(format!("{}:{access}", area_name(scope)))
+                    }
+                },
+            );
 
             op.extensions = Some(
                 utoipa::openapi::extensions::ExtensionsBuilder::new()

@@ -20,7 +20,7 @@
 //! refused only when a parent explicitly declared something stricter.
 
 use crate::application::ports::scope_ports::{
-    Access, Axis, Condition, MinPrincipal, MinRole, Op, Policy, Scope, ScopeSet,
+    Access, Axis, Condition, MinPrincipal, MinRole, Op, Policy, Scope, ScopeReq, ScopeSet,
 };
 use crate::domain::entities::user::CallerKind;
 
@@ -265,7 +265,13 @@ pub fn compile(op: Op, chain: &[&[Condition]]) -> Result<Policy, PolicyError> {
     let policy = Policy {
         role: acc.role,
         principal: acc.principal.unwrap_or_default(),
-        scope: acc.scope,
+        // `None` from the fold means NOTHING was declared, which is
+        // `Undefined` — unsatisfiable, and refused by spec generation.
+        // `ScopeReq::None` is a different state that only
+        // `Condition::scopeless()` can produce (PR 2 step 2).
+        scope: acc
+            .scope
+            .map_or(ScopeReq::Undefined, |(s, a)| ScopeReq::Area(s, a)),
     };
 
     reject_unsatisfiable(op, &policy)?;
@@ -300,7 +306,7 @@ fn reject_unsatisfiable(op: Op, policy: &Policy) -> Result<(), PolicyError> {
                 role,
             });
         }
-        if let Some((scope, _)) = policy.scope {
+        if let Some((scope, _)) = policy.scope.area() {
             return Err(PolicyError::PublicWithScope {
                 op,
                 principal: policy.principal,
@@ -426,7 +432,16 @@ pub fn evaluate(
         }
     }
 
-    if let Some((scope, access)) = policy.scope {
+    // `Undefined` is deliberately NOT refused here yet.
+    //
+    // It is the default, so refusing it before any area is declared would
+    // 403 every request on the instance. The refusal lands with the
+    // declarations, in PR 2 step 4 — as a GENERATION failure, with a
+    // runtime deny beside it as defence in depth. Until then `Undefined`
+    // and `None` behave alike, which `ScopeReq::area()` encodes.
+    if let Some((scope, access)) = policy.scope.area() {
+        // No scope set means a credential minted before the claim
+        // existed, and those predate any restriction — § Defaults.
         let granted = scopes.unwrap_or_else(ScopeSet::full);
         if !granted.allows(scope, access) {
             return Err(Denial::ScopeNotGranted { scope, access });
@@ -468,7 +483,7 @@ mod tests {
         .expect("adding a second axis is ordinary inheritance");
 
         assert_eq!(p.role, Some(MinRole::Admin));
-        assert_eq!(p.scope, Some((Scope::Security, Access::ReadWrite)));
+        assert_eq!(p.scope, ScopeReq::Area(Scope::Security, Access::ReadWrite));
         assert_eq!(p.principal, MinPrincipal::User);
     }
 
@@ -661,7 +676,7 @@ mod tests {
         .expect("role and scope are different axes and intersect");
 
         assert_eq!(p.role, Some(MinRole::Admin));
-        assert_eq!(p.scope, Some((Scope::Files, Access::ReadOnly)));
+        assert_eq!(p.scope, ScopeReq::Area(Scope::Files, Access::ReadOnly));
     }
 
     /// The same area twice tightens access: `ro` then `rw` yields `rw`.
@@ -676,7 +691,7 @@ mod tests {
         )
         .expect("same area, stricter access");
 
-        assert_eq!(p.scope, Some((Scope::Security, Access::ReadWrite)));
+        assert_eq!(p.scope, ScopeReq::Area(Scope::Security, Access::ReadWrite));
     }
 
     /// Two DIFFERENT areas in one chain are refused rather than silently
@@ -841,7 +856,7 @@ mod tests {
     #[test]
     fn an_absent_scope_set_grandfathers_to_full() {
         let p = Policy {
-            scope: Some((Scope::Security, Access::ReadWrite)),
+            scope: ScopeReq::Area(Scope::Security, Access::ReadWrite),
             ..Policy::default()
         };
 
@@ -869,7 +884,7 @@ mod tests {
     #[test]
     fn a_scope_narrowed_credential_is_refused_without_naming_its_kind() {
         let p = Policy {
-            scope: Some((Scope::Security, Access::ReadWrite)),
+            scope: ScopeReq::Area(Scope::Security, Access::ReadWrite),
             ..Policy::default()
         };
         let app_password = ScopeSet::empty()
@@ -880,7 +895,7 @@ mod tests {
 
         // Read-only where write is required is the same refusal.
         let files_rw = Policy {
-            scope: Some((Scope::Files, Access::ReadWrite)),
+            scope: ScopeReq::Area(Scope::Files, Access::ReadWrite),
             ..Policy::default()
         };
         let ro = ScopeSet::empty().with(Scope::Files, Access::ReadOnly);

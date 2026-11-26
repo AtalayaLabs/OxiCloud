@@ -376,7 +376,9 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::application::ports::scope_ports::{Access, MinPrincipal, MinRole, Policy, Scope};
+    use crate::application::ports::scope_ports::{
+        Access, MinPrincipal, MinRole, Policy, Scope, ScopeReq,
+    };
 
     async fn noop() -> &'static str {
         "ok"
@@ -479,7 +481,7 @@ mod tests {
         let p = table.get(&op).unwrap();
 
         assert_eq!(p.role, Some(MinRole::Internal));
-        assert_eq!(p.scope, Some((Scope::Security, Access::ReadWrite)));
+        assert_eq!(p.scope, ScopeReq::Area(Scope::Security, Access::ReadWrite));
     }
 
     /// Non-REST surfaces declare by operation, since they have no route
