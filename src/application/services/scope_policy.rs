@@ -67,6 +67,17 @@ pub enum PolicyError {
         child: MinRole,
     },
 
+    /// A child declaring `scopeless()` under a parent that required an
+    /// AREA. The scope axis folds by tightening like the other two, so
+    /// "no scope required" cannot be reached from "this area required" —
+    /// and silently widening it is precisely the fail-open this axis
+    /// exists to prevent.
+    ///
+    /// Only an area parent triggers it. Repeating `scopeless()` down a
+    /// chain, or naming an area under a scopeless parent, are both the
+    /// legitimate direction.
+    ScopeWidens { op: Op, parent: Scope },
+
     /// A principal declaration that WIDENS an explicit parent's. Same
     /// reasoning as [`Self::RoleWidens`]; the fold is also a `max`.
     ///
@@ -177,6 +188,12 @@ impl std::fmt::Display for PolicyError {
                  asked which paths exist, so this check is the only thing \
                  that would notice."
             ),
+            PolicyError::ScopeWidens { op, parent } => write!(
+                f,
+                "{op}: a child declares scopeless() under a parent requiring \
+                 {parent:?} — the scope axis tightens, it does not widen. \
+                 Name the area, or remove the parent's declaration."
+            ),
             PolicyError::ConflictingScopes { op, first, second } => write!(
                 f,
                 "`{op}` requires two scopes, {first:?} and {second:?}, \
@@ -196,7 +213,38 @@ impl std::error::Error for PolicyError {}
 struct Folded {
     role: Option<MinRole>,
     principal: Option<MinPrincipal>,
-    scope: Option<(Scope, Access)>,
+    /// `None` = nothing declared on this axis yet, which resolves to
+    /// [`ScopeReq::Undefined`]. `Some(ScopeReq::None)` is the DIFFERENT
+    /// state of having declared that no scope is required.
+    scope: Option<ScopeReq>,
+}
+
+/// Fold ONE area declaration into the accumulator.
+///
+/// Shared by `Condition::Scope` and `Condition::ScopeByVerb`, which differ
+/// only in where the access came from — so the conflict and tightening
+/// rules live in one place rather than twice.
+fn fold_scope(op: Op, acc: &mut Option<ScopeReq>, s: Scope, a: Access) -> Result<(), PolicyError> {
+    match *acc {
+        // Same area: tighten the access. `ReadWrite` wins, which
+        // `Access`'s ordering already encodes.
+        Some(ScopeReq::Area(prev, prev_access)) if prev == s => {
+            *acc = Some(ScopeReq::Area(s, prev_access.max(a)));
+        }
+        Some(ScopeReq::Area(first, _)) => {
+            return Err(PolicyError::ConflictingScopes {
+                op,
+                first,
+                second: s,
+            });
+        }
+        // A parent declaring "none required" may be TIGHTENED by a child
+        // naming an area — the direction the other axes also allow.
+        Some(ScopeReq::None) | Some(ScopeReq::Undefined) | None => {
+            *acc = Some(ScopeReq::Area(s, a));
+        }
+    }
+    Ok(())
 }
 
 /// Fold `chain` — ordered ROOT first, leaf last — into one total
@@ -242,20 +290,25 @@ pub fn compile(op: Op, chain: &[&[Condition]]) -> Result<Policy, PolicyError> {
                     }
                     acc.principal = Some(acc.principal.map_or(p, |q| q.max(p)));
                 }
-                Condition::Scope(s, a) => match acc.scope {
-                    // Same area: tighten the access. `ReadWrite` wins,
-                    // which `Access`'s ordering already encodes.
-                    Some((prev, prev_access)) if prev == s => {
-                        acc.scope = Some((s, prev_access.max(a)));
+                Condition::Scope(s, a) => fold_scope(op, &mut acc.scope, s, a)?,
+                // Resolved HERE rather than at request time: `op` carries
+                // the method, so the compiled policy holds a plain
+                // `Access` and evaluate stays field reads.
+                Condition::ScopeByVerb(s) => {
+                    let a = Access::from_method(op.method());
+                    fold_scope(op, &mut acc.scope, s, a)?;
+                }
+                Condition::Scopeless => match acc.scope {
+                    // A parent that required an area cannot be WIDENED to
+                    // "none required" by a child — the same rule the role
+                    // and principal axes enforce with a `max`.
+                    Some(ScopeReq::Area(first, _)) => {
+                        return Err(PolicyError::ScopeWidens { op, parent: first });
                     }
-                    Some((first, _)) => {
-                        return Err(PolicyError::ConflictingScopes {
-                            op,
-                            first,
-                            second: s,
-                        });
+                    // Repeating it down the chain is harmless.
+                    Some(ScopeReq::None) | Some(ScopeReq::Undefined) | None => {
+                        acc.scope = Some(ScopeReq::None);
                     }
-                    None => acc.scope = Some((s, a)),
                 },
             }
         }
@@ -269,9 +322,7 @@ pub fn compile(op: Op, chain: &[&[Condition]]) -> Result<Policy, PolicyError> {
         // `Undefined` — unsatisfiable, and refused by spec generation.
         // `ScopeReq::None` is a different state that only
         // `Condition::scopeless()` can produce (PR 2 step 2).
-        scope: acc
-            .scope
-            .map_or(ScopeReq::Undefined, |(s, a)| ScopeReq::Area(s, a)),
+        scope: acc.scope.unwrap_or(ScopeReq::Undefined),
     };
 
     reject_unsatisfiable(op, &policy)?;
@@ -457,6 +508,80 @@ mod tests {
     use crate::domain::entities::user::UserRole;
 
     const ADMIN: Op = Op::Rest("GET", "/api/admin/sessions");
+
+    /// `scope_by_verb` resolves from the OPERATION's method, so one
+    /// prefix declaration covers a subtree whose verbs differ. This is
+    /// what makes ten area declarations enough instead of thirty.
+    #[test]
+    fn scope_by_verb_reads_the_operations_method() {
+        let decl = [Condition::scope_by_verb(Scope::Files)];
+
+        let read = compile(Op::Rest("GET", "/api/files/{id}"), &[&decl]).expect("compiles");
+        assert_eq!(read.scope, ScopeReq::Area(Scope::Files, Access::ReadOnly));
+
+        let write = compile(Op::Rest("DELETE", "/api/files/{id}"), &[&decl]).expect("compiles");
+        assert_eq!(write.scope, ScopeReq::Area(Scope::Files, Access::ReadWrite));
+    }
+
+    /// An unknown method is a WRITE, and `LOCK` is the case most likely
+    /// to be misread as one: it mutates lock state. Fail-closed by
+    /// omission — the opposite default would admit a method nobody
+    /// classified on a read-only credential.
+    #[test]
+    fn an_unclassified_method_demands_the_stronger_scope() {
+        assert_eq!(Access::from_method("LOCK"), Access::ReadWrite);
+        assert_eq!(Access::from_method("UNLOCK"), Access::ReadWrite);
+        assert_eq!(Access::from_method("WEIRD"), Access::ReadWrite);
+        assert_eq!(Access::from_method("PROPFIND"), Access::ReadOnly);
+        assert_eq!(Access::from_method("REPORT"), Access::ReadOnly);
+    }
+
+    /// `scopeless()` is a DECLARED state, not the absence of one — which
+    /// is the whole reason `ScopeReq` has three variants. A reader of the
+    /// dump, and the step-4 generation check, both need to tell "nobody
+    /// classified this" from "no scope required, deliberately".
+    #[test]
+    fn scopeless_is_distinct_from_declaring_nothing() {
+        let declared = compile(ADMIN, &[&[Condition::scopeless()]]).expect("compiles");
+        assert_eq!(declared.scope, ScopeReq::None);
+
+        let silent = compile(ADMIN, &[]).expect("compiles");
+        assert_eq!(silent.scope, ScopeReq::Undefined);
+    }
+
+    /// The scope axis TIGHTENS down a chain, like role and principal.
+    ///
+    /// A parent saying "no scope required" may be narrowed by a child
+    /// naming an area; the reverse is refused, because silently widening
+    /// an area requirement to "none" is exactly the fail-open this axis
+    /// exists to close.
+    #[test]
+    fn the_scope_axis_tightens_but_does_not_widen() {
+        let tightened = compile(
+            ADMIN,
+            &[&[Condition::scopeless()], &[Condition::scope_by_verb(Scope::Files)]],
+        )
+        .expect("narrowing a scopeless parent is legal");
+        assert_eq!(tightened.scope, ScopeReq::Area(Scope::Files, Access::ReadOnly));
+
+        let widened = compile(
+            ADMIN,
+            &[
+                &[Condition::scope(Scope::Files, Access::ReadWrite)],
+                &[Condition::scopeless()],
+            ],
+        );
+        assert!(
+            matches!(
+                widened,
+                Err(PolicyError::ScopeWidens {
+                    parent: Scope::Files,
+                    ..
+                })
+            ),
+            "scopeless() under an area parent must be refused, not resolved: {widened:?}"
+        );
+    }
 
     /// An operation that declares NOTHING compiles to "an authenticated
     /// user", which is the whole of § Authentication by default. If this

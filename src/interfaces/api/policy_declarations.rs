@@ -45,28 +45,6 @@ pub const DAV_AREAS: [(Scope, &[&str]); 3] = [
     (Scope::Contacts, &["/carddav"]),
 ];
 
-/// Which DAV methods READ. Everything else is treated as a write.
-///
-/// Fail-closed by omission: an unlisted or future method is classified
-/// `ReadWrite`, so it demands the stronger scope. The opposite default
-/// would let a method nobody classified through on a read-only
-/// credential.
-///
-/// `LOCK` and `UNLOCK` are writes — they mutate lock state — which is
-/// the classification most likely to be got wrong by reading the verb
-/// alone.
-pub const DAV_READ_METHODS: [&str; 5] = ["GET", "HEAD", "OPTIONS", "PROPFIND", "REPORT"];
-
-/// Read or write, for scope purposes. See [`DAV_READ_METHODS`] on why an
-/// unknown method is a write.
-pub fn dav_access(method: &str) -> Access {
-    if DAV_READ_METHODS.contains(&method) {
-        Access::ReadOnly
-    } else {
-        Access::ReadWrite
-    }
-}
-
 /// The area a DAV path belongs to, or `None` if it is not a DAV path.
 ///
 /// SEGMENT-aware, like the REST prefix match in `scope_table`: a plain

@@ -98,6 +98,12 @@ pub enum Condition {
     Role(MinRole),
     Principal(MinPrincipal),
     Scope(Scope, Access),
+    /// This area, with the ACCESS derived from the operation's method at
+    /// compile time — see [`Condition::scope_by_verb`].
+    ScopeByVerb(Scope),
+    /// No scope required, declared. Distinct from declaring nothing,
+    /// which leaves [`ScopeReq::Undefined`].
+    Scopeless,
     // Elevated,  // with auth.sessions.elevated_at — see `Elevation` below
 }
 
@@ -120,8 +126,44 @@ impl Condition {
         Condition::Principal(MinPrincipal::Visitor)
     }
 
+    /// This area at this access, stated.
     pub const fn scope(s: Scope, a: Access) -> Self {
         Condition::Scope(s, a)
+    }
+
+    /// This area, with the access taken from the operation's METHOD:
+    /// `ReadOnly` for a read method, `ReadWrite` otherwise.
+    ///
+    /// What a prefix declares, because it lets ONE declaration cover a
+    /// subtree whose verbs differ — ten declarations instead of thirty.
+    /// Resolved during compile, where `Op::Rest` carries the method, so
+    /// the compiled `Policy` holds a plain `Access` and nothing is
+    /// inferred while serving a request.
+    ///
+    /// **The verb is a heuristic, and it lies in both directions.** Where
+    /// the method does not describe the EFFECT, state the access with
+    /// [`Condition::scope`] instead:
+    ///
+    /// - a credential-minting GET reads as harmless exactly when it is
+    ///   not. `GET /api/wopi/editor-url` hands back a token usable for
+    ///   `POST /wopi/files/{id}/contents`, so verb-derivation would let a
+    ///   READ-ONLY credential obtain write capability;
+    /// - a read posted for its body — `POST /api/batch/files/get`,
+    ///   `/api/batch/download`, `/api/dedup/check-batch` — would demand
+    ///   `rw` and lock a read-only credential out of a read.
+    pub const fn scope_by_verb(s: Scope) -> Self {
+        Condition::ScopeByVerb(s)
+    }
+
+    /// No scope required, DECLARED — the way [`Condition::public`] is
+    /// written on the principal axis rather than fallen into.
+    ///
+    /// Not the same as declaring nothing: that leaves
+    /// [`ScopeReq::Undefined`], which spec generation refuses. This is how
+    /// an operation says it needs no area — `/api/config`,
+    /// `/api/auth/logout`, the login flows.
+    pub const fn scopeless() -> Self {
+        Condition::Scopeless
     }
 
     /// Which axis this constrains. The compile step needs it to detect a
@@ -132,7 +174,7 @@ impl Condition {
         match self {
             Condition::Role(_) => Axis::Role,
             Condition::Principal(_) => Axis::Principal,
-            Condition::Scope(..) => Axis::Scope,
+            Condition::Scope(..) | Condition::ScopeByVerb(_) | Condition::Scopeless => Axis::Scope,
         }
     }
 }
@@ -194,6 +236,50 @@ impl Default for Policy {
             role: None,
             principal: MinPrincipal::User,
             scope: ScopeReq::Undefined,
+        }
+    }
+}
+
+impl Op {
+    /// The HTTP method, for the operations that have one.
+    ///
+    /// `Op::Dav` carries an [`Access`] directly rather than a method, and
+    /// the WS/collab operations have no method at all — so they report the
+    /// WRITE-implying default. That is the safe direction, and it is also
+    /// moot: nothing resolves `scope_by_verb` for them, because a DAV
+    /// declaration states its access.
+    #[must_use]
+    pub const fn method(self) -> &'static str {
+        match self {
+            Self::Rest(m, _) => m,
+            _ => "",
+        }
+    }
+}
+
+impl Access {
+    /// The access an HTTP METHOD implies: `ReadOnly` for the read
+    /// methods, `ReadWrite` for everything else.
+    ///
+    /// **Fail-closed by omission.** An unlisted or future method is a
+    /// write, so it demands the stronger scope. The opposite default
+    /// would let a method nobody classified through on a read-only
+    /// credential.
+    ///
+    /// `LOCK` and `UNLOCK` are therefore writes — they mutate lock state
+    /// — which is the classification most likely to be got wrong by
+    /// reading the verb alone.
+    ///
+    /// Serves BOTH axes of the engine: it resolves
+    /// [`Condition::scope_by_verb`] for REST during compile, and it
+    /// classifies a DAV request's method at the gate. The DAV side had its
+    /// own copy of this list until the two were found to be the same five
+    /// methods.
+    #[must_use]
+    pub const fn from_method(method: &str) -> Self {
+        match method.as_bytes() {
+            b"GET" | b"HEAD" | b"OPTIONS" | b"PROPFIND" | b"REPORT" => Self::ReadOnly,
+            _ => Self::ReadWrite,
         }
     }
 }

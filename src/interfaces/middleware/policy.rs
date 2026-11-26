@@ -46,11 +46,11 @@ use axum::response::{IntoResponse, Response};
 use std::sync::Arc;
 
 use crate::application::dtos::user_dto::CurrentCaller;
-use crate::application::ports::scope_ports::Op;
+use crate::application::ports::scope_ports::{Access, Op};
 use crate::application::services::scope_policy::{Denial, evaluate};
 use crate::application::services::scope_table::PolicyRegistry;
 use crate::common::di::AppState;
-use crate::interfaces::api::policy_declarations::{dav_access, dav_area, declarations};
+use crate::interfaces::api::policy_declarations::{dav_area, declarations};
 use crate::interfaces::errors::AppError;
 
 /// The declarations, built once. Static data, so there is nothing to fail
@@ -109,7 +109,7 @@ fn op_from_parts(method: &str, matched: &str) -> Option<Op> {
     // it. The template is what REST needs, since a declaration is written
     // against `/api/files/{id}` and never against a resolved path.
     if let Some(area) = dav_area(matched) {
-        return Some(Op::Dav(area, dav_access(method)));
+        return Some(Op::Dav(area, Access::from_method(method)));
     }
     Some(Op::Rest(method_static(method), leak(matched)))
 }
