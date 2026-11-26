@@ -559,10 +559,16 @@ mod tests {
     fn the_scope_axis_tightens_but_does_not_widen() {
         let tightened = compile(
             ADMIN,
-            &[&[Condition::scopeless()], &[Condition::scope_by_verb(Scope::Files)]],
+            &[
+                &[Condition::scopeless()],
+                &[Condition::scope_by_verb(Scope::Files)],
+            ],
         )
         .expect("narrowing a scopeless parent is legal");
-        assert_eq!(tightened.scope, ScopeReq::Area(Scope::Files, Access::ReadOnly));
+        assert_eq!(
+            tightened.scope,
+            ScopeReq::Area(Scope::Files, Access::ReadOnly)
+        );
 
         let widened = compile(
             ADMIN,

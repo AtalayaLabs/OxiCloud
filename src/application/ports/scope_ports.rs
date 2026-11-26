@@ -438,8 +438,25 @@ pub enum Scope {
     Files,
     Calendar,
     Contacts,
-    Photos,
-    Music,
+    /// The BIOMETRIC face index — `/api/people/*`, and nothing else.
+    ///
+    /// The one media surface with an area of its own. Photos and music do
+    /// NOT have scopes: they are ways to DISPLAY files, so withholding
+    /// them withholds nothing a `files` credential cannot already read
+    /// through `/api/files` (EXIF coordinates live in the bytes). A face
+    /// index is different — pixel analysis produces data the bytes do not
+    /// contain, and `merge`/`recluster` mutate it. So the app-password
+    /// ceiling withholds biometrics by construction, for the same reason
+    /// `enable_faces` is opt-in.
+    Faces,
+    /// The instance CONTROL surface — `/api/admin/*` and the `/api/groups`
+    /// mutations. Not a data area, and that is why it exists.
+    ///
+    /// `MinRole::Admin` cannot stand in for it: a role is read from the
+    /// USER row, so an admin's app password carries the admin role and a
+    /// credential created for DAVx⁵ could administer the instance.
+    /// Withheld from every non-interactive ceiling.
+    Admin,
     Sharing,
     /// Profile and preferences — Google's "Account" tab.
     Account,
@@ -460,8 +477,8 @@ impl Scope {
         Scope::Files,
         Scope::Calendar,
         Scope::Contacts,
-        Scope::Photos,
-        Scope::Music,
+        Scope::Faces,
+        Scope::Admin,
         Scope::Sharing,
         Scope::Account,
         Scope::Security,

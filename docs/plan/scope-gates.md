@@ -685,6 +685,7 @@ for the same reason.
 | `calendar` | `/caldav`, `/.well-known/caldav`, `/api/calendars` (#853) |
 | `contacts` | `/carddav`, `/.well-known/carddav`, `/api/address-books`, `/api/contacts` |
 | `faces` | `/api/people/*` — the BIOMETRIC index only |
+| `admin` | `/api/admin/*`, `/api/groups` mutations — the instance CONTROL surface, not a data area |
 | `account` | `/api/auth/me`, `/me/profile`, `/me/image` — **enumerated, never the `/api/auth/*` prefix** — `/api/notifications`, `/remote.php/dav/avatars` |
 | `security` | `/api/auth/change-password`, `/oidc/link/start`, `/oidc/unlink`, `/upgrade-to-internal`, `/opaque/register/*`, `/app-passwords`, `/device/devices`, `/device/verify` |
 | `sharing` | `/api/grants`, `/api/shares`, `/api/s`, OCS sharing, and recipient lookup: `/api/users/{id}`, `/api/groups/search`, and `/api/playlists/{id}/share*` |
@@ -918,8 +919,8 @@ only what its row names. A new type added without thought about
 
 | credential | default when omitted | maximum (allowlist) |
 |---|---|---|
-| App password | `files,calendar,contacts` (`:rw`) | same — **no `security`**, **no `account`** (§ Credential-kind gating) |
-| Device flow | `files,calendar,contacts` (`:rw`) — today's `webdav,caldav,carddav`, namespaced | `files,calendar,contacts,account` — **no `security`** |
+| App password | `files,calendar,contacts` (`:rw`) | same — **no `security`**, **no `account`**, **no `admin`** (§ Credential-kind gating) |
+| Device flow | `files,calendar,contacts` (`:rw`) — today's `webdav,caldav,carddav`, namespaced | `files,calendar,contacts,account` — **no `security`**, **no `admin`** |
 | Interactive web session | n/a — never requests scopes | every scope `:rw`, `security` included |
 
 App password is not `files` alone: `app_password_handler` describes
@@ -1997,8 +1998,17 @@ another one. Every ceiling in § Defaults is bypassable in one request by
 the credential type most likely to be pasted into a config file, mailed
 to oneself, or committed by accident.
 
-**Scope closes it, and no credential-kind axis is needed.** Every route
-in the hole above is in the `security` area — § Defaults classifies
+**Scope closes it, and no credential-kind axis is needed** — but it takes
+TWO areas, not one, and this section originally named only the first.
+
+The second is `/api/admin/*`, 59 of the 250 operations. A role check does
+not help: `MinRole::Admin` reads the USER row, so an admin's app password
+carries the admin role, and a credential created for DAVx⁵ could
+administer the instance. Those operations are the `admin` area, which no
+restricted credential type is granted — so the refusal comes from the
+scope axis rather than from anything noticing the credential kind.
+
+Everything else in the hole is in the `security` area — § Defaults classifies
 `/app-passwords`, `/change-password`, `/oidc/link/start`,
 `/oidc/unlink`, `/upgrade-to-internal`, `/opaque/register/*`,
 `/device/devices` and `/device/verify` there — and the app-password
@@ -2006,7 +2016,10 @@ ceiling grants **no `security`**. So an app password minting another one
 is refused by `Condition::scope(Scope::Security, …)`, not by anything
 noticing it was an app password.
 
-That makes credential kind a MINT-time input rather than a request-time
+So both halves close the same way: `security` stops an app password
+minting another credential, `admin` stops it administering the instance,
+and neither needs a request-time look at the credential kind. That makes
+credential kind a MINT-time input rather than a request-time
 axis: `effective = (requested ?? type_default) ∩ type_maximum` already
 decides, once, what each credential type can reach. A condition would be a
 second implementation of the same decision, and the two would drift.
