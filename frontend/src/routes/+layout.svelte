@@ -15,6 +15,7 @@
 	import { session } from '$lib/stores/session.svelte';
 	import { ui } from '$lib/stores/ui.svelte';
 	import { hashUrlToPath } from '$lib/utils/hashRedirect';
+	import { awaitServiceWorkerReady } from '$lib/utils/swReady';
 	import { killLegacyServiceWorker } from '$lib/utils/killLegacyServiceWorker';
 	import { serverConfig } from '$lib/stores/serverConfig.svelte';
 	import { hydrateFromAuthenticatedBoot } from '$lib/stores/serverStatus.svelte';
@@ -124,13 +125,19 @@
 			// Registration itself happens in `hooks.client.ts`, before the
 			// first route renders — see the note there on why the timing
 			// matters for the reload below.
-			try {
-				await navigator.serviceWorker.ready;
-			} catch {
-				/* SW registration failed — unbound sessions still work;
-				   bound sessions in `required` mode see 401s on browser-
-				   direct URLs. Same fail-open shape as pre-SW. */
-			}
+			// Via `awaitServiceWorkerReady`, which puts a TIMEOUT on the
+			// wait. `navigator.serviceWorker.ready` never settles where
+			// registration is refused rather than slow — Firefox private
+			// windows, enterprise policy, a CSP block — and it does not
+			// reject, so the `catch` that used to sit here could never
+			// run. Awaiting it bare held this splash up forever for those
+			// users: a fail-open written beside an unreachable path.
+			//
+			// Failure here is still fail-open — unbound sessions work;
+			// bound sessions in `required` mode see 401s on
+			// browser-direct URLs, the same shape as before this SW
+			// existed.
+			await awaitServiceWorkerReady();
 			// Soft-reload once if we landed uncontrolled. Covers two
 			// cases the SW itself can't fix:
 			//   * First-ever visit — page loaded before any SW existed,

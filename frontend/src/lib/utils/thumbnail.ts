@@ -135,8 +135,24 @@ async function sourceToBitmap(file: ThumbnailFile, source: string): Promise<Imag
 		return createImageBitmap(blob);
 	}
 	if (mime === 'application/pdf') {
+		// Fetch through `apiFetch` and hand pdf.js the BYTES, never the URL.
+		//
+		// `getDocument(url)` makes pdf.js fetch the document itself, from its
+		// own worker, which costs two things. It bypasses `apiFetch`, so the
+		// request carries no DPoP header and a 401 gets no refresh-and-retry —
+		// a PDF thumbnail simply fails for a user whose token just expired.
+		// And it rejects from inside that worker with pdf.js's own
+		// `UnexpectedResponseException`, which `queueGenerate`'s try/catch
+		// cannot reach, so a non-2xx surfaces as an unhandled page error
+		// instead of a handled failure.
+		//
+		// The image branch above has always done it this way; this is the
+		// asymmetry being removed, not a new approach.
+		const response = await apiFetch(source);
+		if (!response.ok) throw new Error(`failed to fetch: ${response.status}`);
+		const data = new Uint8Array(await response.arrayBuffer());
 		const pdfjsLib = await getPdfjsLib();
-		const pdf = await pdfjsLib.getDocument(source).promise;
+		const pdf = await pdfjsLib.getDocument({ data }).promise;
 		const page = await pdf.getPage(1);
 		const viewport = page.getViewport({ scale: 1 });
 		const canvas = document.createElement('canvas');
