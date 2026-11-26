@@ -7,6 +7,7 @@ use crate::application::dtos::app_password_dto::*;
 use crate::application::ports::auth_ports::{
     AppPasswordStoragePort, PasswordHasherPort, UserStoragePort,
 };
+use crate::application::ports::scope_ports::CredentialKind;
 use crate::common::errors::{DomainError, ErrorKind};
 use crate::domain::entities::app_password::AppPassword;
 use crate::infrastructure::repositories::pg::AppPasswordPgRepository;
@@ -177,13 +178,27 @@ impl AppPasswordService {
             .expires_in_days
             .map(|days| Utc::now() + Duration::days(days as i64));
 
+        // Narrow at the STORE — see the note in `device_auth_service`.
+        // The credential list reads this row back, so capping here makes
+        // that output correct for free; the creation response below is
+        // the one site that echoes rather than reads.
+        let granted = CredentialKind::AppPassword
+            .effective(Some(&request.scopes))
+            .map_err(|e| {
+                DomainError::new(
+                    ErrorKind::InvalidInput,
+                    "AppPassword",
+                    format!("invalid scope: {e}"),
+                )
+            })?;
+
         // Create entity
         let app_password = AppPassword::new(
             user_id,
             label.clone(),
             password_hash,
             prefix.clone(),
-            request.scopes.clone(),
+            granted.to_wire(),
             expires_at,
         );
 
@@ -201,7 +216,13 @@ impl AppPasswordService {
             label,
             password: plain_token,
             username: username.clone(),
-            scopes: request.scopes,
+            // The EFFECTIVE set, not the request. RFC 6749 §5.1 makes
+            // `scope` required in the response whenever it differs from
+            // what was asked for — and echoing the request would tell a
+            // client it holds `security` when it holds three areas,
+            // which it would discover only as a 403 much later. Silent
+            // narrowing is defensible; unreported narrowing is not.
+            scopes: granted.to_wire(),
             expires_at: expires_str,
             instructions: AppPasswordInstructions {
                 davx5: format!(

@@ -2116,6 +2116,7 @@ impl AuthApplicationService {
             &user,
             Some(session.id()),
             validated_jkt.as_deref(),
+            None,
         )?;
         if let Some(jkt) = validated_jkt {
             // Success-path audit — records the bind so operators can
@@ -2496,7 +2497,7 @@ impl AuthApplicationService {
         );
         let access_token =
             self.token_service
-                .generate_access_token(user, Some(session.id()), None)?;
+                .generate_access_token(user, Some(session.id()), None, None)?;
         // Snapshot fields still needed for logging + DTO before
         // `session` and `user` are consumed by the storage call and
         // the DTO builder below.
@@ -2720,9 +2721,12 @@ impl AuthApplicationService {
         let user = self.user_storage.get_user_by_id(parent.user_id()).await?;
         check_account_admission(&user, self.require_verified_email, "refresh_grace")?;
 
-        let access_token =
-            self.token_service
-                .generate_access_token(&user, Some(child.id()), child.dpop_jkt())?;
+        let access_token = self.token_service.generate_access_token(
+            &user,
+            Some(child.id()),
+            child.dpop_jkt(),
+            None,
+        )?;
         let user_dto = self.build_self_user_dto(user.id(), &child).await?;
         let force_password_change = self.read_force_password_change(user.id()).await;
 
@@ -2905,6 +2909,7 @@ impl AuthApplicationService {
             user,
             Some(new_session.id()),
             session.dpop_jkt(),
+            None,
         )?;
 
         // Build the SelfUserDto before `new_session` is consumed by
@@ -6500,7 +6505,7 @@ impl AuthApplicationService {
         // aligns with the row about to be inserted.
         let access_token =
             self.token_service
-                .generate_access_token(user, Some(session.id()), None)?;
+                .generate_access_token(user, Some(session.id()), None, None)?;
         // Build the SelfUserDto before `session` is consumed by the
         // storage call — the builder reads `session.dpop_jkt()`
         // (None here since OIDC callbacks land unbound and the SPA

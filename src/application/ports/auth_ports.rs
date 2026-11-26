@@ -71,6 +71,25 @@ pub struct TokenClaims {
     /// harmless — the missing sid just means no stamp fires, and
     /// the token still authenticates normally).
     pub sid: Option<Uuid>,
+    /// The credential's frozen scope set, wire-form
+    /// (`oxicloud:files:rw,…`), or `None`.
+    ///
+    /// **`None` means EVERY scope**, which is the one place in this axis
+    /// where absence is permissive — and it is deliberate, following the
+    /// `sid` precedent directly above. Every token minted before this
+    /// claim existed lacks it, and reading that as "no scopes" would 401
+    /// every session in flight on the deploy that introduced it.
+    ///
+    /// It is also the common case by design: an interactive session's
+    /// ceiling IS every scope, so a browser token carries nothing here
+    /// and the claim stays absent for the overwhelming majority of
+    /// requests. Only a credential that is genuinely narrowed pays for
+    /// the string.
+    ///
+    /// Frozen at MINT — § Freezing at mint. A credential narrowed after
+    /// its token was issued keeps the wider set until the token expires,
+    /// which is the same trade `role` already makes.
+    pub scope: Option<String>,
 }
 
 /// Port for JWT token operations.
@@ -86,11 +105,17 @@ pub trait TokenServicePort: Send + Sync + 'static {
     /// `session.dpop_jkt()` from the Session being minted; unbound
     /// sessions (app passwords, NC clients, pre-DPoP) pass `None`
     /// and get a plain token the middleware exempts from DPoP.
+    /// `scope` — the credential's frozen scope set in wire form, or
+    /// `None` for every scope. Sessions pass `None`: their ceiling is
+    /// everything, so the claim stays absent and a browser token carries
+    /// no scope string. The device flow passes its stored, already
+    /// narrowed set.
     fn generate_access_token(
         &self,
         user: &User,
         session_id: Option<Uuid>,
         dpop_jkt: Option<&str>,
+        scope: Option<&str>,
     ) -> Result<String, DomainError>;
 
     /// Validate a token and extract its claims.
