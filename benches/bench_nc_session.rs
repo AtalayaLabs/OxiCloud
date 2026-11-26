@@ -125,6 +125,7 @@ fn fixture_folder() -> FolderDto {
 
 fn fixture_user(id: uuid::Uuid) -> CurrentCaller {
     CurrentCaller {
+        scopes: oxicloud::application::ports::scope_ports::ScopeSet::full(),
         id,
         username: Arc::from("alice.longname"),
         email: Arc::from("alice.longname@example.com"),

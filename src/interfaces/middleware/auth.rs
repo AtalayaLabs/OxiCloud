@@ -453,6 +453,13 @@ pub async fn auth_middleware(
                             // one-byte `Copy` enum — the whole build is 1
                             // alloc (the `Arc::new`) instead of 4.
                             let current_user = Arc::new(CurrentCaller {
+                                // The `scope` claim, or EVERY scope when
+                                // absent — see `from_credential`. Absent
+                                // is the normal case for a browser
+                                // session, whose ceiling is everything.
+                                scopes: crate::application::ports::scope_ports::ScopeSet::from_credential(
+                                    claims.scope.as_deref(),
+                                ),
                                 id: user_id,
                                 kind,
                                 token: presented,
@@ -508,7 +515,7 @@ pub async fn auth_middleware(
 
                 if let Some(app_pw_service) = state.app_password_service.as_ref() {
                     match app_pw_service.verify_basic_auth(username, password).await {
-                        Ok((user_id, uname, email)) => {
+                        Ok((user_id, uname, email, scopes)) => {
                             tracing::debug!(
                                 "App password authentication successful for user: {}",
                                 uname
@@ -642,6 +649,13 @@ pub async fn auth_middleware(
                                 username: uname,
                                 email,
                                 dpop_jkt: None,
+                                // Straight from the `auth.app_passwords`
+                                // row. An app password carries no JWT, so
+                                // there is no claim to read — the row IS
+                                // the credential, and its `scopes` column
+                                // was narrowed to the app-password ceiling
+                                // at mint.
+                                scopes,
                                 // Basic auth is app-password only.
                             });
                             // Basic auth is app-password only — never a share.
@@ -715,6 +729,11 @@ pub async fn auth_middleware(
                         {
                             LiveRole::Active(kind) => {
                                 let current_user = Arc::new(CurrentCaller {
+                                    // Same claim as the Bearer branch —
+                                    // a cookie carries the same JWT.
+                                    scopes: crate::application::ports::scope_ports::ScopeSet::from_credential(
+                                        claims.scope.as_deref(),
+                                    ),
                                     id: user_id,
                                     kind,
                                     token: presented,
@@ -795,6 +814,13 @@ pub async fn auth_middleware(
     // "anonymous implies a share credential" structural rather than checked.
     if let Some(ring) = request.extensions().get::<ShareRing>().cloned() {
         let current_user = Arc::new(CurrentCaller {
+            // `files:ro`, and this is the ONE scope set that is not read
+            // from a credential: a ring is a capability URL, not a
+            // credential with a scope column, so the ceiling is the
+            // constant. `reject_unsatisfiable` enforces the same value at
+            // COMPILE time, so a route a visitor may reach can never
+            // require more than this — the two must stay equal.
+            scopes: crate::application::ports::scope_ports::ScopeSet::ring(),
             // Named rather than inferred from a bool pair: a visitor has no
             // `auth.users` row, so "internal" and "external" were both
             // false of them and the old pair had to assert one.
@@ -849,6 +875,8 @@ mod tests {
     /// removed.
     fn principal(kind: CallerKind) -> CurrentCaller {
         CurrentCaller {
+            // Every scope: these fixtures exercise the ROLE axis alone.
+            scopes: crate::application::ports::scope_ports::ScopeSet::full(),
             id: Uuid::new_v4(),
             username: "visitor".into(),
             email: "".into(),

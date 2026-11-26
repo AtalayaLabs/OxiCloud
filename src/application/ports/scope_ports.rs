@@ -284,6 +284,31 @@ impl Access {
     }
 }
 
+/// Serialised as the wire string, so a `ScopeSet` in a log line or a
+/// debug dump reads as `oxicloud:files:rw,oxicloud:calendar:ro` rather
+/// than as two integers nobody can decode by eye.
+impl serde::Serialize for ScopeSet {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&self.to_wire())
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for ScopeSet {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let raw = String::deserialize(deserializer)?;
+        // The EMPTY STRING is the wire form of the empty set, so it must
+        // round-trip — distinct from `ScopeSet::parse`, which rejects an
+        // empty input because there a client sent a `scope` parameter
+        // with nothing in it. Same text, two entry points, two correct
+        // answers: here it is our own output being read back, there it is
+        // a client bug.
+        if raw.trim().is_empty() {
+            return Ok(Self::empty());
+        }
+        Self::parse(&raw).map_err(serde::de::Error::custom)
+    }
+}
+
 /// What KIND of credential a scope set is being minted for.
 ///
 /// Credential kind is a MINT-time input, not a request-time axis. Every
@@ -874,6 +899,44 @@ impl ScopeSet {
         }
     }
 
+    /// Resolve a credential's stored or claimed scope string.
+    ///
+    /// One helper for all four sources, because the `None` rule is the
+    /// subtle part and must not be re-decided per call site.
+    ///
+    /// * `None` → EVERY scope. Grandfathering, matching the `sid` claim's
+    ///   precedent: a token or row predating the scope column lacks it,
+    ///   and reading absence as "no scopes" would lock out every
+    ///   credential in flight on the deploy that introduced it. An
+    ///   interactive session also legitimately passes `None` — its
+    ///   ceiling IS everything.
+    /// * malformed → NO scopes, plus an audit line. This is the one
+    ///   fail-CLOSED direction here, and it is safe to take because the
+    ///   mint validates: a stored value that will not parse means the
+    ///   column was written by something other than
+    ///   `CredentialKind::effective`, so refusing is the honest answer.
+    ///   Granting everything on a parse failure would make corrupting the
+    ///   column an escalation.
+    #[must_use]
+    pub fn from_credential(raw: Option<&str>) -> Self {
+        match raw {
+            None => Self::full(),
+            Some(value) => ScopeSet::parse(value).unwrap_or_else(|error| {
+                tracing::warn!(
+                    target: "audit",
+                    event = "authz.scope_unparseable",
+                    reason = "stored_value_rejected",
+                    scope_raw = %value,
+                    error = %error,
+                    "👮🏻‍♂️ credential scope will not parse — refusing every \
+                     area; the mint validates, so this column was written \
+                     by something else"
+                );
+                Self::empty()
+            }),
+        }
+    }
+
     /// Does this set satisfy everything `required` asks for?
     ///
     /// A superset test, which is what makes the APPEND-only fold work: a
@@ -1058,6 +1121,63 @@ mod parse_tests {
             .effective(Some("oxicloud:account:ro"))
             .expect("parses");
         assert!(!app.allows(Scope::Account, Access::ReadOnly));
+    }
+
+    /// **Absence is PERMISSIVE, and only here.** Every token and row
+    /// minted before the scope claim existed lacks it, so reading absence
+    /// as "no scopes" would 401 every credential in flight on the deploy
+    /// that introduced the column. A future reader tempted to "fix" this
+    /// to fail closed should change the ROLLOUT instead — mint the claim
+    /// everywhere, let the old tokens expire, then tighten.
+    #[test]
+    fn an_absent_scope_means_every_scope() {
+        assert_eq!(ScopeSet::from_credential(None), ScopeSet::full());
+    }
+
+    /// A stored value that will not parse fails CLOSED — the one
+    /// fail-closed direction in this resolver, and safe to take because
+    /// the mint validates. A column that holds nonsense was written by
+    /// something other than `CredentialKind::effective`, so granting
+    /// everything on a parse failure would make corrupting it an
+    /// escalation.
+    #[test]
+    fn an_unparseable_stored_scope_grants_nothing() {
+        let got = ScopeSet::from_credential(Some("webdav,caldav"));
+        assert_eq!(
+            got,
+            ScopeSet::empty(),
+            "the PRE-migration vocabulary no longer parses; a row still \
+             holding it must grant nothing rather than everything"
+        );
+    }
+
+    /// The ordinary case: a stored wire string resolves to its set.
+    #[test]
+    fn a_stored_scope_resolves_to_its_set() {
+        let got = ScopeSet::from_credential(Some("oxicloud:files:ro"));
+        assert!(got.allows(Scope::Files, Access::ReadOnly));
+        assert!(!got.allows(Scope::Files, Access::ReadWrite));
+        assert!(!got.allows(Scope::Calendar, Access::ReadOnly));
+    }
+
+    /// The visitor ceiling and the COMPILE-time check must stay equal:
+    /// `auth_middleware` stamps `ScopeSet::ring()` on a ring-holder, and
+    /// `reject_unsatisfiable` refuses any visitor-admitting route that
+    /// requires more than the same constant. If these two ever disagree,
+    /// generation accepts a route no visitor can actually use.
+    #[test]
+    fn the_visitor_ring_is_exactly_files_read_only() {
+        let ring = ScopeSet::ring();
+        assert!(ring.allows(Scope::Files, Access::ReadOnly));
+        assert!(!ring.allows(Scope::Files, Access::ReadWrite));
+        for area in [
+            Scope::Calendar,
+            Scope::Contacts,
+            Scope::Sharing,
+            Scope::Account,
+        ] {
+            assert!(!ring.allows(area, Access::ReadOnly), "{area:?}");
+        }
     }
 
     /// A malformed request is an ERROR even for a kind whose ceiling

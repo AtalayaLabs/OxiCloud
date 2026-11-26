@@ -676,6 +676,26 @@ pub struct CurrentCaller {
     /// must not change the wire shape.
     #[serde(skip)]
     pub token: crate::domain::entities::presented_token::PresentedToken,
+    /// The credential's frozen scope set — what this caller may reach on
+    /// the SCOPE axis, independent of who they are.
+    ///
+    /// Four sources, and they do not share a mechanism, which is why this
+    /// field exists rather than each check deriving it:
+    ///
+    /// * a Bearer or cookie JWT → the `scope` claim, or EVERY scope when
+    ///   the claim is absent (§ Rollout: tokens predating the claim must
+    ///   keep working, and a session's ceiling is everything anyway);
+    /// * Basic auth with an app password → the `auth.app_passwords.scopes`
+    ///   row, which has no claim to carry;
+    /// * a public-share ring → [`ScopeSet::ring`], exactly `files:ro`;
+    /// * a device-flow token → the `scope` claim, narrowed at mint.
+    ///
+    /// No `Default`, deliberately: an empty set fails closed, so a
+    /// construction site that forgot to think about scopes would refuse
+    /// everything rather than compile. Making it a required field turns
+    /// that into a compile error at the site instead.
+    #[schema(value_type = String)]
+    pub scopes: crate::application::ports::scope_ports::ScopeSet,
 }
 
 impl CurrentCaller {

@@ -7,7 +7,7 @@ use crate::application::dtos::app_password_dto::*;
 use crate::application::ports::auth_ports::{
     AppPasswordStoragePort, PasswordHasherPort, UserStoragePort,
 };
-use crate::application::ports::scope_ports::CredentialKind;
+use crate::application::ports::scope_ports::{CredentialKind, ScopeSet};
 use crate::common::errors::{DomainError, ErrorKind};
 use crate::domain::entities::app_password::AppPassword;
 use crate::infrastructure::repositories::pg::AppPasswordPgRepository;
@@ -67,11 +67,24 @@ const BASIC_AUTH_CACHE_MAX_ENTRIES: u64 = 10_000;
 /// it can name one the user no longer holds, and the live value is
 /// re-resolved per request from the 30 s flags cache. Carrying it was 24
 /// bytes of staleness that only invited a third caller to trust it.
+/// **Scopes ARE cached, unlike the role above, and the difference is
+/// mutability.** A role changes under a live credential — an admin
+/// demotes a user and the 300 s TTL would keep serving the old one. An
+/// app password's scopes are fixed at mint: the three endpoints are
+/// create, list and revoke, with nothing that edits an existing row's
+/// `scopes` column. So a cached copy cannot name access the credential
+/// no longer has.
+///
+/// If a scope-editing endpoint is ever added, that stops being true and
+/// this field must come out of the cache — the narrowing would not take
+/// effect for up to 300 s, which is exactly the staleness the role note
+/// above rejects.
 #[derive(Clone)]
 struct CachedBasicAuthResult {
     user_id: Uuid,
     username: Arc<str>,
     email: Arc<str>,
+    scopes: ScopeSet,
 }
 
 pub struct AppPasswordService {
@@ -335,7 +348,7 @@ impl AppPasswordService {
         &self,
         username: &str,
         password: &str,
-    ) -> Result<(Uuid, Arc<str>, Arc<str>), DomainError> {
+    ) -> Result<(Uuid, Arc<str>, Arc<str>, ScopeSet), DomainError> {
         // ── 1. Compute cache key = blake3("username:password") ────────
         // Stream the parts into an incremental hasher instead of
         // `blake3::hash(format!("{username}:{password}").as_bytes())` — the
@@ -379,7 +392,7 @@ impl AppPasswordService {
                     }
                 },
             )?;
-        Ok((result.user_id, result.username, result.email))
+        Ok((result.user_id, result.username, result.email, result.scopes))
     }
 
     /// The uncached Basic Auth slow path: user lookup, prefix-scoped
@@ -477,6 +490,7 @@ impl AppPasswordService {
                 // Caching happens in `verify_basic_auth`: `try_get_with`
                 // stores this value under the blake3 key on return.
                 return Ok(CachedBasicAuthResult {
+                    scopes: ScopeSet::from_credential(Some(&ap.scopes)),
                     user_id: user.id(),
                     username: Arc::from(user.username().unwrap_or("")),
                     email: Arc::from(user.email()),

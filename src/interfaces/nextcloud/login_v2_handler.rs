@@ -346,7 +346,12 @@ pub async fn handle_oidc_login_completion(
         }
     };
 
-    let current_user = CurrentCaller {
+    let current_caller = CurrentCaller {
+        // EVERY scope: Login Flow v2 is browser-driven and ends by
+        // minting an app password, which gets its OWN narrowed set. This
+        // caller is the human approving that mint, not the credential
+        // being minted.
+        scopes: crate::application::ports::scope_ports::ScopeSet::full(),
         // From the DTO this door already loaded. `UserRoleDto` carries only
         // the three roles a row may hold, so the conversion is total — no
         // unparseable case and no `Anonymous` default to fall back to.
@@ -368,12 +373,12 @@ pub async fn handle_oidc_login_completion(
     let drives = match state
         .applications
         .folder_service
-        .list_folders_with_perms(None, current_user.id)
+        .list_folders_with_perms(None, current_caller.id)
         .await
     {
         Ok(d) => d,
         Err(e) => {
-            tracing::error!(error = %e, user = %current_user.username, "OIDC+NC: failed to list drives");
+            tracing::error!(error = %e, user = %current_caller.username, "OIDC+NC: failed to list drives");
             return StatusCode::INTERNAL_SERVER_ERROR.into_response();
         }
     };
@@ -382,7 +387,7 @@ pub async fn handle_oidc_login_completion(
         state,
         nextcloud,
         token,
-        &current_user,
+        &current_caller,
         "Nextcloud (OIDC)",
         drives,
     )
@@ -585,7 +590,12 @@ pub async fn handle_drive_pick(
         tracing::error!(%user_id, "Login Flow v2: pending user has no username — invariant violated");
         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
     };
-    let user = CurrentCaller {
+    let current_caller = CurrentCaller {
+        // EVERY scope: Login Flow v2 is browser-driven and ends by
+        // minting an app password, which gets its OWN narrowed set. This
+        // caller is the human approving that mint, not the credential
+        // being minted.
+        scopes: crate::application::ports::scope_ports::ScopeSet::full(),
         // From the DTO this door already loaded. `UserRoleDto` carries only
         // the three roles a row may hold, so the conversion is total — no
         // unparseable case and no `Anonymous` default to fall back to.
@@ -650,7 +660,7 @@ pub async fn handle_drive_pick(
     };
     let home_id = crate::domain::repositories::drive_repository::position_of_user_home_root_folder(
         state.drive_repo.as_ref(),
-        user.id,
+        current_caller.id,
         &drives,
         |f| uuid::Uuid::parse_str(&f.id).ok(),
     )
@@ -678,7 +688,7 @@ pub async fn handle_drive_pick(
         &state,
         &nextcloud.login_flow,
         &token,
-        &user,
+        &current_caller,
         drive_marker,
         &label,
     )

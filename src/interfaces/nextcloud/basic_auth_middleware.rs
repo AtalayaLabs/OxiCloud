@@ -174,7 +174,11 @@ pub async fn basic_auth_middleware(
         // No role in this tuple, deliberately: the Basic-auth cache has a
         // 300 s TTL, so a role from it can name one the user no longer
         // holds. The live one is read below, from the 30 s flags cache.
-        Ok((user_id, uname, email)) => {
+        //
+        // Scopes ARE in it, and the asymmetry is mutability: nothing
+        // edits an app password's `scopes` column, so a cached copy
+        // cannot name access the credential no longer has.
+        Ok((user_id, uname, email, scopes)) => {
             // Reset lockout counter on success
             if let Some(auth_svc) = state.auth_service.as_ref() {
                 auth_svc.login_lockout.record_success(username, &client_ip);
@@ -269,6 +273,10 @@ pub async fn basic_auth_middleware(
             // with app passwords via Basic Auth, no WebCrypto, no DPoP.
             // Middleware exempts unbound sessions per Gate 9 design.
             let current_user = Arc::new(CurrentCaller {
+                // From the `auth.app_passwords` row — every NC client
+                // authenticates with one, so this door never sees a
+                // JWT claim.
+                scopes,
                 // The same single flags read that answered `active` and the
                 // live role — § the one-read rule in this file's header.
                 kind: crate::domain::entities::user::CallerKind::from_flags(&flags),

@@ -579,6 +579,10 @@ mod tests {
         // Stands in for `auth_middleware`: inserts a caller.
         async fn insert_caller(mut request: Request, next: Next) -> Response {
             request.extensions_mut().insert(Arc::new(CurrentCaller {
+                // Every scope, so this fixture exercises the ROLE and
+                // PRINCIPAL axes alone. A scope-axis test names a
+                // narrower set instead.
+                scopes: crate::application::ports::scope_ports::ScopeSet::full(),
                 id: uuid::Uuid::new_v4(),
                 username: Arc::from("alice"),
                 email: Arc::from("alice@example.com"),
@@ -670,6 +674,10 @@ mod tests {
 
         async fn insert_plain_user(mut request: Request, next: Next) -> Response {
             request.extensions_mut().insert(Arc::new(CurrentCaller {
+                // Every scope, so this fixture exercises the ROLE and
+                // PRINCIPAL axes alone. A scope-axis test names a
+                // narrower set instead.
+                scopes: crate::application::ports::scope_ports::ScopeSet::full(),
                 id: uuid::Uuid::new_v4(),
                 username: Arc::from("plain"),
                 email: Arc::from("plain@example.com"),

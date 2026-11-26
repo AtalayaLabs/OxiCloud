@@ -167,6 +167,7 @@ fn section_identity(iters: u64) {
     let (an, aa) = measure("AFTER  Arc bumps + Copy Caller", iters, || {
         // The shipped middleware tail: LiveRole render + CurrentCaller build.
         Arc::new(CurrentCaller {
+            scopes: oxicloud::application::ports::scope_ports::ScopeSet::full(),
             id: uuid::Uuid::nil(),
             username: Arc::clone(&black_box(&new_claims).username),
             email: Arc::clone(&new_claims.email),
@@ -181,6 +182,7 @@ fn section_identity(iters: u64) {
     // Gate: identical field values + identical JSON wire shape.
     let old = before::bearer_identity(&old_claims, "user");
     let new = Arc::new(CurrentCaller {
+        scopes: oxicloud::application::ports::scope_ports::ScopeSet::full(),
         id: uuid::Uuid::nil(),
         username: Arc::clone(&new_claims.username),
         email: Arc::clone(&new_claims.email),

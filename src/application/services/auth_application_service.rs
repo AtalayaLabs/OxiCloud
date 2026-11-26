@@ -2581,6 +2581,14 @@ impl AuthApplicationService {
         check_account_admission(&user, self.require_verified_email, "nextcloud_login_v2")?;
 
         Ok(crate::application::dtos::user_dto::CurrentCaller {
+            // EVERY scope. This door verified a real PASSWORD, which is
+            // the full credential — narrowing applies to credentials
+            // DERIVED from it (app passwords, device tokens), never to
+            // the password itself. A user who can type their password can
+            // also mint an app password with any scope they like, so
+            // capping here would restrict nothing and break the NC Login
+            // Flow, which runs through this call.
+            scopes: crate::application::ports::scope_ports::ScopeSet::full(),
             id: user.id(),
             // Straight off the entity this door already loaded and admitted.
             kind: if user.is_external() {
