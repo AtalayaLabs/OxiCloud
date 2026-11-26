@@ -2582,6 +2582,8 @@ way PR 1 was. Two orderings are load-bearing rather than tidy:
 | 6 | the wire parser → `ScopeSet`: namespaced, both delimiters, `effective = (requested ?? type_default) ∩ type_maximum`, empty REJECTED, `mail` REJECTED | not started |
 | 7 | mint: the scope set into the JWT claim; absent claim ⇒ every scope `:rw` | not started — must precede 9 |
 | 8 | `CurrentCaller` carries the `ScopeSet` | not started |
+| 8b | the message bus, per TOPIC: a topic-class → area map, the `/api/rt/ticket` mint carrying the credential's `ScopeSet`, `rt.error` as the refusal | not started — DECIDED design, § The two surfaces with no caller |
+| 8c | WOPI: intersect the minted token's `can_write` with the caller's scope, so `/wopi/*` needs no gate | not started — after 8b, per Ed |
 | 9 | SHADOW: pass the scopes to `evaluate` and LOG what would be denied, enforcing nothing | not started — the step that found PR 1's visitor-DELETE hole |
 | 10 | ENFORCE: the gate refuses on `authz.scope_denied` / `scope_not_granted` | not started |
 | 11 | Hurl pins: an app-password credential refused OUTSIDE its areas and allowed INSIDE; a device credential likewise; an interactive session unaffected | not started |
@@ -2634,7 +2636,10 @@ files:rw`. Then `/wopi/*` needs no gate at all, because the token it
 honours cannot exceed the scope of the credential that asked for it.
 
 **Blocked on step 8** — `CurrentCaller` does not carry a `ScopeSet` yet,
-so there is nothing to intersect with.
+so there is nothing to intersect with. Sequenced AFTER the message bus
+(Ed): the bus establishes how a frozen scope set travels with a
+long-lived credential, and WOPI's token intersection is the same idea
+with a shorter life.
 
 #### `/api/rt/ws` — per TOPIC, not per method
 
@@ -2642,8 +2647,8 @@ The message bus is subscription-based: `rt.subscribe { topic }`, where a
 topic is `folder:{id}`, `collab:{file_id}` or `user:{id}:authz`. The
 session auto-subscribes to its own authz topic.
 
-**`Op::Ws(&str)` is keyed by the METHOD, and that is the wrong shape for
-this axis.** One `rt.subscribe` covers every topic class, so no
+**DECIDED: per TOPIC, not per method** (Ed, 2026-11-26). `Op::Ws(&str)`
+is keyed by the METHOD, and that is the wrong shape for this axis. One `rt.subscribe` covers every topic class, so no
 per-method declaration can say "`folder:` topics need `files`". The gate
 cannot answer a question whose subject arrives in the frame body.
 
