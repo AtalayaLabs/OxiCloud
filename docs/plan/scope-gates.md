@@ -35,7 +35,7 @@ view. Keep both current.
 | `policy_declarations.rs` | holds **nothing with a route** — only the six DAV `(area, access)` operations, which have none |
 | A bare `Router` in the API tree | **does not compile** — `nest` and `.policy()` take only a `GatedRouter`, with no escape hatch |
 | `/api` declarations living at their routes | **done** — every declaration with a route is at its route, per verb where the verbs differ |
-| Credential scopes — `ScopeReq`, `ScopeSet`, the area map | **not started** — PR 2. `Scope`/`ScopeSet` exist and are INERT: no credential carries a set, and an absent one grandfathers to FULL |
+| Credential scopes — `ScopeReq`, `ScopeSet`, the area map | **step 1 done** (`24d130c73`) — `ScopeReq` exists and defaults to unsatisfiable; nothing declares or refuses yet. PR 2. `Scope`/`ScopeSet` exist and are INERT: no credential carries a set, and an absent one grandfathers to FULL |
 | Authentication by default (`NotAnonymous` inverted) | **falls out, not built** — `Policy::default()` IS an authenticated user, so an undeclared operation is already closed to anonymous callers |
 | A password-change condition | **never** — it is a scope narrowing, not a condition; the layer is deleted by `authn-pipeline.md` part B after PR 2. § Fold in |
 | OpenAPI generation | **derived from the policy engine** — three per-axis markers plus the `security` array, and generation REPORTS any annotation that disagrees |
@@ -2484,7 +2484,7 @@ way PR 1 was. Two orderings are load-bearing rather than tidy:
 
 | # | step | state |
 |--:|---|---|
-| 1 | `ScopeReq { Undefined, None, Area(Scope, Access) }`; `Policy::scope: ScopeReq`, `Default = Undefined`. Boot check OFF | not started — inert, a type change only |
+| 1 | `ScopeReq { Undefined, None, Area(Scope, Access) }`; `Policy::scope: ScopeReq`, `Default = Undefined`. Refusal OFF | **done** — `24d130c73`; inert. The spec renders `Undefined` as `null` so the step-3 query below means something: **250 of 250** unclassified today. The dump renders `?` for it, distinct from `-` for a declared none |
 | 2 | `Condition::scope(area, access)` and `Condition::scopeless()` | not started — inert |
 | 3 | the ~10 AREA-PREFIX declarations (§ Areas, not protocols), plus `scopeless()` on the login/public/ops routes (§ Deliberately scopeless) | not started — inert; the acceptance is mechanical, see below |
 | 4 | the `Undefined` refusal at GENERATION time (`generate-openapi` exits non-zero), over REST **plus the six DAV operations** (in no spec, so the spec-driven list misses them), plus a runtime deny as defence in depth | not started — gates merges via CI's `openapi-spec-drift`; `just gen-openapi` is the local proof. NOT a boot check: feature-gated routers would make a stock deployment refuse to start |
