@@ -102,11 +102,22 @@ pub struct AppPasswordService {
     /// **Key**: `blake3(username + ":" + password)` — the plain-text password
     /// is never stored; only a cryptographic hash is kept as lookup key.
     ///
-    /// **Value**: the authenticated identity (user_id, username, email, role).
+    /// **Value**: the authenticated identity plus the credential's SCOPE
+    /// set — `user_id`, `username`, `email`, `scopes`. No `role`: see
+    /// [`CachedBasicAuthResult`] for why that one is re-read live and the
+    /// scopes are not.
     ///
     /// **Eviction**: TTL-based (see `BASIC_AUTH_CACHE_TTL_SECS`) +
     /// capacity-based (10 000 entries). Failed verifications are *never*
     /// cached, so brute-force attackers always pay the full Argon2id cost.
+    ///
+    /// **NOT evicted on revoke**, which is a gap rather than a decision:
+    /// a revoked app password keeps authenticating for up to the TTL. The
+    /// key is `blake3(username:password)` and `revoke` holds only the row
+    /// id — the plaintext is never stored, so the key cannot be computed
+    /// to target it. Closing it means either `invalidate_all()` on any
+    /// revoke (one extra Argon2 for every live Basic client, on a rare
+    /// human action) or a side index from app-password id to cache key.
     auth_cache: Cache<[u8; 32], CachedBasicAuthResult>,
 }
 
