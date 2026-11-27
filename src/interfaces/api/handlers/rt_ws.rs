@@ -198,6 +198,7 @@ pub async fn rt_ws_handler(
     };
     let caller_id = auth.caller_id;
     let presented = auth.token;
+    let scopes = auth.scopes;
     // If the caller reached us via the ticket path, echo the exact
     // subprotocol they sent back on the 101 response — RFC 6455 §4.2.2
     // requires this or the client fails the connection.
@@ -205,15 +206,40 @@ pub async fn rt_ws_handler(
         Some(sub) => ws.protocols([sub]),
         None => ws,
     };
-    ws.on_upgrade(move |socket| handle_session(socket, caller_id, presented, state))
+    ws.on_upgrade(move |socket| handle_session(socket, caller_id, presented, scopes, state))
 }
 
 /// Successful upgrade credentials — the resolved caller and (when the
+/// Who is on the other end of this socket, for the life of the session.
+///
+/// `caller_id`, `kind` and `scopes` were three parameters threaded
+/// through every frame handler in lockstep — they answer one question
+/// between them ("who is calling, and what may they reach"), and the
+/// third pushed `handle_subscribe` past clippy's argument limit, which
+/// was the lint noticing a real smell.
+///
+/// `Copy`: a `Uuid`, a one-byte enum and two bitmasks.
+#[derive(Clone, Copy)]
+struct SessionCaller {
+    id: Uuid,
+    kind: CallerKind,
+    /// Frozen at upgrade, like the token: a scope narrowed afterwards
+    /// takes effect when the credential's token expires, the same trade
+    /// the REST side makes.
+    scopes: crate::application::ports::scope_ports::ScopeSet,
+}
+
 /// ticket path was used) the subprotocol to echo on the 101 response.
 use crate::domain::entities::presented_token::PresentedToken;
 
 struct UpgradeAuth {
     caller_id: Uuid,
+    /// What the credential may reach on the SCOPE axis. Both upgrade
+    /// paths supply it: the bearer path reads the `scope` claim off the
+    /// JWT it just validated, the ticket path carries the issuing
+    /// session's set. Absent on a pre-claim token means EVERY scope, as
+    /// everywhere else.
+    scopes: crate::application::ports::scope_ports::ScopeSet,
     /// What the credential says about itself, so `handle_session` can
     /// apply the revocation checks. Both upgrade paths can supply it:
     /// the bearer path validates the JWT right here, and the ticket path
@@ -243,12 +269,13 @@ async fn authenticate_upgrade(
         // recorded at issue time by `POST /api/rt/ticket` — which runs
         // under the full middleware and therefore knows them, whereas this
         // upgrade does not.
-        let Some((caller_id, token)) = state.rt_ticket_store.redeem(ticket_uuid) else {
+        let Some((caller_id, token, scopes)) = state.rt_ticket_store.redeem(ticket_uuid) else {
             return Err("ticket_invalid");
         };
         return Ok(UpgradeAuth {
             caller_id,
             token,
+            scopes,
             accepted_subprotocol: Some(ticket_sub),
         });
     }
@@ -276,6 +303,13 @@ async fn authenticate_upgrade(
         }
         return Ok(UpgradeAuth {
             caller_id: claims.sub_id,
+            // Straight off the claim this path just validated. A token
+            // minted before the claim existed carries none, which
+            // `from_credential` resolves to EVERY scope — the same
+            // grandfathering the REST middleware applies.
+            scopes: crate::application::ports::scope_ports::ScopeSet::from_credential(
+                claims.scope.as_deref(),
+            ),
             // This path validated the JWT a few lines up, so the claims are
             // in hand — they were simply being discarded.
             token: crate::domain::entities::presented_token::PresentedToken::from_claims(
@@ -389,6 +423,11 @@ async fn handle_session(
     mut socket: WebSocket,
     caller_id: Uuid,
     presented: PresentedToken,
+    // The credential's scope set, bounding every subscribe and every
+    // collab frame for the life of this connection. Frozen at upgrade,
+    // like the token: a scope narrowed afterwards takes effect when the
+    // credential's token expires, the same trade the REST side makes.
+    scopes: crate::application::ports::scope_ports::ScopeSet,
     state: Arc<AppState>,
 ) {
     // Live-session counter — incremented here, decremented on ANY
@@ -709,7 +748,11 @@ async fn handle_session(
                 match incoming {
                     Some(Ok(Message::Text(txt))) => {
                         if let Some(reply) =
-                            handle_text_frame(&txt, caller_id, kind, &state, &mut subs, &out_tx).await
+                            // Built HERE, not snapshotted at session open: `kind` is
+                            // re-resolved live (the demotion check above
+                            // reassigns it), so a bundle captured once would
+                            // serve a stale role for the rest of the session.
+                            handle_text_frame(&txt, SessionCaller { id: caller_id, kind, scopes }, &state, &mut subs, &out_tx).await
                             && socket.send(Message::Text(reply.into())).await.is_err() {
                                 break;
                             }
@@ -756,6 +799,50 @@ async fn handle_session(
                         // router.
                         let reply_kind = frame.kind;
                         let reply_file_id = frame.file_id;
+
+                        // ── SCOPE, per FRAME KIND ───────────────────
+                        //
+                        // `:ro` subscribes, `:rw` publishes. Kind
+                        // `0x01` is a Yjs update — the only frame a
+                        // client sends that MUTATES the document — so
+                        // it needs `files:rw`. Awareness (`0x02`) and
+                        // sync-step (`0x03`) carry presence and
+                        // handshake state and change no bytes, so a
+                        // read-only credential keeps working.
+                        //
+                        // So a `files:ro` caller opens the document,
+                        // watches every change arrive and publishes
+                        // presence, and is refused only when it tries
+                        // to type. The grant axis already splits here
+                        // (`Permission::Update` on `0x01`); this is the
+                        // credential dimension of the same question,
+                        // and it is checked FIRST because it is two
+                        // mask comparisons against a DB read.
+                        if let crate::application::ports::scope_ports::ScopeReq::Areas(
+                            required,
+                        ) = Topic::collab_frame_scope(reply_kind)
+                            && !scopes.satisfies(required)
+                        {
+                            tracing::info!(
+                                target: "audit",
+                                event = "message_bus.frame_denied",
+                                reason = "scope_not_granted",
+                                frame_kind = reply_kind,
+                                file_id = %reply_file_id,
+                                granted = %scopes.to_wire(),
+                                caller_id = %caller_id,
+                                "👮🏻‍♂️ collab frame refused on the scope axis \
+                                 — the credential may read this document \
+                                 but not write it",
+                            );
+                            // Dropped silently, as the Yjs protocol has
+                            // no error frame: the client's update simply
+                            // does not land, which is what a read-only
+                            // editor session looks like anyway. The ack
+                            // already told it `can_write: false`.
+                            continue;
+                        }
+
                         match collab.handle_binary_frame(caller_id, frame).await {
                             Ok(None) => {
                                 // UPDATE + AWARENESS have no per-socket
@@ -907,8 +994,7 @@ async fn handle_session(
 /// dispatch already enqueued via `out_tx`).
 async fn handle_text_frame(
     text: &str,
-    caller_id: Uuid,
-    kind: CallerKind,
+    caller: SessionCaller,
     state: &Arc<AppState>,
     subs: &mut HashMap<String, Sub>,
     out_tx: &mpsc::Sender<SessionOut>,
@@ -938,14 +1024,12 @@ async fn handle_text_frame(
     };
 
     match method.as_str() {
-        "rt.subscribe" => {
-            Some(handle_subscribe(id, req.params, caller_id, kind, state, subs, out_tx).await)
-        }
+        "rt.subscribe" => Some(handle_subscribe(id, req.params, caller, state, subs, out_tx).await),
         "rt.unsubscribe" => Some(handle_unsubscribe(id, req.params, subs)),
         "rt.ping" => Some(success_response(id, serde_json::json!({ "pong": true }))),
-        "rt.collab_flush" => Some(handle_collab_flush(id, req.params, caller_id, state).await),
+        "rt.collab_flush" => Some(handle_collab_flush(id, req.params, caller.id, state).await),
         "rt.collab_capabilities" => {
-            Some(handle_collab_capabilities(id, req.params, caller_id, state).await)
+            Some(handle_collab_capabilities(id, req.params, caller.id, state).await)
         }
         _ => Some(error_response(
             id,
@@ -1157,8 +1241,7 @@ async fn handle_collab_flush(
 async fn handle_subscribe(
     id: Value,
     params: Value,
-    caller_id: Uuid,
-    kind: CallerKind,
+    caller: SessionCaller,
     state: &Arc<AppState>,
     subs: &mut HashMap<String, Sub>,
     out_tx: &mpsc::Sender<SessionOut>,
@@ -1178,7 +1261,7 @@ async fn handle_subscribe(
 
     // Guard against runaway subscribers pinning server memory.
     if subs.len() >= MAX_SUBSCRIPTIONS_PER_CONNECTION && !subs.contains_key(&topic_str) {
-        audit_denied(caller_id, &topic_str, "sub_limit");
+        audit_denied(caller.id, &topic_str, "sub_limit");
         return error_response(
             id,
             error_code::SUB_LIMIT,
@@ -1202,7 +1285,7 @@ async fn handle_subscribe(
             // wire — the caller cannot distinguish "unknown shape" from
             // "shape known but resource doesn't exist" without hinting
             // an enumeration oracle.
-            audit_denied(caller_id, &topic_str, "unknown_topic");
+            audit_denied(caller.id, &topic_str, "unknown_topic");
             return error_response(
                 id,
                 error_code::TOPIC_FORBIDDEN,
@@ -1211,6 +1294,45 @@ async fn handle_subscribe(
             );
         }
     };
+
+    // ── SCOPE, before the grant dispatch ────────────────────────────
+    //
+    // Cheapest axis first: a field comparison against two bitmasks, no
+    // I/O, where the grant dispatch below may hit the authorization
+    // engine. A credential that may not reach the AREA at all should not
+    // cost a resource lookup to refuse.
+    //
+    // Collapses to `topic_forbidden`, the same code an unknown topic and
+    // a failed grant return. That is deliberate: distinguishing "your
+    // credential lacks the area" from "no such resource" on the wire
+    // would hand a caller an enumeration oracle, and the whole topic
+    // vocabulary already answers refusals with one shape. The audit line
+    // carries the truth.
+    if let crate::application::ports::scope_ports::ScopeReq::Areas(required) =
+        topic.required_scope()
+        && !caller.scopes.satisfies(required)
+    {
+        audit_denied(caller.id, &topic_str, "scope_not_granted");
+        if let Some((area, access)) = caller.scopes.first_unmet(required) {
+            tracing::info!(
+                target: "audit",
+                event = "message_bus.subscribe_denied",
+                reason = "scope_not_granted",
+                topic = %topic_str,
+                required_area = area.name(),
+                required_access = access.as_str(),
+                granted = %caller.scopes.to_wire(),
+                caller.id = %caller.id,
+                "👮🏻‍♂️ subscribe refused on the scope axis",
+            );
+        }
+        return error_response(
+            id,
+            error_code::TOPIC_FORBIDDEN,
+            "topic_forbidden",
+            Some(serde_json::json!({ "topic": topic_str })),
+        );
+    }
 
     // For a `Topic::Collab` subscribe ack, we surface the caller's
     // Update capability alongside the Read gate below — the FE gates
@@ -1228,13 +1350,13 @@ async fn handle_subscribe(
             };
             if state
                 .authorization
-                .require(Subject::User(caller_id), Permission::Read, domain_resource)
+                .require(Subject::User(caller.id), Permission::Read, domain_resource)
                 .await
                 .is_err()
             {
                 // Anti-enum: "no such resource" and "no read" collapse
                 // to the same wire code. Audit records the truth.
-                audit_denied(caller_id, &topic_str, "no_read");
+                audit_denied(caller.id, &topic_str, "no_read");
                 return error_response(
                     id,
                     error_code::NO_READ,
@@ -1264,7 +1386,7 @@ async fn handle_subscribe(
                 let can_write = state
                     .authorization
                     .check(
-                        Subject::User(caller_id),
+                        Subject::User(caller.id),
                         Permission::Update,
                         Resource::File(file_uuid),
                     )
@@ -1274,8 +1396,8 @@ async fn handle_subscribe(
             }
         }
         AuthzCheck::IdentityMatch { user_id } => {
-            if user_id != caller_id {
-                audit_denied(caller_id, &topic_str, "identity_mismatch");
+            if user_id != caller.id {
+                audit_denied(caller.id, &topic_str, "identity_mismatch");
                 return error_response(
                     id,
                     error_code::TOPIC_FORBIDDEN,
@@ -1289,8 +1411,8 @@ async fn handle_subscribe(
             // was snapshotted at session start (see `handle_session`),
             // so no per-subscribe DB hit. A demotion mid-session
             // takes effect on the caller's next reconnect.
-            if !kind.role().at_least(UserRole::Admin) {
-                audit_denied(caller_id, &topic_str, "role_denied");
+            if !caller.kind.role().at_least(UserRole::Admin) {
+                audit_denied(caller.id, &topic_str, "role_denied");
                 return error_response(
                     id,
                     error_code::TOPIC_FORBIDDEN,
@@ -1311,7 +1433,7 @@ async fn handle_subscribe(
     // AuthZ passed — install the subscription and spawn a reader task
     // that forwards bus events to the outbound channel as `rt.event`
     // notifications.
-    install_subscription(topic, caller_id, subs, out_tx, state);
+    install_subscription(topic, caller.id, subs, out_tx, state);
 
     // Collab subscribes carry an extra `capabilities` object so the FE
     // can render read-only affordances without a second round trip.

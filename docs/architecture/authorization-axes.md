@@ -476,6 +476,108 @@ an explicit set: a session's ceiling is every area, so its token carries
 no `scope` claim at all and only a genuinely narrowed credential pays for
 the string.
 
+## The message bus: scope per TOPIC
+
+The bus asks the same three questions as a REST request, in the same
+order, and the answers live on `Topic` itself (`application/ports/
+message_bus_ports.rs`) — `required_perm` for the gate and grant,
+`required_scope` for this axis.
+
+**`:ro` is subscribe. `:rw` is subscribe + publish.** That one rule
+decides every row, and it decides most of them trivially, because only
+`collab:` is client-publishable — every other topic is server-published,
+so a client can do nothing but subscribe:
+
+| topic | gate / grant | scope |
+|---|---|---|
+| `folder:{id}` | Read on the folder | `files:ro` |
+| `collab:{id}` | Read on the file | `files:ro` |
+| `user:{id}:authz` | identity match | *scopeless* |
+| `user:{id}:notifications` | identity match | *scopeless* |
+| `job:{name}` | admin role | `admin:ro` |
+| `server:status` | any session | *scopeless* |
+
+Keyed on the topic CLASS, never the instance. `job:{name}` and
+`folder:{id}` are parameterised, and "may this caller reach THIS folder"
+is the grant axis's question, not this one.
+
+### The collab frames are where the rule bites
+
+Binary frames on `collab:{id}` are `[1 byte kind][16 byte file_id][payload]`,
+and the kind decides the access:
+
+| frame | meaning | scope |
+|---|---|---|
+| `0x01` | Yjs update | **`files:rw`** |
+| `0x02` | awareness (presence) | `files:ro` |
+| `0x03` | sync-step 1/2 | `files:ro` |
+| unknown | — | **`files:rw`**, the safe end |
+
+So a `files:ro` credential **opens a document in the editor, sees every
+change arrive, and publishes presence — and is refused only when it tries
+to type.** The subscribe succeeds; only the update frame is dropped, and
+the subscribe ack already told the client `can_write: false`, so the
+editor renders read-only rather than appearing to accept edits that
+vanish.
+
+The grant axis already split exactly here — `Read` to subscribe, an
+`Update` check on `0x01` at frame-apply time — so the scope axis mirrors
+a split that existed rather than inventing one.
+
+### Why two topics are scopeless
+
+`user:{id}:authz` and `user:{id}:notifications` are **auto-subscribed by
+the server at session open**. An area the credential lacked would
+therefore break the whole session instead of narrowing it — an app
+password would get a failed connection rather than a working one minus
+notifications.
+
+They are also only pokes. The payloads are thin facts ("your permissions
+changed", "notification N of kind K arrived") and the client must refetch
+`GET /api/notifications` for anything real — which **is** scope-gated at
+`account`. **The gate belongs where the data is, not on the signal that
+data changed.** Same reasoning that makes avatars scopeless.
+
+Privacy does not depend on the scope axis here: `AuthzCheck::IdentityMatch`
+is `caller_id == user_id` with **no admin bypass**, so a caller reaches
+only its own `user:{self}` topics whatever its scopes say. Two axes, two
+jobs.
+
+### Refusals collapse to one shape
+
+A scope refusal answers `topic_forbidden` — the same code as an unknown
+topic and a failed grant. Distinguishing "your credential lacks the area"
+from "no such resource" would hand a caller an enumeration oracle, so the
+wire says one thing and the audit line carries the truth
+(`message_bus.subscribe_denied` with `required_area`, `required_access`
+and `granted`; `message_bus.frame_denied` for a refused frame).
+
+The scope check runs BEFORE the grant dispatch, because it is two mask
+comparisons where the grant may hit the authorization engine. A
+credential that cannot reach the area at all should not cost a resource
+lookup to refuse.
+
+### The scope set reaches the socket by two roads
+
+A WS upgrade has no middleware chain, so the set is carried rather than
+resolved:
+
+- **Bearer upgrade** — the handler validates the JWT itself and reads the
+  `scope` claim off it.
+- **Ticket upgrade** (what browsers use) — `POST /api/rt/ticket` runs
+  under the full chain and therefore KNOWS the caller, so the ticket
+  records the scope set alongside the presented token, and the upgrade
+  redeems both.
+
+Without the ticket carrying it, that path would be a scope hole of the
+same shape as the DPoP one it already closes: a narrow credential could
+ask for a ticket over REST, where its scopes are checked, and redeem it
+into a socket where nothing knew what they were.
+
+Frozen at upgrade, like the token: a scope narrowed afterwards takes
+effect when the credential's token expires — the same trade § Frozen at
+mint makes for REST.
+
 ## One place to declare a route and its policy
 
 **`src/interfaces/api/routes.rs`.** Route, layer and policy are written

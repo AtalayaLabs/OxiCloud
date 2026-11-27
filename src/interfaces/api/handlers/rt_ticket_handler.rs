@@ -75,7 +75,12 @@ pub async fn issue_rt_ticket(
     //
     // Already `PresentedToken::default()` for a credential that is not a
     // JWT, so there is nothing to handle here.
-    let ticket = state.rt_ticket_store.issue(caller_id, caller.token);
+    // The SCOPE set rides along for the same reason as the token: this
+    // endpoint runs under the full middleware chain and knows what the
+    // credential may reach; the upgrade that redeems the ticket does not.
+    let ticket = state
+        .rt_ticket_store
+        .issue(caller_id, caller.token, caller.scopes);
     let ticket_str = ticket.to_string();
     tracing::debug!(
         target: "oxicloud::message_bus",
