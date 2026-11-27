@@ -358,28 +358,40 @@ projection of the same registry the gate enforces:
 
 ```sh
 jq -r '.paths | to_entries[] | .key as $p | .value | to_entries[]
-       | "\(.key|ascii_upcase) \($p)\t\(.value["x-oxicloud-policy"].scope)"' \
-  resources/gen/openapi.json | sort
+       | "\(.key|ascii_upcase)\t\($p)\t\(.value["x-oxicloud-policy"].scope
+           // "UNDEFINED" | if type=="array" then join(",") else . end)"' \
+  resources/gen/openapi.json | sort -t$'\t' -k2,2 -k1,1 | column -t -s $'\t'
 ```
+
+Sorted by ROUTE then method, so the verbs of one path sit together and
+the `:ro`/`:rw` split is readable down the third column. The `paths`
+object holds only method keys, so no filtering is needed.
 
 All 250 operations answer; none is `null`. A `null` would mean
 `ScopeReq::Undefined` reached generation, which fails the build.
 
 ### The leaves with subtleties
 
-Four operations require TWO areas, and they are the append rule made
-visible — a `sharing` declaration at the route, under a `files` prefix:
+Five operations across four paths require TWO areas, and they are the
+append rule made visible — a `sharing` declaration at the route, under a
+`files` prefix. Straight from the query above:
 
-| operation | requires |
-|---|---|
-| `/api/drives/{id}/members` | `files` + `sharing` |
-| `/api/playlists/{id}/share` | `files` + `sharing` |
-| `/api/playlists/{id}/share/{user_id}` | `files` + `sharing` |
-| `/api/playlists/{id}/shares` | `files` + `sharing` |
+```text
+GET     /api/drives/{id}/members                      files:ro,sharing:ro
+POST    /api/drives/{id}/members                      files:rw,sharing:rw
+POST    /api/playlists/{playlist_id}/share            files:rw,sharing:rw
+DELETE  /api/playlists/{playlist_id}/share/{user_id}  files:rw,sharing:rw
+GET     /api/playlists/{playlist_id}/shares           files:ro,sharing:ro
+```
 
-A credential holding only `files:rw` is refused on all four. That is
+A credential holding only `files:rw` is refused on all five. That is
 correct and it is the design: managing who else can reach a thing is a
 sharing operation whatever the thing is.
+
+The first two rows also show `scope_by_verb` doing its job — ONE
+declaration per area on the route, resolving to `:ro` for the GET and
+`:rw` for the POST. Nobody wrote `files:ro,sharing:ro` anywhere; the
+method decided it at compile time.
 
 **Three MIXED subtrees declare per route, never at the prefix**, because
 a leaf cannot shed what a prefix imposes:
