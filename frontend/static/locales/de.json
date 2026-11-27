@@ -615,7 +615,14 @@
     "new_text_file_binary_ext_title": "Keine Text-Erweiterung",
     "new_text_file_binary_ext_message": "„{{name}}\" sieht nicht wie eine Textdatei aus. Der Editor öffnet sie als Text — bei Binärformaten geht das meist schief. Trotzdem fortfahren?",
     "confirm_delete_permanent": "„{{name}}\" dauerhaft löschen? Diese Aktion kann nicht rückgängig gemacht werden.",
-    "confirm_batch_delete_permanent": "{{n}} Elemente dauerhaft löschen? Diese Aktion kann nicht rückgängig gemacht werden."
+    "confirm_batch_delete_permanent": "{{n}} Elemente dauerhaft löschen? Diese Aktion kann nicht rückgängig gemacht werden.",
+    "wopi_read_only": "Schreibgeschützt",
+    "wopi_convert_and_edit": "Konvertieren & bearbeiten",
+    "wopi_convert_title": "Datei zur Bearbeitung konvertieren",
+    "wopi_convert_message": "Dateien im Format .{{sourceExt}} werden schreibgeschützt geöffnet. Beim Konvertieren wird eine neue .{{targetExt}}-Kopie im selben Ordner erstellt, während die Originaldatei unverändert bleibt.",
+    "wopi_convert_message_multi": "Dateien im Format .{{sourceExt}} werden schreibgeschützt geöffnet. Wählen Sie ein Zielformat, um eine bearbeitbare Kopie im selben Ordner zu erstellen, während die Originaldatei unverändert bleibt.",
+    "wopi_convert_format_label": "Zielformat",
+    "wopi_convert_confirm": "In .{{targetExt}} konvertieren & bearbeiten"
   },
   "dialogs": {
     "rename_folder": "Ordner umbenennen",

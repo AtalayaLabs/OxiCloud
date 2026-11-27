@@ -615,7 +615,14 @@
     "new_text_file_binary_ext_title": "امتداد غير نصي",
     "new_text_file_binary_ext_message": "لا يبدو \"{{name}}\" ملفًا نصيًا. سيفتحه المحرّر كنص — وهذا عادةً ما يُفسد التنسيقات الثنائية. المتابعة على أي حال؟",
     "confirm_delete_permanent": "حذف «{{name}}» نهائيًا؟ لا يمكن التراجع عن هذا الإجراء.",
-    "confirm_batch_delete_permanent": "حذف {{n}} عناصر نهائيًا؟ لا يمكن التراجع عن هذا الإجراء."
+    "confirm_batch_delete_permanent": "حذف {{n}} عناصر نهائيًا؟ لا يمكن التراجع عن هذا الإجراء.",
+    "wopi_read_only": "للقراءة فقط",
+    "wopi_convert_and_edit": "تحويل وتعديل",
+    "wopi_convert_title": "تحويل الملف للتعديل",
+    "wopi_convert_message": "تُفتح الملفات بتنسيق .{{sourceExt}} في وضع القراءة فقط. يؤدي التحويل إلى إنشاء نسخة جديدة بصيغة .{{targetExt}} في المجلد نفسه للتعديل مع الإبقاء على الملف الأصلي دون تغيير.",
+    "wopi_convert_message_multi": "تُفتح الملفات بتنسيق .{{sourceExt}} في وضع القراءة فقط. اختر تنسيقاً مستهدفاً لإنشاء نسخة قابلة للتعديل في المجلد نفسه مع الإبقاء على الملف الأصلي دون تغيير.",
+    "wopi_convert_format_label": "التنسيق المستهدف",
+    "wopi_convert_confirm": "تحويل إلى .{{targetExt}} وتعديل"
   },
   "dialogs": {
     "rename_folder": "إعادة تسمية المجلد",

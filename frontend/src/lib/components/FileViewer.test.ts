@@ -17,6 +17,7 @@ vi.mock('$lib/api/endpoints/wopi', () => ({
 	// that URL instead of POSTing to `editor_url` itself. A mock missing it
 	// surfaces as an errorToast from a component this file isn't even
 	// testing — hence the explicit note.
+	getEditorUrl: vi.fn(),
 	getEditorUrlWithFallback: vi.fn(async () => ({
 		editor_url: 'about:blank',
 		access_token: 't',

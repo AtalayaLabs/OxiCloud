@@ -9,10 +9,14 @@
 import { ApiError, apiErrorFromResponse, apiFetch } from '$lib/api/client';
 import { withBase } from '$lib/utils/appPath';
 
+export type WopiAction = 'edit' | 'view' | 'convert';
+
 export interface WopiEditorData {
 	editor_url: string;
 	access_token: string;
 	access_token_ttl: string | number;
+	action?: WopiAction;
+	convert_targets?: string[];
 }
 
 /**
@@ -99,20 +103,26 @@ export async function canEditWithWopi(filename: string): Promise<boolean> {
 
 export async function getEditorUrl(
 	fileId: string,
-	action: 'edit' | 'view' = 'edit'
+	action: WopiAction = 'edit',
+	targetExt?: string
 ): Promise<WopiEditorData> {
-	const res = await apiFetch(
-		`/api/wopi/editor-url?file_id=${encodeURIComponent(fileId)}&action=${encodeURIComponent(action)}`,
-		{ credentials: 'same-origin' }
-	);
+	const params = new URLSearchParams({ file_id: fileId, action });
+	if (targetExt) params.set('target_ext', targetExt);
+	const res = await apiFetch(`/api/wopi/editor-url?${params.toString()}`, {
+		credentials: 'same-origin'
+	});
 	if (!res.ok) throw await apiErrorFromResponse(res);
 	return (await res.json()) as WopiEditorData;
 }
 
-/** PDFs are view-only in WOPI: an edit request returns 422 → retry as view. */
+/**
+ * Formats whose WOPI discovery advertises only `view` (e.g. `.pdf` in
+ * Collabora, legacy binary formats such as `.doc`/`.ppt` in OnlyOffice)
+ * return 422 on an `edit` request against older backends → retry as `view`.
+ */
 export async function getEditorUrlWithFallback(
 	fileId: string,
-	filename: string,
+	_filename: string,
 	action: 'edit' | 'view' = 'edit'
 ): Promise<WopiEditorData> {
 	try {
@@ -126,8 +136,7 @@ export async function getEditorUrlWithFallback(
 		// (just "not editable") which no longer carries the status. See
 		// `project_error_type_contract` — the FE must switch on
 		// structured fields, not message text.
-		const ext = filename.split('.').pop()?.toLowerCase() ?? '';
-		if (action === 'edit' && ext === 'pdf' && e instanceof ApiError && e.status === 422) {
+		if (action === 'edit' && e instanceof ApiError && e.status === 422) {
 			return getEditorUrl(fileId, 'view');
 		}
 		throw e;

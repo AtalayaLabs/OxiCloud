@@ -615,7 +615,14 @@
     "new_text_file_binary_ext_title": "非テキスト拡張子",
     "new_text_file_binary_ext_message": "「{{name}}」はテキストファイルではないようです。エディターはテキストとして開きます — 通常、バイナリ形式はこれで壊れます。それでも続行しますか?",
     "confirm_delete_permanent": "「{{name}}」を完全に削除しますか?この操作は取り消せません。",
-    "confirm_batch_delete_permanent": "{{n}} 件のアイテムを完全に削除しますか?この操作は取り消せません。"
+    "confirm_batch_delete_permanent": "{{n}} 件のアイテムを完全に削除しますか?この操作は取り消せません。",
+    "wopi_read_only": "読み取り専用",
+    "wopi_convert_and_edit": "変換して編集",
+    "wopi_convert_title": "編集用にファイルを変換",
+    "wopi_convert_message": ".{{sourceExt}} 形式のファイルは読み取り専用で開きます。変換すると、元のファイルはそのままで同じフォルダーに編集用の新しい .{{targetExt}} コピーが作成されます。",
+    "wopi_convert_message_multi": ".{{sourceExt}} 形式のファイルは読み取り専用で開きます。元のファイルはそのままで同じフォルダーに編集可能なコピーを作成するため、変換先の形式を選択してください。",
+    "wopi_convert_format_label": "変換先の形式",
+    "wopi_convert_confirm": ".{{targetExt}} に変換して編集"
   },
   "dialogs": {
     "rename_folder": "フォルダ名を変更",

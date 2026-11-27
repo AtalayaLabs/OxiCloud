@@ -36,6 +36,15 @@ const DISCOVERY_XML = `<?xml version="1.0" encoding="utf-8"?>
       <action name="edit" ext="docx" urlsrc="http://mock-editor.invalid/edit?"/>
       <action name="view" ext="docx" urlsrc="http://mock-editor.invalid/view?"/>
     </app>
+    <!-- OnlyOffice-shaped legacy binary doc: view + convert (no edit). -->
+    <app name="application/msword">
+      <action name="view" ext="doc" default="true" urlsrc="http://mock-editor.invalid/view?"/>
+      <action name="convert" ext="doc" targetext="docx" requires="update" urlsrc="http://mock-editor.invalid/convert?"/>
+    </app>
+    <!-- Collabora-shaped edit-only xlsx: edit (no view). -->
+    <app name="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet">
+      <action name="edit" ext="xlsx" default="true" urlsrc="http://mock-editor.invalid/edit?"/>
+    </app>
   </net-zone>
   <proof-key oldvalue="" oldmodulus="" oldexponent=""
              value="" modulus="" exponent=""/>

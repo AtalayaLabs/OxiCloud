@@ -671,20 +671,32 @@ impl FileUploadUseCase for FileUploadService {
     ) -> Result<FileDto, DomainError> {
         if let Some(fid) = folder_id.as_deref() {
             let Some(authz) = &self.authorization else {
+                self.file_write.release_uncommitted_blob(&blob.hash).await;
                 return Err(DomainError::internal_error(
                     "FileUpload",
                     "upload_file_streaming_with_perms called without authorization engine wired",
                 ));
             };
-            let folder_uuid = Uuid::parse_str(fid)
-                .map_err(|_| DomainError::not_found("Folder", fid.to_string()))?;
-            authz
+            let folder_uuid = match Uuid::parse_str(fid) {
+                Ok(id) => id,
+                Err(_) => {
+                    self.file_write.release_uncommitted_blob(&blob.hash).await;
+                    return Err(DomainError::not_found("Folder", fid.to_string()));
+                }
+            };
+            if let Err(err) = authz
                 .require(
                     Subject::User(caller_id),
                     Permission::Create,
                     Resource::Folder(folder_uuid),
                 )
-                .await?;
+                .await
+            {
+                // Trait contract: caller transfers blob ref ownership to this method,
+                // so any early AuthZ failure must release it rather than leaking refcounts.
+                self.file_write.release_uncommitted_blob(&blob.hash).await;
+                return Err(err);
+            }
         }
 
         // §9 — forward the asserted mtime instead of the `None` that used

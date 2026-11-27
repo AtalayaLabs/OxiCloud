@@ -615,7 +615,14 @@
     "new_text_file_binary_ext_title": "Estensione non testuale",
     "new_text_file_binary_ext_message": "«{{name}}» non sembra un file di testo. L'editor lo aprirà come testo — di solito questo danneggia i formati binari. Continuare comunque?",
     "confirm_delete_permanent": "Eliminare definitivamente «{{name}}»? Questa azione non può essere annullata.",
-    "confirm_batch_delete_permanent": "Eliminare definitivamente {{n}} elementi? Questa azione non può essere annullata."
+    "confirm_batch_delete_permanent": "Eliminare definitivamente {{n}} elementi? Questa azione non può essere annullata.",
+    "wopi_read_only": "Sola lettura",
+    "wopi_convert_and_edit": "Converti e modifica",
+    "wopi_convert_title": "Converti file per la modifica",
+    "wopi_convert_message": "I file in formato .{{sourceExt}} si aprono in sola lettura. La conversione crea una nuova copia .{{targetExt}} nella stessa cartella per la modifica lasciando intatto il file originale.",
+    "wopi_convert_message_multi": "I file in formato .{{sourceExt}} si aprono in sola lettura. Scegli un formato di destinazione per creare una copia modificabile nella stessa cartella lasciando intatto il file originale.",
+    "wopi_convert_format_label": "Formato di destinazione",
+    "wopi_convert_confirm": "Converti in .{{targetExt}} e modifica"
   },
   "dialogs": {
     "rename_folder": "Rinomina cartella",

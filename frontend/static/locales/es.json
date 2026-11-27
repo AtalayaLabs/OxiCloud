@@ -615,7 +615,14 @@
     "new_text_file_binary_ext_title": "Extensión no textual",
     "new_text_file_binary_ext_message": "«{{name}}» no parece un archivo de texto. El editor lo abrirá como texto — normalmente eso rompe los formatos binarios. ¿Continuar de todos modos?",
     "confirm_delete_permanent": "¿Eliminar permanentemente «{{name}}»? Esta acción no se puede deshacer.",
-    "confirm_batch_delete_permanent": "¿Eliminar permanentemente {{n}} elementos? Esta acción no se puede deshacer."
+    "confirm_batch_delete_permanent": "¿Eliminar permanentemente {{n}} elementos? Esta acción no se puede deshacer.",
+    "wopi_read_only": "Solo lectura",
+    "wopi_convert_and_edit": "Convertir y editar",
+    "wopi_convert_title": "Convertir archivo para editar",
+    "wopi_convert_message": "Los archivos en formato .{{sourceExt}} se abren en modo de solo lectura. La conversión crea una nueva copia .{{targetExt}} en la misma carpeta para editarla sin modificar el archivo original.",
+    "wopi_convert_message_multi": "Los archivos en formato .{{sourceExt}} se abren en modo de solo lectura. Elige un formato de destino para crear una copia editable en la misma carpeta sin modificar el archivo original.",
+    "wopi_convert_format_label": "Formato de destino",
+    "wopi_convert_confirm": "Convertir a .{{targetExt}} y editar"
   },
   "dialogs": {
     "rename_folder": "Renombrar carpeta",

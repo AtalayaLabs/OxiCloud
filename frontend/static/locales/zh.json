@@ -615,7 +615,14 @@
     "new_text_file_binary_ext_title": "非文本扩展名",
     "new_text_file_binary_ext_message": "\"{{name}}\" 看起来不像文本文件。编辑器会按文本方式打开 — 这通常会破坏二进制格式。仍要继续吗?",
     "confirm_delete_permanent": "永久删除「{{name}}」？此操作无法撤销。",
-    "confirm_batch_delete_permanent": "永久删除 {{n}} 个项目？此操作无法撤销。"
+    "confirm_batch_delete_permanent": "永久删除 {{n}} 个项目？此操作无法撤销。",
+    "wopi_read_only": "只读",
+    "wopi_convert_and_edit": "转换并编辑",
+    "wopi_convert_title": "转换文件以便编辑",
+    "wopi_convert_message": ".{{sourceExt}} 格式的文件将以只读模式打开。转换会在同一文件夹中创建一个新的 .{{targetExt}} 副本以供编辑，同时保留原始文件不变。",
+    "wopi_convert_message_multi": ".{{sourceExt}} 格式的文件将以只读模式打开。请选择目标格式以在同一文件夹中创建可编辑的副本，同时保留原始文件不变。",
+    "wopi_convert_format_label": "目标格式",
+    "wopi_convert_confirm": "转换为 .{{targetExt}} 并编辑"
   },
   "dialogs": {
     "rename_folder": "重命名文件夹",

@@ -16,12 +16,25 @@ use crate::common::errors::{DomainError, ErrorKind};
 /// A single WOPI action from the discovery XML.
 #[derive(Clone, Debug)]
 pub struct WopiAction {
-    /// Action name: "view", "edit", "editnew", etc.
+    /// Action name: "view", "edit", "editnew", "convert", etc.
     pub name: String,
     /// File extension: "docx", "xlsx", etc.
     pub ext: String,
+    /// Optional target extension for `"convert"` actions (e.g. `"docx"`, `"odt"`).
+    pub targetext: Option<String>,
     /// Template URL with placeholders (WOPI_SOURCE, UI_LLCC)
     pub urlsrc: String,
+}
+
+/// Result of resolving a requested WOPI action against the discovery document.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ResolvedWopiAction {
+    /// The actual WOPI action selected from discovery (e.g. `"edit"`, `"view"`, `"convert"`).
+    pub action: String,
+    /// Target extension when `action == "convert"` (e.g. `"docx"`, `"odt"`).
+    pub target_ext: Option<String>,
+    /// Fully built editor URL with `WOPISrc` populated and unused placeholders stripped.
+    pub url: String,
 }
 
 /// Caches parsed WOPI discovery data from the editor.
@@ -127,7 +140,26 @@ impl WopiDiscoveryService {
         Ok(())
     }
 
-    /// Get the editor action URL for a given file extension and action.
+    /// Build the concrete editor URL for a discovery action entry.
+    fn build_action_url(wopi_action: &WopiAction, wopi_src: &str) -> String {
+        let mut url = wopi_action
+            .urlsrc
+            .replace("WOPI_SOURCE", &urlencoding::encode(wopi_src))
+            .replace("UI_LLCC", "en-US");
+
+        // Clean up unused placeholder parameters
+        url = Self::clean_placeholder_params(&url);
+
+        // Some discovery documents return a bare `cool.html?` URL without
+        // embedding WOPISrc in the template. Ensure WOPISrc is always present.
+        if !Self::has_query_param(&url, "WOPISrc") {
+            url = Self::append_query_param(&url, "WOPISrc", &urlencoding::encode(wopi_src));
+        }
+
+        url
+    }
+
+    /// Get the editor action URL for a given file extension and exact action.
     ///
     /// Replaces `WOPI_SOURCE` placeholder with the provided `wopi_src` URL.
     pub async fn get_action_url(
@@ -144,24 +176,88 @@ impl WopiDiscoveryService {
         if let Some(ext_actions) = actions.get(&ext_lower)
             && let Some(wopi_action) = ext_actions.iter().find(|a| a.name == action)
         {
-            let mut url = wopi_action
-                .urlsrc
-                .replace("WOPI_SOURCE", &urlencoding::encode(wopi_src))
-                .replace("UI_LLCC", "en-US");
-
-            // Clean up unused placeholder parameters
-            url = Self::clean_placeholder_params(&url);
-
-            // Some discovery documents return a bare `cool.html?` URL without
-            // embedding WOPISrc in the template. Ensure WOPISrc is always present.
-            if !Self::has_query_param(&url, "WOPISrc") {
-                url = Self::append_query_param(&url, "WOPISrc", &urlencoding::encode(wopi_src));
-            }
-
-            return Ok(Some(url));
+            return Ok(Some(Self::build_action_url(wopi_action, wopi_src)));
         }
 
         Ok(None)
+    }
+
+    /// Resolve a requested WOPI action against the discovery document, with
+    /// bidirectional fallback for view-only or edit-only editor entries.
+    ///
+    /// - `"convert"` matches strictly against `name == "convert"` (and `target_ext`
+    ///   when supplied) with no fallback to `"view"` or `"edit"`.
+    /// - `"edit"` falls back to `"view"` when the editor only supports viewing
+    ///   (e.g. OnlyOffice `.doc`/`.ppt` or Collabora `.pdf`).
+    /// - `"view"` falls back to `"edit"` when the editor only advertises `"edit"`
+    ///   and enforces read-only via `CheckFileInfo.UserCanWrite = false`.
+    pub async fn resolve_action_url(
+        &self,
+        extension: &str,
+        requested_action: &str,
+        target_ext: Option<&str>,
+        wopi_src: &str,
+    ) -> Result<Option<ResolvedWopiAction>, DomainError> {
+        self.ensure_fresh().await?;
+
+        let actions = self.actions.read().await;
+        let ext_lower = extension.to_lowercase();
+        let Some(ext_actions) = actions.get(&ext_lower) else {
+            return Ok(None);
+        };
+
+        let matched = if requested_action == "convert" {
+            let target_lower = target_ext.map(str::to_lowercase);
+            ext_actions.iter().find(|a| {
+                a.name == "convert"
+                    && match target_lower.as_deref() {
+                        Some(t) => a.targetext.as_deref() == Some(t),
+                        None => true,
+                    }
+            })
+        } else {
+            let fallback_action = match requested_action {
+                "edit" => Some("view"),
+                "view" => Some("edit"),
+                _ => None,
+            };
+            ext_actions
+                .iter()
+                .find(|a| a.name == requested_action)
+                .or_else(|| {
+                    fallback_action.and_then(|fb| ext_actions.iter().find(|a| a.name == fb))
+                })
+        };
+
+        Ok(matched.map(|wopi_action| ResolvedWopiAction {
+            action: wopi_action.name.clone(),
+            target_ext: wopi_action.targetext.clone(),
+            url: Self::build_action_url(wopi_action, wopi_src),
+        }))
+    }
+
+    /// Return deduplicated conversion target extensions advertised for `extension`
+    /// (in discovery order), e.g. `["docx"]` for `.doc` in OnlyOffice.
+    pub async fn get_convert_targets(&self, extension: &str) -> Result<Vec<String>, DomainError> {
+        self.ensure_fresh().await?;
+
+        let actions = self.actions.read().await;
+        let ext_lower = extension.to_lowercase();
+        let Some(ext_actions) = actions.get(&ext_lower) else {
+            return Ok(Vec::new());
+        };
+
+        let mut targets = Vec::new();
+        for action in ext_actions {
+            if action.name == "convert"
+                && let Some(ref target) = action.targetext
+                && !targets.contains(target)
+            {
+                targets.push(target.clone());
+            }
+        }
+
+        Ok(targets)
     }
 
     /// Check if an extension is supported for a given action.
@@ -199,6 +295,7 @@ impl WopiDiscoveryService {
                 {
                     let mut name = String::new();
                     let mut ext = String::new();
+                    let mut targetext: Option<String> = None;
                     let mut urlsrc = String::new();
 
                     for attr in e.attributes().flatten() {
@@ -213,6 +310,9 @@ impl WopiDiscoveryService {
                         match attr.key.as_ref() {
                             b"name" => name = value,
                             b"ext" => ext = value,
+                            b"targetext" => {
+                                targetext = (!value.is_empty()).then(|| value.to_lowercase());
+                            }
                             b"urlsrc" => urlsrc = value,
                             _ => {}
                         }
@@ -225,6 +325,7 @@ impl WopiDiscoveryService {
                             .push(WopiAction {
                                 name,
                                 ext: ext.to_lowercase(),
+                                targetext,
                                 urlsrc,
                             });
                     }
@@ -388,5 +489,200 @@ mod tests {
 
         assert!(WopiDiscoveryService::has_query_param(&appended, "WOPISrc"));
         assert!(appended.contains("WOPISrc=http%3A%2F%2F127.0.0.1%3A8086%2Fwopi%2Ffiles%2Fabc"));
+    }
+
+    const ONLYOFFICE_DOC_DISCOVERY: &str = r#"<?xml version="1.0" encoding="utf-8"?>
+<wopi-discovery>
+  <net-zone name="external-http">
+    <app name="Word">
+      <action name="view" ext="doc" default="true" urlsrc="https://onlyoffice.test/hosting/wopi/word/view?&lt;rs=DC_LLCC&amp;&gt;&lt;ui=UI_LLCC&amp;&gt;&lt;wopisrc=WOPI_SOURCE&amp;&gt;&amp;"/>
+      <action name="convert" ext="doc" targetext="docx" requires="update" urlsrc="https://onlyoffice.test/hosting/wopi/convert-and-edit/doc/docx?&lt;ui=UI_LLCC&amp;&gt;&lt;wopisrc=WOPI_SOURCE&amp;&gt;&amp;"/>
+      <action name="view" ext="docx" urlsrc="https://onlyoffice.test/hosting/wopi/word/view?&lt;wopisrc=WOPI_SOURCE&amp;&gt;"/>
+      <action name="edit" ext="docx" default="true" urlsrc="https://onlyoffice.test/hosting/wopi/word/edit?&lt;wopisrc=WOPI_SOURCE&amp;&gt;"/>
+    </app>
+    <app name="Excel">
+      <action name="edit" ext="xlsx" default="true" urlsrc="https://collabora.test/cool/calc/edit?WOPISrc=WOPI_SOURCE"/>
+    </app>
+  </net-zone>
+</wopi-discovery>"#;
+
+    const MULTI_TARGET_DISCOVERY: &str = r#"<?xml version="1.0" encoding="utf-8"?>
+<wopi-discovery>
+  <net-zone name="external-http">
+    <app name="Word">
+      <action name="view" ext="doc" default="true" urlsrc="https://editor.test/word/view?WOPISrc=WOPI_SOURCE"/>
+      <action name="convert" ext="doc" targetext="docx" urlsrc="https://editor.test/convert/doc/docx?WOPISrc=WOPI_SOURCE"/>
+      <action name="convert" ext="doc" targetext="odt" urlsrc="https://editor.test/convert/doc/odt?WOPISrc=WOPI_SOURCE"/>
+      <action name="convert" ext="doc" targetext="DOCX" urlsrc="https://editor.test/convert/doc/docx-dup?WOPISrc=WOPI_SOURCE"/>
+    </app>
+  </net-zone>
+</wopi-discovery>"#;
+
+    async fn seeded_service(xml: &str) -> WopiDiscoveryService {
+        let service = WopiDiscoveryService::new("http://example.test/discovery".to_string(), 60);
+        *service.actions.write().await =
+            WopiDiscoveryService::parse_discovery_xml(xml).expect("Should parse");
+        *service.last_fetched.write().await = Some(Instant::now());
+        service
+    }
+
+    // Regression pin: OnlyOffice advertises `view` + `convert` (no `edit`) for
+    // legacy `.doc`; requesting `edit` used to return None -> HTTP 422 on open.
+    #[tokio::test]
+    async fn test_resolve_action_url_onlyoffice_doc_falls_back_to_view() {
+        let service = seeded_service(ONLYOFFICE_DOC_DISCOVERY).await;
+
+        assert_eq!(
+            service
+                .get_action_url("doc", "edit", "https://oxicloud.test/wopi/files/abc")
+                .await
+                .expect("exact lookup ok"),
+            None
+        );
+
+        let resolved = service
+            .resolve_action_url("DOC", "edit", None, "https://oxicloud.test/wopi/files/abc")
+            .await
+            .expect("resolve should succeed")
+            .expect("should fall back to view");
+
+        assert_eq!(resolved.action, "view");
+        assert_eq!(resolved.target_ext, None);
+        assert_eq!(
+            resolved.url,
+            "https://onlyoffice.test/hosting/wopi/word/view?WOPISrc=https%3A%2F%2Foxicloud.test%2Fwopi%2Ffiles%2Fabc"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_resolve_action_url_convert_and_targets() {
+        let service = seeded_service(ONLYOFFICE_DOC_DISCOVERY).await;
+
+        let targets = service
+            .get_convert_targets("doc")
+            .await
+            .expect("targets lookup ok");
+        assert_eq!(targets, vec!["docx"]);
+
+        let resolved = service
+            .resolve_action_url(
+                "doc",
+                "convert",
+                Some("docx"),
+                "https://oxicloud.test/wopi/files/abc",
+            )
+            .await
+            .expect("resolve ok")
+            .expect("convert action should exist");
+
+        assert_eq!(resolved.action, "convert");
+        assert_eq!(resolved.target_ext.as_deref(), Some("docx"));
+        assert!(resolved.url.starts_with(
+            "https://onlyoffice.test/hosting/wopi/convert-and-edit/doc/docx?WOPISrc="
+        ));
+
+        // Explicit convert request must not silently fall back to view/edit
+        // when the requested target format is not advertised.
+        assert_eq!(
+            service
+                .resolve_action_url(
+                    "doc",
+                    "convert",
+                    Some("odt"),
+                    "https://oxicloud.test/wopi/files/abc",
+                )
+                .await
+                .expect("resolve ok"),
+            None
+        );
+    }
+
+    #[tokio::test]
+    async fn test_resolve_multi_target_convert_preserves_order_and_dedups() {
+        let service = seeded_service(MULTI_TARGET_DISCOVERY).await;
+
+        let targets = service
+            .get_convert_targets("doc")
+            .await
+            .expect("targets lookup ok");
+        assert_eq!(targets, vec!["docx", "odt"]);
+
+        let odt = service
+            .resolve_action_url(
+                "doc",
+                "convert",
+                Some("ODT"),
+                "https://oxicloud.test/wopi/files/abc",
+            )
+            .await
+            .expect("resolve ok")
+            .expect("odt target should exist");
+        assert_eq!(odt.action, "convert");
+        assert_eq!(odt.target_ext.as_deref(), Some("odt"));
+        assert!(odt.url.contains("/convert/doc/odt?"));
+
+        assert_eq!(
+            service
+                .resolve_action_url(
+                    "doc",
+                    "convert",
+                    Some("pdf"),
+                    "https://oxicloud.test/wopi/files/abc",
+                )
+                .await
+                .expect("resolve ok"),
+            None
+        );
+    }
+
+    // Regression pin: Collabora advertises only `edit` for `.xlsx`; requesting
+    // `view` (e.g. from host_page for a Viewer) must fall back to `edit` instead
+    // of failing with 500, while the handler keeps `UserCanWrite = false`.
+    #[tokio::test]
+    async fn test_resolve_action_url_collabora_edit_only_falls_back_to_edit() {
+        let service = seeded_service(ONLYOFFICE_DOC_DISCOVERY).await;
+
+        let resolved = service
+            .resolve_action_url("xlsx", "view", None, "https://oxicloud.test/wopi/files/abc")
+            .await
+            .expect("resolve ok")
+            .expect("should fall back to edit");
+        assert_eq!(resolved.action, "edit");
+        assert!(resolved.url.contains("/calc/edit?"));
+
+        // Exact matches still win when both actions exist.
+        let docx_edit = service
+            .resolve_action_url("docx", "edit", None, "https://oxicloud.test/wopi/files/abc")
+            .await
+            .expect("resolve ok")
+            .expect("docx edit");
+        assert_eq!(docx_edit.action, "edit");
+        let docx_view = service
+            .resolve_action_url("docx", "view", None, "https://oxicloud.test/wopi/files/abc")
+            .await
+            .expect("resolve ok")
+            .expect("docx view");
+        assert_eq!(docx_view.action, "view");
+
+        // Unsupported extensions and unknown actions still return None -> 422.
+        assert_eq!(
+            service
+                .resolve_action_url("zip", "edit", None, "https://oxicloud.test/wopi/files/abc")
+                .await
+                .expect("resolve ok"),
+            None
+        );
+        assert_eq!(
+            service
+                .resolve_action_url(
+                    "docx",
+                    "bogus",
+                    None,
+                    "https://oxicloud.test/wopi/files/abc"
+                )
+                .await
+                .expect("resolve ok"),
+            None
+        );
     }
 }
