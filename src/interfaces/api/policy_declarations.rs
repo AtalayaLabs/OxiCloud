@@ -282,12 +282,26 @@ pub fn declarations() -> PolicyRegistry {
     // declaration for the gate; this one is what the SPEC and the
     // generation check see.
     //
-    // `files:rw` against the verb: it is a GET, but it mints a WOPI token
-    // usable for `POST /wopi/files/{id}/contents`, so a read-only
-    // credential would walk away with write capability.
+    // `files:ro`, which is the verb's own answer — and that is now safe
+    // because the TOKEN is narrowed instead of the mint being refused.
+    //
+    // This was `files:rw` explicitly, on the reasoning that a GET which
+    // mints a token usable for `POST /wopi/files/{id}/contents` would let
+    // a read-only credential walk away with write capability. True at the
+    // time: nothing looked at the caller's scope when deciding the
+    // token's `can_write` bit, so the only defence was refusing the whole
+    // mint.
+    //
+    // `authorize_wopi_access` now intersects `can_write` with the
+    // caller's `files:rw`, so a read-only credential receives a token
+    // that cannot write. Refusing the mint outright would therefore cost
+    // a legitimate capability — opening a document READ-ONLY — for no
+    // remaining gain, and it would contradict the collab rule, where a
+    // `files:ro` caller subscribes to a document and is refused only on
+    // the update frame.
     reg.declare(
         Site::Exact(Op::Rest("GET", "/api/wopi/editor-url")),
-        vec![Condition::scope(Scope::Files, Access::ReadWrite)],
+        vec![Condition::scope(Scope::Files, Access::ReadOnly)],
     );
 
     reg

@@ -567,6 +567,14 @@ async fn authorize_wopi_access<S: FileRetrievalUseCase>(
     file_id: &str,
     caller_id: uuid::Uuid,
     requested_action: &str,
+    // Does the CREDENTIAL carry `files:rw`? Separate from `has_update`,
+    // which is the grant: "may this user edit this file" and "may this
+    // credential write files at all" are different questions, and the
+    // editor must be read-only if either says no.
+    //
+    // A `bool` rather than a `ScopeSet`, because only ONE of the two
+    // callers has a caller to read scopes from — see their call sites.
+    scope_allows_write: bool,
 ) -> Result<(crate::application::dtos::file_dto::FileDto, bool), StatusCode> {
     let file_uuid = uuid::Uuid::parse_str(file_id).map_err(|_| StatusCode::NOT_FOUND)?;
 
@@ -596,8 +604,20 @@ async fn authorize_wopi_access<S: FileRetrievalUseCase>(
     let file = file.map_err(|_| StatusCode::NOT_FOUND)?;
     let has_update = has_update.unwrap_or(false);
 
-    // Step 3 — allow explicit view-mode downgrade for Editors.
-    let can_write = has_update && requested_action != "view";
+    // Step 3 — allow explicit view-mode downgrade for Editors, and
+    // require the credential to carry `files:rw`.
+    //
+    // The SCOPE axis lands here, at the MINT, and that is the only place
+    // it can: the WOPI protocol surface is called by the editor
+    // (Collabora/OnlyOffice) presenting a WOPI token, so there is no
+    // caller credential to inspect by then. Freezing the decision into
+    // the token's `can_write` bit means a narrow credential opens a
+    // READ-ONLY editor rather than one that accepts keystrokes the
+    // server will refuse on `PutFile` — the same reasoning as the collab
+    // `0x01` frame rule, where the ack tells the client `can_write:
+    // false` so the editor renders read-only instead of appearing to
+    // work.
+    let can_write = has_update && requested_action != "view" && scope_allows_write;
     Ok((file, can_write))
 }
 
@@ -634,6 +654,13 @@ pub async fn get_editor_url(
         &params.file_id,
         user_id,
         &params.action,
+        // The credential's own set. This is the door where the scope
+        // axis can still be asked — `auth_user` exists here because the
+        // browser calls this one.
+        auth_user.scopes.allows(
+            crate::application::ports::scope_ports::Scope::Files,
+            crate::application::ports::scope_ports::Access::ReadWrite,
+        ),
     )
     .await
     {
@@ -721,6 +748,16 @@ async fn host_page(
         &file_id,
         caller_uuid,
         requested_action,
+        // `true`, and not a hole: the mint already applied the scope
+        // axis, and its decision reached us through the token. A
+        // read-only mint sets `can_write: false`, which the line above
+        // turns into `requested_action = "view"`, so this call returns
+        // `can_write_now = false` regardless of what is passed here.
+        //
+        // There is nothing else available: this is the WOPI protocol
+        // surface, called by Collabora/OnlyOffice with a WOPI token, so
+        // no `CurrentCaller` and no scope set exist by this point.
+        true,
     )
     .await
     {
@@ -928,13 +965,20 @@ pub fn wopi_routes(
     let api_router = crate::interfaces::api::policy_router::GatedRouter::new()
         .route(
             "/editor-url",
-            // `files:rw` EXPLICITLY, against the verb. This is a GET, so
-            // verb-derivation would make it `files:ro` — but it mints a
-            // WOPI token usable for `POST /wopi/files/{id}/contents`, so a
-            // read-only credential would walk away with write capability.
-            // A credential-minting GET is the case § Access follows the
-            // VERB names: the method reads as harmless exactly when it is
-            // not.
+            // `files:ro` — the verb's own answer, safe because the
+            // TOKEN is narrowed rather than the mint refused.
+            //
+            // Was `files:rw`: a GET that mints a token usable for `POST
+            // /wopi/files/{id}/contents` would hand a read-only
+            // credential write capability. `authorize_wopi_access` now
+            // intersects `can_write` with the caller's `files:rw`, so the
+            // token it walks away with cannot write — and a read-only
+            // credential keeps the legitimate ability to open a document
+            // read-only, as it can on the collab socket.
+            //
+            // Keep this in step with `policy_declarations.rs`: the route
+            // declaration is what the GATE enforces, that one is what the
+            // SPEC publishes, and `just gen-openapi` fails if they differ.
             crate::interfaces::api::policy_router::get(get_editor_url).policy([
                 crate::application::ports::scope_ports::Condition::scope(
                     crate::application::ports::scope_ports::Scope::Files,

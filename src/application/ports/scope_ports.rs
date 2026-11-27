@@ -145,9 +145,17 @@ impl Condition {
     /// [`Condition::scope`] instead:
     ///
     /// - a credential-minting GET reads as harmless exactly when it is
-    ///   not. `GET /api/wopi/editor-url` hands back a token usable for
-    ///   `POST /wopi/files/{id}/contents`, so verb-derivation would let a
-    ///   READ-ONLY credential obtain write capability;
+    ///   not, and the FIRST question is whether the thing it mints can be
+    ///   narrowed. `GET /api/wopi/editor-url` hands back a WOPI token
+    ///   usable for `POST /wopi/files/{id}/contents`; it was declared
+    ///   `files:rw` for exactly that reason, until the token's
+    ///   `can_write` bit started intersecting the caller's scope — at
+    ///   which point `files:ro` became correct, because a read-only
+    ///   credential now receives a token that cannot write. **Narrow what
+    ///   the mint HANDS OUT before tightening who may reach it**: the
+    ///   override costs a legitimate capability (opening a document
+    ///   read-only) while narrowing costs nothing. State the access
+    ///   explicitly only where the effect genuinely cannot be bounded;
     /// - a read posted for its body — `POST /api/batch/files/get`,
     ///   `/api/batch/download`, `/api/dedup/check-batch` — would demand
     ///   `rw` and lock a read-only credential out of a read.
