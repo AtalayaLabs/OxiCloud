@@ -23,6 +23,13 @@ pub struct WopiTokenClaims {
     pub scope: String,
     /// Display name for the editor UI
     pub username: String,
+    /// Optional WOPI action this token was minted for (`"edit"`, `"view"`, `"convert"`).
+    /// `None` on legacy tokens falls back to `"edit"` when `can_write` else `"view"`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub action: Option<String>,
+    /// Optional target extension for `"convert"` tokens (e.g. `"docx"`, `"odt"`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_ext: Option<String>,
     /// Expiration timestamp (seconds since Unix epoch)
     pub exp: i64,
     /// Issued at timestamp
@@ -63,6 +70,21 @@ impl WopiTokenService {
         username: &str,
         can_write: bool,
     ) -> Result<(String, i64), DomainError> {
+        self.generate_token_with_action(file_id, user_id, username, can_write, None, None)
+    }
+
+    /// Generate a WOPI access token bound to a specific WOPI action and optional conversion target.
+    ///
+    /// Returns `(token_string, expiration_unix_ms)`.
+    pub fn generate_token_with_action(
+        &self,
+        file_id: &str,
+        user_id: &str,
+        username: &str,
+        can_write: bool,
+        action: Option<&str>,
+        target_ext: Option<&str>,
+    ) -> Result<(String, i64), DomainError> {
         let now = Utc::now().timestamp();
         let claims = WopiTokenClaims {
             sub: user_id.to_string(),
@@ -70,6 +92,8 @@ impl WopiTokenService {
             can_write,
             scope: "wopi".to_string(),
             username: username.to_string(),
+            action: action.map(str::to_string),
+            target_ext: target_ext.map(str::to_string),
             exp: now + self.token_ttl_secs,
             iat: now,
         };
@@ -170,5 +194,66 @@ mod tests {
             .expect("Should generate");
         let claims = svc.validate_token(&token).expect("Should validate");
         assert!(!claims.can_write);
+        assert_eq!(claims.action, None);
+        assert_eq!(claims.target_ext, None);
+    }
+
+    #[test]
+    fn test_generate_with_action_and_target_ext() {
+        let svc = service();
+        let (token, _) = svc
+            .generate_token_with_action(
+                "file-1",
+                "user-1",
+                "test_user",
+                true,
+                Some("convert"),
+                Some("docx"),
+            )
+            .expect("Should generate");
+        let claims = svc.validate_token(&token).expect("Should validate");
+        assert!(claims.can_write);
+        assert_eq!(claims.action.as_deref(), Some("convert"));
+        assert_eq!(claims.target_ext.as_deref(), Some("docx"));
+    }
+
+    // Legacy tokens minted prior to the `action`/`target_ext` claims must
+    // continue decoding cleanly during rolling deployments.
+    #[test]
+    fn test_validate_legacy_token_without_action_fields() {
+        #[derive(Serialize)]
+        struct LegacyClaims {
+            sub: &'static str,
+            file_id: &'static str,
+            can_write: bool,
+            scope: &'static str,
+            username: &'static str,
+            exp: i64,
+            iat: i64,
+        }
+
+        let secret = "test_secret_at_least_32_bytes_long!!";
+        let now = Utc::now().timestamp();
+        let legacy = LegacyClaims {
+            sub: "user-1",
+            file_id: "file-1",
+            can_write: true,
+            scope: "wopi",
+            username: "legacy_user",
+            exp: now + 3600,
+            iat: now,
+        };
+        let token = encode(
+            &Header::default(),
+            &legacy,
+            &EncodingKey::from_secret(secret.as_bytes()),
+        )
+        .expect("Should encode legacy token");
+
+        let svc = WopiTokenService::new(secret.to_string(), 3600);
+        let claims = svc.validate_token(&token).expect("Should decode legacy");
+        assert!(claims.can_write);
+        assert_eq!(claims.action, None);
+        assert_eq!(claims.target_ext, None);
     }
 }
