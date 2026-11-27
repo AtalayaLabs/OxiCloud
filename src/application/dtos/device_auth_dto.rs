@@ -38,7 +38,7 @@ fn default_client_name() -> String {
 /// fetches, and they are SCOPELESS — keyed by `{user}`, serving initials
 /// for any name, so they enumerate nothing.
 fn default_scopes() -> String {
-    "oxicloud:files:rw,oxicloud:calendar:rw,oxicloud:contacts:rw".to_string()
+    "oxicloud:files:rw,oxicloud:calendar:rw,oxicloud:contacts:rw,oxicloud:sharing:ro".to_string()
 }
 
 /// POST /api/auth/device/verify — user submits the code from the browser

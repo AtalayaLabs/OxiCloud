@@ -919,8 +919,8 @@ only what its row names. A new type added without thought about
 
 | credential | default when omitted | maximum (allowlist) |
 |---|---|---|
-| App password | `files,calendar,contacts` (`:rw`) | same — **no `security`**, **no `account`**, **no `admin`**, **no `sharing`** (§ Credential-kind gating) |
-| Device flow | `files,calendar,contacts` (`:rw`) — today's `webdav,caldav,carddav`, namespaced | `files,calendar,contacts,account` — **no `security`**, **no `admin`** |
+| App password | `files,calendar,contacts` (`:rw`) + `sharing:ro` | same — **no `security`**, **no `account`**, **no `admin`**, **no `sharing`** (§ Credential-kind gating) |
+| Device flow | `files,calendar,contacts` (`:rw`) + `sharing:ro` — today's `webdav,caldav,carddav`, namespaced | `files,calendar,contacts,account` — **no `security`**, **no `admin`** |
 | Interactive web session | n/a — never requests scopes | every scope `:rw`, `security` included |
 
 **No `account`, and avatars are why that is safe.** The ceiling briefly

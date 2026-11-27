@@ -37,6 +37,19 @@
 -- the device flow accepts an arbitrary `scope` string from the client, so
 -- a row may hold any subset. Each protocol token is replaced wherever it
 -- appears, and rows already namespaced are skipped.
+--
+-- `sharing:ro` is APPENDED to every translated row, and that is a
+-- RESTORATION, not a widening. Before this migration there was no scope
+-- axis on the NextCloud surfaces at all, so an existing app password
+-- could already read the roster — the OCS profile lookup and the share
+-- dialog's recipient picker both worked. Translating to the three sync
+-- areas alone would have TAKEN that away, which is how
+-- `nc_admin_views_other_user.hurl` started failing with a 403.
+--
+-- So the rule the migration keeps is "no capability change relative to
+-- what the credential could actually do", which is the promise that
+-- matters to a user with a configured client. Read-only because every
+-- OCS route that declares `sharing` is a GET.
 
 -- ── app passwords ────────────────────────────────────────────────────────
 UPDATE auth.app_passwords
@@ -46,11 +59,12 @@ UPDATE auth.app_passwords
            replace(scopes, 'webdav', 'oxicloud:files:rw'),
            'caldav', 'oxicloud:calendar:rw'),
          'carddav', 'oxicloud:contacts:rw')
+       || ',oxicloud:sharing:ro'
  WHERE scopes NOT LIKE '%oxicloud:%';
 
 ALTER TABLE auth.app_passwords
   ALTER COLUMN scopes
-  SET DEFAULT 'oxicloud:files:rw,oxicloud:calendar:rw,oxicloud:contacts:rw';
+  SET DEFAULT 'oxicloud:files:rw,oxicloud:calendar:rw,oxicloud:contacts:rw,oxicloud:sharing:ro';
 
 -- ── device codes ─────────────────────────────────────────────────────────
 -- Same translation. The plan's § Defaults says the device-flow default
@@ -64,11 +78,12 @@ UPDATE auth.device_codes
            replace(scopes, 'webdav', 'oxicloud:files:rw'),
            'caldav', 'oxicloud:calendar:rw'),
          'carddav', 'oxicloud:contacts:rw')
+       || ',oxicloud:sharing:ro'
  WHERE scopes NOT LIKE '%oxicloud:%';
 
 ALTER TABLE auth.device_codes
   ALTER COLUMN scopes
-  SET DEFAULT 'oxicloud:files:rw,oxicloud:calendar:rw,oxicloud:contacts:rw';
+  SET DEFAULT 'oxicloud:files:rw,oxicloud:calendar:rw,oxicloud:contacts:rw,oxicloud:sharing:ro';
 
 -- VARCHAR(512) still fits: the longest value this migration can produce is
 -- the four-area default at 88 characters, and the widest legal set — every

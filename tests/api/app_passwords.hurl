@@ -80,7 +80,7 @@ jsonpath "$.username" == "{{admin_username}}"
 # rather than which protocol it speaks. The SPA never sends this
 # field (it relies on the default), so the rename reached clients
 # only through this value.
-jsonpath "$.scopes" == "oxicloud:files:rw,oxicloud:calendar:rw,oxicloud:contacts:rw"
+jsonpath "$.scopes" == "oxicloud:files:rw,oxicloud:calendar:rw,oxicloud:contacts:rw,oxicloud:sharing:ro"
 # Request omitted `expires_in_days` → server stores NULL → wire
 # emits the field as JSON null (no `skip_serializing_if` on the
 # DTO). `null` is a legitimate "never expires" marker, so pin the

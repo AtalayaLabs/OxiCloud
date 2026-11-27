@@ -351,12 +351,33 @@ impl CredentialKind {
     #[must_use]
     pub fn default_scopes(self) -> ScopeSet {
         match self {
-            // The three areas a sync client needs: NC desktop wants
-            // files, DAVx⁵ wants calendars and contacts.
+            // What a sync client needs: NC desktop wants files, DAVx⁵
+            // wants calendars and contacts, and every NC client reads the
+            // roster — the share dialog's recipient picker and the OCS
+            // profile lookup both do.
+            //
+            // `sharing` is READ-ONLY here, and it is the one area whose
+            // access differs from the rest. Least privilege decides it:
+            // all three OCS routes that declare `sharing` are GETs, so
+            // `:ro` satisfies every door that exists, and widening later
+            // is the safe direction while narrowing breaks clients in the
+            // field.
+            //
+            // It was withheld entirely at first, on the reasoning that
+            // `sharing` enumerates the user roster. That line was drawn
+            // in the wrong place, and `nc_admin_views_other_user.hurl`
+            // said so: the ceiling exists to prevent ESCALATION, not to
+            // withhold capability the human already has. `security` and
+            // `admin` are escalation — minting another credential,
+            // administering the instance. Reading the roster is not: the
+            // user behind this credential can do it from the web UI, so
+            // withholding it removed nothing from them and only broke
+            // NextCloud compatibility.
             Self::AppPassword | Self::DeviceFlow => ScopeSet::empty()
                 .with(Scope::Files, Access::ReadWrite)
                 .with(Scope::Calendar, Access::ReadWrite)
-                .with(Scope::Contacts, Access::ReadWrite),
+                .with(Scope::Contacts, Access::ReadWrite)
+                .with(Scope::Sharing, Access::ReadOnly),
             Self::InteractiveSession => ScopeSet::full(),
         }
     }
@@ -376,8 +397,8 @@ impl CredentialKind {
             // require. No `admin`: a role is read from the USER row, so
             // an admin's app password carries the admin role and only the
             // scope axis stops it administering the instance. No
-            // `account` (avatars are scopeless, so nothing needs it) and
-            // no `sharing` (the recipient picker enumerates the roster).
+            // `account` — avatars are scopeless, so nothing needs it.
+            // `sharing` IS granted, at `:ro`; see `default_scopes`.
             Self::AppPassword => Self::AppPassword.default_scopes(),
             // Same, plus `account`: a device-flow client is interactive
             // enough to consent to profile access on the verify screen.
@@ -1101,12 +1122,28 @@ mod parse_tests {
         for area in [Scope::Files, Scope::Calendar, Scope::Contacts] {
             assert!(got.allows(area, Access::ReadWrite), "{area:?}");
         }
-        for area in [
-            Scope::Security,
-            Scope::Admin,
-            Scope::Sharing,
-            Scope::Account,
-        ] {
+        // `sharing` is the one asymmetric area: READ but not write.
+        //
+        // Read, because every NC client needs the roster — the share
+        // dialog's recipient picker and the OCS profile lookup both read
+        // it, and withholding it broke `nc_admin_views_other_user.hurl`.
+        // The ceiling exists to prevent ESCALATION, not to withhold
+        // capability the human already has in the browser.
+        //
+        // Not write, because all three OCS routes that declare `sharing`
+        // are GETs, so `:ro` satisfies every door that exists. Widening
+        // later is safe; narrowing breaks clients in the field.
+        assert!(got.allows(Scope::Sharing, Access::ReadOnly));
+        assert!(
+            !got.allows(Scope::Sharing, Access::ReadWrite),
+            "`sharing` is granted READ-ONLY — least privilege, and no \
+             declared OCS route needs the write"
+        );
+
+        // The escalation areas, withheld outright: `security` is how a
+        // credential would mint another, `admin` how it would administer
+        // the instance.
+        for area in [Scope::Security, Scope::Admin, Scope::Account] {
             assert!(
                 !got.allows(area, Access::ReadOnly),
                 "{area:?} must be withheld"

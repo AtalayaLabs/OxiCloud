@@ -35,6 +35,7 @@ Content-Type: application/json
 HTTP 200
 [Captures]
 admin_token: jsonpath "$.access_token"
+admin_id: jsonpath "$.user.full.user.id"
 
 
 # ─────────────────────────────────────────────────────────────
@@ -326,6 +327,56 @@ jsonpath "$.scopes" == "oxicloud:files:rw"
 jsonpath "$.scopes" not contains "admin"
 
 
+# ─────────────────────────────────────────────────────────────
+# Step 16b — The DEFAULT set reaches the NextCloud roster.
+#
+# Regression pin. The app-password default first held three areas —
+# files, calendar, contacts — on the reasoning that `sharing`
+# enumerates the user roster and a sync client does not need it.
+# That broke `nc_admin_views_other_user.hurl`: an NC admin could no
+# longer read another user's OCS profile, because
+# `GET /ocs/v1.php/cloud/users/{userid}` declares `sharing:ro`.
+#
+# The rule it established: the ceiling prevents ESCALATION, not
+# ordinary capability. The user behind this credential can read the
+# roster from the web UI, so withholding it removed nothing from
+# them and only broke NextCloud compatibility.
+#
+# Asserted on the REST profile endpoint rather than OCS so the pin
+# stays in this file's own idiom; the OCS door is pinned by
+# `nc_admin_views_other_user.hurl`, which is what caught it.
+# ─────────────────────────────────────────────────────────────
+POST {{base_url}}/api/auth/app-passwords
+Authorization: Bearer {{admin_token}}
+Content-Type: application/json
+{ "label": "credential_scopes default roster" }
+
+HTTP 200
+[Captures]
+default_id: jsonpath "$.id"
+default_pw: jsonpath "$.password"
+default_user: jsonpath "$.username"
+[Asserts]
+# `sharing` is present at `:ro` and the three sync areas at `:rw`.
+# The `:ro` is deliberate — every OCS route declaring `sharing` is a
+# GET, so least privilege stops at read.
+jsonpath "$.scopes" == "oxicloud:files:rw,oxicloud:calendar:rw,oxicloud:contacts:rw,oxicloud:sharing:ro"
+
+
+# ─────────────────────────────────────────────────────────────
+# Step 16c — A default credential READS the roster.
+#
+# `GET /api/users/{id}` declares `sharing:ro` — reading another
+# user's profile is a roster read whoever asks. The id is the
+# admin's own, which makes no difference to the declaration.
+# ─────────────────────────────────────────────────────────────
+GET {{base_url}}/api/users/{{admin_id}}
+[BasicAuth]
+{{default_user}}: {{default_pw}}
+
+HTTP 200
+
+
 # ═════════════════════════════════════════════════════════════
 # CHAIN B — the DEVICE GRANT, because the scope reaches the gate by
 #           a different road.
@@ -477,6 +528,12 @@ HTTP 200
 
 
 DELETE {{base_url}}/api/auth/app-passwords/{{dropped_id}}
+Authorization: Bearer {{admin_token}}
+
+HTTP 200
+
+
+DELETE {{base_url}}/api/auth/app-passwords/{{default_id}}
 Authorization: Bearer {{admin_token}}
 
 HTTP 200

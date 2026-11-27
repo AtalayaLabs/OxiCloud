@@ -417,7 +417,7 @@ table — which is what makes them auditable.
 | | set | where | why it cannot be asked for |
 |---|---|---|---|
 | **Visitor** (share ring) | `files:ro` | `ScopeSet::ring()` | a capability URL is not a credential — there is no row to carry a scope column, so the constant IS the scope |
-| **App password** | `files:rw` + `calendar:rw` + `contacts:rw` | `CredentialKind::AppPassword::ceiling()` | the dialog that mints it shows no consent screen, so it may not hold anything a user has not seen named |
+| **App password** | `files:rw` + `calendar:rw` + `contacts:rw` + `sharing:ro` | `CredentialKind::AppPassword::ceiling()` | the dialog that mints it shows no consent screen, so it may not hold anything a user has not seen named |
 
 The visitor set is enforced at COMPILE time as well as applied at
 runtime: a visitor-admitting operation requiring more than `files:ro`
@@ -439,12 +439,24 @@ matter individually:**
   `credential_scopes.hurl` step 14 asserts a 403 on
   `GET /api/admin/users` *as the admin* — role satisfied by
   construction, so the refusal can only be scope.
-- **no `sharing`** — costs app-password clients the recipient
-  autocomplete in the NC share dialog, kept out because `sharing`
-  enumerates the user roster. Sharing still works from the web UI, and
-  there is no OCS share-creation endpoint. Widening later is safe;
-  narrowing later breaks clients in the field, so the asymmetry decides
-  it.
+- **`sharing` at `:ro`, not withheld** — and this one was got WRONG
+  first, which is worth recording. It was excluded on the reasoning that
+  `sharing` enumerates the user roster, with the cost described as "the
+  NC share dialog's autocomplete". `nc_admin_views_other_user.hurl`
+  showed the cost was larger — an NC admin could no longer read another
+  user's OCS profile — and that the line had been drawn in the wrong
+  place.
+
+  **The ceiling exists to prevent ESCALATION, not to withhold capability
+  the human already has.** `security` and `admin` are escalation: minting
+  another credential, administering the instance. Reading the roster is
+  not — the user behind the credential can do it from the web UI, so
+  withholding it took nothing from them and only broke NextCloud
+  compatibility, which this project treats as a feature.
+
+  Read-ONLY because all three OCS routes that declare `sharing` are
+  GETs, so `:ro` satisfies every door that exists. It is the one area
+  whose access differs from the rest, and least privilege is why.
 
 A withheld area is REMOVED from the request, not a reason to reject it
 (RFC 6749 §3.3) — `files:rw + admin:rw` is minted as `files:rw`. The
