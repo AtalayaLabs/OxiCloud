@@ -19087,7 +19087,7 @@
           },
           "scopes": {
             "type": "string",
-            "description": "Scopes, space- or comma-separated (defaults to all DAV protocols)"
+            "description": "Scopes, space- or comma-separated (e.g. `oxicloud:files:rw`).\nOmitted means the default set: files, calendar and contacts at\n`:rw`, plus `sharing:ro`."
           }
         }
       },

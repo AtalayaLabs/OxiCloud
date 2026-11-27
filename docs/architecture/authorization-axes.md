@@ -543,14 +543,31 @@ is `caller_id == user_id` with **no admin bypass**, so a caller reaches
 only its own `user:{self}` topics whatever its scopes say. Two axes, two
 jobs.
 
-### Refusals collapse to one shape
+### Which refusals collapse, and which do not
 
-A scope refusal answers `topic_forbidden` — the same code as an unknown
-topic and a failed grant. Distinguishing "your credential lacks the area"
-from "no such resource" would hand a caller an enumeration oracle, so the
-wire says one thing and the audit line carries the truth
-(`message_bus.subscribe_denied` with `required_area`, `required_access`
-and `granted`; `message_bus.frame_denied` for a refused frame).
+The wire has **two** codes, and the split is deliberate — an earlier
+draft of this page claimed one, which was wrong:
+
+| code | returned for |
+|---|---|
+| `no_read` | no grant on the resource, **and** no such resource |
+| `topic_forbidden` | unknown topic, identity mismatch, role denial, **scope denial** |
+
+`no_read` is the anti-enumeration collapse: "you may not read it" and
+"it does not exist" must be one answer, or a caller can probe for
+resources by subscribing.
+
+A scope refusal joins `topic_forbidden` instead, and that is safe to
+distinguish because **it is a fact about the CALLER, not the resource**.
+The scope check runs before the grant dispatch, so a scope-denied
+subscriber learns nothing at all about the topic it named — the answer
+would be identical for a folder that exists, one that does not, and one
+it could otherwise read. Grouping it with the role denial is right for
+the same reason: both say "this credential, not this thing".
+
+The audit line carries the truth either way —
+`message_bus.subscribe_denied` with `required_area`, `required_access`
+and `granted`, and `message_bus.frame_denied` for a refused frame.
 
 The scope check runs BEFORE the grant dispatch, because it is two mask
 comparisons where the grant may hit the authorization engine. A

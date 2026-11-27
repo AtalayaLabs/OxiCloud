@@ -860,7 +860,9 @@ export type CreateAppPasswordRequestDto = {
      */
     label: string;
     /**
-     * Scopes, space- or comma-separated (defaults to all DAV protocols)
+     * Scopes, space- or comma-separated (e.g. `oxicloud:files:rw`).
+     * Omitted means the default set: files, calendar and contacts at
+     * `:rw`, plus `sharing:ro`.
      */
     scopes?: string;
 };

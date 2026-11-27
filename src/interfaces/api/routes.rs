@@ -1037,8 +1037,22 @@ pub fn create_api_routes(app_state: &Arc<AppState>) -> GatedRouter<Arc<AppState>
     if app_state.core.config.features.enable_message_bus {
         router = router.route(
             "/rt/ticket",
+            // SCOPELESS, declared explicitly. Minting a ticket is not
+            // itself an access to anything: the ticket carries the
+            // caller's OWN scope set, and the socket it opens is bounded
+            // by that set topic by topic. Requiring an area here would
+            // mean a narrow credential could not open a socket at all,
+            // rather than opening one that can reach less.
+            //
+            // It was undeclared until this landed, which made it
+            // `ScopeReq::Undefined` — permissive today only because
+            // `Undefined` and `None` still behave alike at runtime, and
+            // invisible to the generation check because this route is
+            // feature-gated out of the OpenAPI spec. Exactly the blind
+            // spot `authz.scope_undeclared` exists to shout about.
             post(crate::interfaces::api::handlers::rt_ticket_handler::issue_rt_ticket)
-                .with_state(app_state.clone()),
+                .with_state(app_state.clone())
+                .policy([Condition::scopeless()]),
         );
     }
 
