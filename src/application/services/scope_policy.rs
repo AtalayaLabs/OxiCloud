@@ -460,6 +460,22 @@ impl Denial {
             _ => None,
         }
     }
+
+    /// The area and access a scope denial was missing.
+    ///
+    /// Sibling of [`Self::required_role`], and the audit line needs it for
+    /// the same reason: `reason = "scope_not_granted"` says an area was
+    /// missing without saying WHICH, which leaves an operator with a 403
+    /// and no next step. `nc_admin_views_other_user.hurl` is the case that
+    /// asked for it — a 403 on an OCS route where the answer (`sharing`,
+    /// withheld from the app-password ceiling) was three files away.
+    #[must_use]
+    pub const fn required_scope(self) -> Option<(Scope, Access)> {
+        match self {
+            Denial::ScopeNotGranted { scope, access } => Some((scope, access)),
+            _ => None,
+        }
+    }
 }
 
 /// Check one caller against one compiled [`Policy`].
@@ -1281,6 +1297,36 @@ mod tests {
             assert!(d.audit().0.starts_with("authz."), "{d:?}");
         }
         assert_eq!(Denial::AuthenticationRequired.required_role(), None);
+        // The AREA and ACCESS carried out of a scope denial, for the audit
+        // line. `reason = "scope_not_granted"` names the cause without
+        // naming which area, which leaves an operator with a 403 and no
+        // next step — `nc_admin_views_other_user.hurl` is the case that
+        // asked for these fields, where the answer (`sharing`) was three
+        // files away from the failure.
+        assert_eq!(
+            Denial::ScopeNotGranted {
+                scope: Scope::Sharing,
+                access: Access::ReadOnly,
+            }
+            .required_scope(),
+            Some((Scope::Sharing, Access::ReadOnly))
+        );
+        // And only for that variant — a role denial must not report a
+        // scope the caller was never short of.
+        assert_eq!(
+            Denial::RoleInsufficient {
+                required: MinRole::Admin
+            }
+            .required_scope(),
+            None
+        );
+        assert_eq!(Denial::AuthenticationRequired.required_scope(), None);
+
+        // Wire spelling, so the log field can be compared with a
+        // credential's `scopes` column without translation.
+        assert_eq!(Scope::Sharing.name(), "sharing");
+        assert_eq!(Access::ReadOnly.as_str(), "ro");
+        assert_eq!(Access::ReadWrite.as_str(), "rw");
     }
 
     /// Every operation kind must render identifiably in a boot message,

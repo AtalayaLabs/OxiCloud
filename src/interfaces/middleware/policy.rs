@@ -326,6 +326,20 @@ pub async fn policy_gate_layer(
             // into `reason` — one reason per cause keeps the vocabulary
             // small and leaves the detail queryable.
             required = denial.required_role().map(|r| format!("{r:?}")),
+            // The AREA and ACCESS missed, same reasoning as `required`
+            // above: `reason = "scope_not_granted"` names a cause without
+            // naming which area, which leaves an operator holding a 403
+            // and no next step. Both in WIRE spelling, so the pair can be
+            // compared against a credential's `scopes` column — or pasted
+            // into a scope request — without translation.
+            required_area = denial.required_scope().map(|(s, _)| s.name()),
+            required_access = denial.required_scope().map(|(_, a)| a.as_str()),
+            // What the caller actually holds. Without it the line says
+            // what was needed but not how far short the credential fell,
+            // and "needs `sharing:ro`" reads very differently when the
+            // credential holds nothing than when it holds `sharing:ro`
+            // already and the resolution is wrong.
+            granted = caller.as_ref().map(|c| c.scopes.to_wire()),
             caller_id = caller.as_ref().map(|c| c.id.to_string()).unwrap_or_default(),
             "👮🏻‍♂️ policy gate refused the caller",
         );
