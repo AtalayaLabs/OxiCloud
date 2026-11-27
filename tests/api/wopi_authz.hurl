@@ -453,6 +453,278 @@ HTTP 401
 
 
 # ─────────────────────────────────────────────────────────────
+# Step 13 — View-only legacy `.doc` fallback + user-confirmed
+#           convert + PutRelativeFile (OnlyOffice workflow).
+#
+# Regression pin: OnlyOffice discovery advertises `view` and
+# `convert` (targetext="docx") for `.doc`, with NO `edit` action.
+# Previously `action=edit` returned 422 on open.
+# ─────────────────────────────────────────────────────────────
+POST {{base_url}}/api/files/upload
+Authorization: Bearer {{alice_token}}
+[MultipartFormData]
+folder_id: {{alice_home_id}}
+file: file,fixtures/legacy.doc; application/msword
+
+HTTP 201
+[Captures]
+doc_file_id: jsonpath "$.id"
+
+
+# Owner requests `action=edit` on `.doc` → resolves to `view`
+# with `convert_targets: ["docx"]` instead of 422.
+GET {{base_url}}/api/wopi/editor-url?file_id={{doc_file_id}}&action=edit
+Authorization: Bearer {{alice_token}}
+
+HTTP 200
+[Captures]
+doc_view_token: jsonpath "$.access_token"
+[Asserts]
+jsonpath "$.action" == "view"
+jsonpath "$.editor_url" contains "/view?"
+jsonpath "$.convert_targets[0]" == "docx"
+
+
+# View fallback must never mint a write-capable token.
+GET {{base_url}}/wopi/files/{{doc_file_id}}?access_token={{doc_view_token}}
+
+HTTP 200
+[Asserts]
+jsonpath "$.UserCanWrite" == false
+jsonpath "$.SupportsUpdate" == false
+jsonpath "$.UserCanNotWriteRelative" == true
+
+
+GET {{base_url}}/wopi/edit/{{doc_file_id}}?access_token={{doc_view_token}}
+
+HTTP 200
+[Asserts]
+body contains "action=\"http://mock-editor.invalid/view?"
+
+
+POST {{base_url}}/wopi/files/{{doc_file_id}}/contents?access_token={{doc_view_token}}
+Content-Type: application/octet-stream
+```
+must fail on view token
+```
+
+HTTP 401
+
+
+# Viewer granted Read on Alice's `.doc` sees `view` with NO
+# `convert_targets`, and `action=convert` is refused with 403
+# (lacks Create on Alice's parent folder).
+POST {{base_url}}/api/grants
+Authorization: Bearer {{alice_token}}
+Content-Type: application/json
+{
+  "subject":  { "type": "user", "id": "{{bob_user_id}}" },
+  "resource": { "type": "file", "id": "{{doc_file_id}}" },
+  "role": "viewer"
+}
+
+HTTP 201
+[Captures]
+bob_doc_grant_id: jsonpath "$.grants[0].id"
+
+
+GET {{base_url}}/api/wopi/editor-url?file_id={{doc_file_id}}&action=edit
+Authorization: Bearer {{bob_token}}
+
+HTTP 200
+[Asserts]
+jsonpath "$.action" == "view"
+jsonpath "$.convert_targets" not exists
+
+
+GET {{base_url}}/api/wopi/editor-url?file_id={{doc_file_id}}&action=convert&target_ext=docx
+Authorization: Bearer {{bob_token}}
+
+HTTP 403
+
+
+DELETE {{base_url}}/api/grants/{{bob_doc_grant_id}}
+Authorization: Bearer {{alice_token}}
+
+HTTP 204
+
+
+# Owner confirms conversion to `.docx` → `action=convert` resolves
+# discovery's `convert` URL, CheckFileInfo advertises relative write
+# support, PutFile on the source `.doc` stays blocked (401), and
+# PUT_RELATIVE creates `legacy.docx` (then `legacy (1).docx` on
+# collision) while leaving the original `.doc` intact.
+GET {{base_url}}/api/wopi/editor-url?file_id={{doc_file_id}}&action=convert&target_ext=docx
+Authorization: Bearer {{alice_token}}
+
+HTTP 200
+[Captures]
+doc_convert_token: jsonpath "$.access_token"
+[Asserts]
+jsonpath "$.action" == "convert"
+jsonpath "$.editor_url" contains "/convert?"
+
+
+GET {{base_url}}/wopi/edit/{{doc_file_id}}?access_token={{doc_convert_token}}
+
+HTTP 200
+[Asserts]
+body contains "action=\"http://mock-editor.invalid/convert?"
+
+
+GET {{base_url}}/wopi/files/{{doc_file_id}}?access_token={{doc_convert_token}}
+
+HTTP 200
+[Asserts]
+jsonpath "$.UserCanWrite" == true
+jsonpath "$.SupportsUpdate" == true
+jsonpath "$.UserCanNotWriteRelative" == false
+
+
+POST {{base_url}}/wopi/files/{{doc_file_id}}/contents?access_token={{doc_convert_token}}
+Content-Type: application/octet-stream
+```
+convert token must never overwrite original .doc
+```
+
+HTTP 401
+
+
+POST {{base_url}}/wopi/files/{{doc_file_id}}?access_token={{doc_convert_token}}
+X-WOPI-Override: PUT_RELATIVE
+X-WOPI-SuggestedTarget: .docx
+X-WOPI-FileConversion: True
+Content-Type: application/octet-stream
+```
+converted docx bytes v1
+```
+
+HTTP 200
+[Captures]
+converted_docx_id: jsonpath "$.HostEditUrl" regex "file=([^&]+)"
+converted_docx_wopi_url: jsonpath "$.Url"
+[Asserts]
+jsonpath "$.Name" == "legacy.docx"
+jsonpath "$.Url" contains "/wopi/files/"
+jsonpath "$.HostEditUrl" contains "?file="
+
+
+GET {{converted_docx_wopi_url}}
+
+HTTP 200
+[Asserts]
+jsonpath "$.BaseFileName" == "legacy.docx"
+jsonpath "$.UserCanWrite" == true
+
+
+GET {{base_url}}/api/files/{{converted_docx_id}}
+Authorization: Bearer {{alice_token}}
+
+HTTP 200
+[Asserts]
+body contains "converted docx bytes v1"
+
+
+# Second SuggestedTarget conversion avoids colliding with legacy.docx.
+POST {{base_url}}/wopi/files/{{doc_file_id}}?access_token={{doc_convert_token}}
+X-WOPI-Override: PUT_RELATIVE
+X-WOPI-SuggestedTarget: .docx
+X-WOPI-FileConversion: True
+Content-Type: application/octet-stream
+```
+converted docx bytes v2
+```
+
+HTTP 200
+[Captures]
+converted_docx_copy_id: jsonpath "$.HostEditUrl" regex "file=([^&]+)"
+[Asserts]
+jsonpath "$.Name" == "legacy (1).docx"
+
+
+DELETE {{base_url}}/api/files/{{doc_file_id}}
+Authorization: Bearer {{alice_token}}
+
+HTTP 204
+
+
+DELETE {{base_url}}/api/files/{{converted_docx_id}}
+Authorization: Bearer {{alice_token}}
+
+HTTP 204
+
+
+DELETE {{base_url}}/api/files/{{converted_docx_copy_id}}
+Authorization: Bearer {{alice_token}}
+
+HTTP 204
+
+
+# ─────────────────────────────────────────────────────────────
+# Step 14 — Collabora edit-only `.xlsx` requested in `view` mode.
+#
+# Regression pin: `host_page` used to require an exact `"view"`
+# discovery entry and returned 500 when discovery only listed
+# `"edit"`. Now it falls back to `"edit"` URL while keeping
+# `UserCanWrite=false`.
+# ─────────────────────────────────────────────────────────────
+POST {{base_url}}/api/files/upload
+Authorization: Bearer {{alice_token}}
+[MultipartFormData]
+folder_id: {{alice_home_id}}
+file: file,fixtures/doc-date.xlsx; application/vnd.openxmlformats-officedocument.spreadsheetml.sheet
+
+HTTP 201
+[Captures]
+xlsx_file_id: jsonpath "$.id"
+
+
+GET {{base_url}}/api/wopi/editor-url?file_id={{xlsx_file_id}}&action=view
+Authorization: Bearer {{alice_token}}
+
+HTTP 200
+[Captures]
+xlsx_view_token: jsonpath "$.access_token"
+[Asserts]
+jsonpath "$.action" == "view"
+jsonpath "$.editor_url" contains "/edit?"
+
+
+GET {{base_url}}/wopi/files/{{xlsx_file_id}}?access_token={{xlsx_view_token}}
+
+HTTP 200
+[Asserts]
+jsonpath "$.UserCanWrite" == false
+jsonpath "$.SupportsUpdate" == false
+
+
+GET {{base_url}}/wopi/edit/{{xlsx_file_id}}?access_token={{xlsx_view_token}}
+
+HTTP 200
+[Captures]
+xlsx_host_token: body regex "name=\"access_token\" value=\"([^\"]+)\""
+[Asserts]
+body contains "action=\"http://mock-editor.invalid/edit?"
+
+
+# Regression pin: host_page must preserve view mode and not re-elevate an
+# Owner's explicit action=view session on an edit-only discovery format back
+# to writable when re-minting the token.
+GET {{base_url}}/wopi/files/{{xlsx_file_id}}?access_token={{xlsx_host_token}}
+
+HTTP 200
+[Asserts]
+jsonpath "$.UserCanWrite" == false
+jsonpath "$.SupportsUpdate" == false
+
+
+DELETE {{base_url}}/api/files/{{xlsx_file_id}}
+Authorization: Bearer {{alice_token}}
+
+HTTP 204
+
+
+# ─────────────────────────────────────────────────────────────
 # Cleanup — delete the test file so subsequent Hurl files don't
 # see it. Bob user stays; other tests may reuse the `wopi-bob`
 # username, but the grants that made this test meaningful are

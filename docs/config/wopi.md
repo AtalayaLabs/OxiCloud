@@ -104,14 +104,15 @@ In that example:
 | `LOCK` | Acquire or refresh an editor lock |
 | `UNLOCK` | Release a lock |
 | `REFRESH_LOCK` | Extend the current lock |
-| `PUT_RELATIVE` | Save as a related file |
-| `RENAME_FILE` | Rename from inside the editor |
-| `DELETE` | Delete from the editor when supported |
+| `GET_LOCK` | Inspect the current lock |
+| `PUT_RELATIVE` | Create a relative copy ("Save As" / format conversion) |
 
 ## Notes
 
 - `CheckFileInfo` is required for every WOPI action
 - `PutFile` uploads the full file content back to OxiCloud
+- `PutRelativeFile` (`X-WOPI-Override: PUT_RELATIVE`) creates a new file in the same folder for "Save Copy As" and legacy binary conversion (`X-WOPI-SuggestedTarget`, `X-WOPI-RelativeTarget`, `X-WOPI-OverwriteRelativeTarget`, `X-WOPI-FileConversion`)
+- Formats that the configured editor only advertises for `view` (for example `.doc` or `.ppt` in OnlyOffice) automatically open in read-only mode, and users with `Create` permission on the parent folder can confirm converting to an editable format advertised by discovery (`convert` action, e.g. `.docx`) without modifying the original file
 - lock conflicts return `409 Conflict` with the current lock value
 - OxiCloud uses query parameter `?access_token=` authentication for WOPI callbacks instead of the standard JWT middleware
 
