@@ -1261,7 +1261,7 @@ async fn handle_subscribe(
 
     // Guard against runaway subscribers pinning server memory.
     if subs.len() >= MAX_SUBSCRIPTIONS_PER_CONNECTION && !subs.contains_key(&topic_str) {
-        audit_denied(caller.id, &topic_str, "sub_limit");
+        audit_denied(caller.id, &topic_str, DenialAxis::Request, "sub_limit");
         return error_response(
             id,
             error_code::SUB_LIMIT,
@@ -1285,7 +1285,7 @@ async fn handle_subscribe(
             // wire — the caller cannot distinguish "unknown shape" from
             // "shape known but resource doesn't exist" without hinting
             // an enumeration oracle.
-            audit_denied(caller.id, &topic_str, "unknown_topic");
+            audit_denied(caller.id, &topic_str, DenialAxis::Request, "unknown_topic");
             return error_response(
                 id,
                 error_code::TOPIC_FORBIDDEN,
@@ -1312,18 +1312,31 @@ async fn handle_subscribe(
         topic.required_scope()
         && !caller.scopes.satisfies(required)
     {
-        audit_denied(caller.id, &topic_str, "scope_not_granted");
+        // ONE line, not two: an earlier draft called `audit_denied` and
+        // then emitted a richer line beside it, so every scope refusal
+        // logged twice and a reader had to know they were the same event.
         if let Some((area, access)) = caller.scopes.first_unmet(required) {
             tracing::info!(
                 target: "audit",
                 event = "message_bus.subscribe_denied",
+                axis = DenialAxis::Scope.as_str(),
                 reason = "scope_not_granted",
                 topic = %topic_str,
                 required_area = area.name(),
                 required_access = access.as_str(),
                 granted = %caller.scopes.to_wire(),
-                caller.id = %caller.id,
+                caller_id = %caller.id,
                 "👮🏻‍♂️ subscribe refused on the scope axis",
+            );
+        } else {
+            // `satisfies` said no but `first_unmet` found nothing —
+            // unreachable unless the two disagree. Log the refusal
+            // anyway rather than drop it silently.
+            audit_denied(
+                caller.id,
+                &topic_str,
+                DenialAxis::Scope,
+                "scope_not_granted",
             );
         }
         return error_response(
@@ -1356,7 +1369,7 @@ async fn handle_subscribe(
             {
                 // Anti-enum: "no such resource" and "no read" collapse
                 // to the same wire code. Audit records the truth.
-                audit_denied(caller.id, &topic_str, "no_read");
+                audit_denied(caller.id, &topic_str, DenialAxis::Grant, "no_read");
                 return error_response(
                     id,
                     error_code::NO_READ,
@@ -1397,7 +1410,12 @@ async fn handle_subscribe(
         }
         AuthzCheck::IdentityMatch { user_id } => {
             if user_id != caller.id {
-                audit_denied(caller.id, &topic_str, "identity_mismatch");
+                audit_denied(
+                    caller.id,
+                    &topic_str,
+                    DenialAxis::Grant,
+                    "identity_mismatch",
+                );
                 return error_response(
                     id,
                     error_code::TOPIC_FORBIDDEN,
@@ -1412,7 +1430,7 @@ async fn handle_subscribe(
             // so no per-subscribe DB hit. A demotion mid-session
             // takes effect on the caller's next reconnect.
             if !caller.kind.role().at_least(UserRole::Admin) {
-                audit_denied(caller.id, &topic_str, "role_denied");
+                audit_denied(caller.id, &topic_str, DenialAxis::Gate, "role_denied");
                 return error_response(
                     id,
                     error_code::TOPIC_FORBIDDEN,
@@ -1800,6 +1818,45 @@ fn revoked_notification(topic_wire: &str, reason: &str) -> String {
 /// numeric wire code (`error_code::NO_EDIT = -32007`) is documented
 /// on the constant itself; the notification keeps a string reason for
 /// consistency with the rest of `rt.*` — clients that need to map to
+/// WHICH axis refused, as a field beside `reason`.
+///
+/// Prompted by a real confusion: `reason="no_read"` on a subscribe
+/// denial reads as though a read SCOPE were missing, when it means the
+/// caller holds no read GRANT on the resource. One line could not say
+/// which of the three axes answered, so an operator had to know the
+/// vocabulary to tell a credential problem from a permission problem —
+/// and those have completely different fixes (re-mint the credential
+/// versus grant access).
+///
+/// An enum rather than a string at each call site, so a typo is a
+/// compile error and the set stays enumerable.
+#[derive(Clone, Copy)]
+enum DenialAxis {
+    /// Scope — what the CREDENTIAL may reach. Fix: re-mint it wider.
+    Scope,
+    /// Grant — what this caller may do to THIS resource. Fix: grant
+    /// access. Covers the identity-match class too: "you are not that
+    /// user" is a statement about the resource's owner.
+    Grant,
+    /// Gate — what KIND of caller may reach the surface at all (role).
+    /// Fix: a different account.
+    Gate,
+    /// Not an axis: the request never resolved to a topic, or the
+    /// session hit its subscription ceiling.
+    Request,
+}
+
+impl DenialAxis {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Scope => "scope",
+            Self::Grant => "grant",
+            Self::Gate => "gate",
+            Self::Request => "request",
+        }
+    }
+}
+
 /// codes can do so client-side, but the wire remains readable.
 fn write_denied_notification(file_id: Uuid, reason: &'static str) -> String {
     serde_json::to_string(&RpcNotification {
@@ -1817,10 +1874,11 @@ fn write_denied_notification(file_id: Uuid, reason: &'static str) -> String {
 // Audit
 // ════════════════════════════════════════════════════════════════════════════
 
-fn audit_denied(caller_id: Uuid, topic: &str, reason: &'static str) {
+fn audit_denied(caller_id: Uuid, topic: &str, axis: DenialAxis, reason: &'static str) {
     tracing::info!(
         target: "audit",
         event = "message_bus.subscribe_denied",
+        axis = axis.as_str(),
         reason = reason,
         caller_id = %caller_id,
         topic = %topic,

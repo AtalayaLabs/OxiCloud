@@ -458,6 +458,29 @@ matter individually:**
   GETs, so `:ro` satisfies every door that exists. It is the one area
   whose access differs from the rest, and least privilege is why.
 
+**The ceiling is sized for DAV and NextCloud, which is what an app
+password is FOR.** It authenticates sync clients — NC desktop, DAVx⁵,
+Thunderbird, rclone — over `/remote.php`, `/ocs`, `/webdav`, `/caldav`
+and `/carddav`. Reaching `/api` with one is possible but incidental, and
+an app password is itself an anomaly: it exists because those clients
+cannot do OIDC. So "a credential that reaches files, calendars, contacts
+and the roster" is not a narrowing of its job — it IS its job, and the
+109 of 250 REST operations it cannot reach are surfaces it was never
+meant for.
+
+What it therefore withholds, each for its own reason:
+
+| area | why withheld |
+|---|---|
+| `security` | escalation — it is how a credential would mint or revoke another |
+| `admin` | escalation — and a role check cannot stop it, since an admin's app password carries the admin role |
+| `sharing:rw` | share CREATION; no OCS endpoint needs it, and `:ro` already covers the roster reads that do |
+| `account` | the caller's own profile and notifications. NC clients do not need it: the OCS self-probe `cloud/user` is scopeless |
+| `faces` | People enumerates recognised individuals, which is a sharper privacy question than the files the faces were found in — and no sync client browses it |
+
+A future major may refuse app passwords on `/api` outright rather than
+scope them there; the areas above are the same list either way.
+
 A withheld area is REMOVED from the request, not a reason to reject it
 (RFC 6749 §3.3) — `files:rw + admin:rw` is minted as `files:rw`. The
 narrowing is then REPORTED, because §5.1 requires it whenever the issued
