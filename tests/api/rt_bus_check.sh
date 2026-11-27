@@ -2437,12 +2437,30 @@ log "S31a OK (job:* refused on scope, role satisfied)"
 # 31b — ALLOWED on a folder it may read. The control: without it, 31a
 # passes just as well against a socket that refuses EVERY subscribe, and
 # a broken scope axis is indistinguishable from a working one.
+#
+# An ADMIN-owned folder, not `$folder_a`. The first draft of this used
+# user1's folder and failed on `no_read` with `visibility=hidden` — the
+# credential is the ADMIN's, who holds no grant on another user's tree,
+# so the subscribe got PAST the scope axis and died on the grant axis
+# instead. A control has to fail for exactly one reason, and the
+# admin-as-caller choice that makes 31a attributable is what forces an
+# admin-owned resource here.
+s31_admin_folders=$(c_get "$base_url/api/folders" "$admin_token")
+s31_admin_root=$(printf '%s' "$s31_admin_folders" | jq -r '.[0].id')
+[[ -n "$s31_admin_root" && "$s31_admin_root" != "null" ]] \
+  || die "S31b: no root folder for admin: $s31_admin_folders"
+s31_folder=$(c_post "$base_url/api/folders" "$admin_token" \
+  "$(printf '{"name":"rt_bus_scope_%s","parent_id":"%s"}' "$suffix" "$s31_admin_root")" \
+  | jq -r '.id')
+[[ -n "$s31_folder" && "$s31_folder" != "null" ]] \
+  || die "S31b: admin folder creation failed"
+
 s31_t2=$(s31_ticket_for)
 out_s31=$(mktemp)
 if ! "$HELPER_BIN" subscribe-and-collect \
      --url "$ws_url" \
      --ticket "$s31_t2" \
-     --subscribe "folder:$folder_a" \
+     --subscribe "folder:$s31_folder" \
      --expect-events 0 \
      --timeout 3s \
      --output "$out_s31"; then
@@ -2457,6 +2475,9 @@ log "S31b OK (folder subscribe allowed on the same credential)"
 curl -sS -X DELETE \
   -H "Authorization: Bearer $admin_token" \
   "$base_url/api/auth/app-passwords/$s31_ap_id" > /dev/null
+curl -sS -X DELETE \
+  -H "Authorization: Bearer $admin_token" \
+  "$base_url/api/folders/$s31_folder" > /dev/null
 log "S31 OK"
 
 log "All thirty-one message-bus scenarios passed."
