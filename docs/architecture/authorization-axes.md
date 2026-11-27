@@ -329,6 +329,129 @@ more than `files:ro` is a GENERATION failure, not a 403 discovered when
 someone opens a share link. So the seven visitor-reachable GETs may
 require `files:ro` and nothing further.
 
+## What each area covers
+
+Declared at PREFIXES, in `interfaces/api/routes.rs`. This table is the
+design — which prefix owns which area — and it is deliberately not a
+route list:
+
+| area | prefixes that declare it |
+|---|---|
+| `files` | `/api/files`, `/api/folders`, `/api/uploads`, `/api/batch`, `/api/dedup`, `/api/drives`, `/api/favorites`, `/api/recent`, `/api/trash`, `/api/photos`, `/api/playlists`, `/api/wopi` |
+| `sharing` | `/api/shares`, `/api/grants`, `/api/users`, `/api/groups`, `/api/drives`, `/api/playlists` |
+| `calendar` | `/api/calendars` |
+| `contacts` | `/api/address-books` |
+| `faces` | `/api/people` |
+| `account` | `/api/notifications`, parts of `/api/auth` |
+| `security` | parts of `/api/auth` |
+| `admin` | `/api/admin`, parts of `/api/groups` |
+| *scopeless* | `/api/config`, `/api/i18n`, `/api/status`, `/api/setup`, `/api/search`, `/api/s`, parts of `/api/auth` |
+
+**`photos`, `music` and `trash` are not areas.** They are views over
+files, so a credential holding `files` reaches them — and conversely a
+photo-only scope could not exist without being a lie, since the same
+bytes are reachable through `/api/files`.
+
+**The authoritative answer is per OPERATION, and it is published.**
+Do not read this table as the contract — ask the spec, which is a
+projection of the same registry the gate enforces:
+
+```sh
+jq -r '.paths | to_entries[] | .key as $p | .value | to_entries[]
+       | "\(.key|ascii_upcase) \($p)\t\(.value["x-oxicloud-policy"].scope)"' \
+  resources/gen/openapi.json | sort
+```
+
+All 250 operations answer; none is `null`. A `null` would mean
+`ScopeReq::Undefined` reached generation, which fails the build.
+
+### The leaves with subtleties
+
+Four operations require TWO areas, and they are the append rule made
+visible — a `sharing` declaration at the route, under a `files` prefix:
+
+| operation | requires |
+|---|---|
+| `/api/drives/{id}/members` | `files` + `sharing` |
+| `/api/playlists/{id}/share` | `files` + `sharing` |
+| `/api/playlists/{id}/share/{user_id}` | `files` + `sharing` |
+| `/api/playlists/{id}/shares` | `files` + `sharing` |
+
+A credential holding only `files:rw` is refused on all four. That is
+correct and it is the design: managing who else can reach a thing is a
+sharing operation whatever the thing is.
+
+**Three MIXED subtrees declare per route, never at the prefix**, because
+a leaf cannot shed what a prefix imposes:
+
+- **`/api/auth`** is the extreme case — it spans `security` (the
+  app-password endpoints), `account` (profile) and *scopeless* (login,
+  logout, refresh, the OIDC and magic-link flows, OPAQUE). A prefix
+  declaration here would impose one of those on all of them; an early
+  draft put `security` on the router and 19 operations failed to compile.
+- **`/api/groups`** spans `admin` (every mutation) and `sharing`
+  (`/search`, so the share dialog can offer groups as recipients).
+  Declaring `admin` at the nest made the share picker require admin
+  scope. Worked through in § The worked case above.
+- **`/api/drives`** and **`/api/playlists`** are `files` prefixes whose
+  `members`/`share` leaves append `sharing`, per the table above.
+
+## Two sets are FORCED, not requested
+
+Most credentials get what they ask for, bounded by their kind's ceiling.
+Two do not, and both are constants in the code rather than rows in a
+table — which is what makes them auditable.
+
+| | set | where | why it cannot be asked for |
+|---|---|---|---|
+| **Visitor** (share ring) | `files:ro` | `ScopeSet::ring()` | a capability URL is not a credential — there is no row to carry a scope column, so the constant IS the scope |
+| **App password** | `files:rw` + `calendar:rw` + `contacts:rw` | `CredentialKind::AppPassword::ceiling()` | the dialog that mints it shows no consent screen, so it may not hold anything a user has not seen named |
+
+The visitor set is enforced at COMPILE time as well as applied at
+runtime: a visitor-admitting operation requiring more than `files:ro`
+fails generation (§ Visitors carry exactly `files:ro`). The two must stay
+equal, and `the_visitor_ring_is_exactly_files_read_only` pins the
+constant so a change to one surfaces as a failing test rather than as a
+share link that 403s.
+
+**The app-password ceiling is an ALLOWLIST, and the three it withholds
+matter individually:**
+
+- **no `security`** — so an app password cannot mint or revoke another
+  one. Without this the ceiling is one API call from irrelevant: a
+  credential minted for DAVx⁵ could mint itself a wider one.
+- **no `admin`** — and this is the one worth understanding. A role is
+  read from the USER row, so an admin's app password carries the admin
+  role and nothing about it looks less privileged. `MinRole::Admin` is
+  satisfied. Only the missing area stops it, which is why
+  `credential_scopes.hurl` step 14 asserts a 403 on
+  `GET /api/admin/users` *as the admin* — role satisfied by
+  construction, so the refusal can only be scope.
+- **no `sharing`** — costs app-password clients the recipient
+  autocomplete in the NC share dialog, kept out because `sharing`
+  enumerates the user roster. Sharing still works from the web UI, and
+  there is no OCS share-creation endpoint. Widening later is safe;
+  narrowing later breaks clients in the field, so the asymmetry decides
+  it.
+
+A withheld area is REMOVED from the request, not a reason to reject it
+(RFC 6749 §3.3) — `files:rw + admin:rw` is minted as `files:rw`. The
+narrowing is then REPORTED, because §5.1 requires it whenever the issued
+scope differs from the requested one.
+
+**The device grant's ceiling is the same three plus `account`**, and the
+difference is consent: its verify screen shows the user what is being
+granted before they approve. That screen reads the STORED set, and the
+flow stores at `authorize` — before approval — so it displays the capped
+set and consent is truthful by construction rather than by the UI
+remembering to cap it.
+
+**An interactive session is the only credential that holds `admin` or
+`security`**, and it holds them by the absent-claim default rather than
+an explicit set: a session's ceiling is every area, so its token carries
+no `scope` claim at all and only a genuinely narrowed credential pays for
+the string.
+
 ## One place to declare a route and its policy
 
 **`src/interfaces/api/routes.rs`.** Route, layer and policy are written
