@@ -699,6 +699,40 @@ impl Scope {
         }
     }
 
+    /// The PRE-AREA protocol vocabulary, accepted for compatibility.
+    ///
+    /// `webdav` / `caldav` / `carddav` were the whole scope vocabulary
+    /// before areas, and the old default — `webdav,caldav,carddav` —
+    /// appeared in every app-password creation response. So any
+    /// automation that read `scopes` back and echoed it later sends
+    /// these, and two of this repo's own shell suites hardcoded
+    /// `"webdav"`, which is fair evidence of what a human reading the
+    /// API writes.
+    ///
+    /// **This does not weaken the namespacing argument.** That argument
+    /// is about names we do NOT own: `profile` is reserved by OIDC and
+    /// would match an OxiCloud area with the opposite meaning, so it
+    /// must keep failing. These three we own outright, so aliasing
+    /// exactly them costs nothing — unknown and reserved names still
+    /// reject.
+    ///
+    /// Unqualified only. `webdav:ro` was never valid, so it is not
+    /// invented here; the legacy vocabulary had no access dimension and
+    /// every one of these tokens meant full access.
+    ///
+    /// Deprecated: remove at NEXT-MAJOR, once the
+    /// `authz.scope_legacy_vocabulary` warning has gone quiet in the
+    /// field.
+    #[must_use]
+    pub const fn from_legacy_protocol(token: &str) -> Option<(Self, Access)> {
+        match token.as_bytes() {
+            b"webdav" => Some((Self::Files, Access::ReadWrite)),
+            b"caldav" => Some((Self::Calendar, Access::ReadWrite)),
+            b"carddav" => Some((Self::Contacts, Access::ReadWrite)),
+            _ => None,
+        }
+    }
+
     /// The area a wire name denotes, or an error naming why not.
     ///
     /// `mail` is REJECTED rather than unknown, and the distinction is
@@ -872,6 +906,23 @@ impl ScopeSet {
 
         let mut out = Self::empty();
         for token in tokens {
+            // The pre-area vocabulary, checked BEFORE the prefix rule
+            // because these tokens are unprefixed by definition.
+            if let Some((scope, access)) = Scope::from_legacy_protocol(token) {
+                tracing::warn!(
+                    target: "audit",
+                    event = "authz.scope_legacy_vocabulary",
+                    reason = "protocol_token_aliased",
+                    token = token,
+                    resolved = %format!("oxicloud:{}:{}", scope.name(), access.as_str()),
+                    "👮🏻‍♂️ deprecated protocol scope accepted — update the \
+                     caller to the area vocabulary; this alias goes away \
+                     at the next major",
+                );
+                out.insert(scope, access);
+                continue;
+            }
+
             let rest =
                 token
                     .strip_prefix("oxicloud:")
@@ -1186,13 +1237,72 @@ mod parse_tests {
     /// escalation.
     #[test]
     fn an_unparseable_stored_scope_grants_nothing() {
-        let got = ScopeSet::from_credential(Some("webdav,caldav"));
+        // NOT `webdav,caldav`, which this test used until the legacy
+        // aliases landed — that vocabulary parses now, by design, so it
+        // no longer demonstrates anything about the failure path.
+        let got = ScopeSet::from_credential(Some("nonsense-not-a-scope"));
         assert_eq!(
             got,
             ScopeSet::empty(),
-            "the PRE-migration vocabulary no longer parses; a row still \
-             holding it must grant nothing rather than everything"
+            "a stored value that will not parse must grant NOTHING \
+             rather than everything — the mint validates, so a column \
+             holding this was written by something else, and granting \
+             everything would make corrupting it an escalation"
         );
+    }
+
+    /// The pre-area vocabulary is ACCEPTED, and resolves to the areas it
+    /// used to mean.
+    ///
+    /// The old default — `webdav,caldav,carddav` — appeared in every
+    /// app-password creation response, so automation that read `scopes`
+    /// back and echoed it later sends exactly this. Two of this repo's
+    /// own shell suites hardcoded `"webdav"` and broke at mint, which is
+    /// what prompted the alias.
+    #[test]
+    fn the_legacy_protocol_vocabulary_still_works() {
+        let got = ScopeSet::parse("webdav,caldav,carddav").expect("aliased");
+        assert!(got.allows(Scope::Files, Access::ReadWrite));
+        assert!(got.allows(Scope::Calendar, Access::ReadWrite));
+        assert!(got.allows(Scope::Contacts, Access::ReadWrite));
+
+        // Full access, because that is what these tokens always meant —
+        // the legacy vocabulary had no access dimension.
+        let one = ScopeSet::parse("webdav").expect("aliased");
+        assert!(one.allows(Scope::Files, Access::ReadWrite));
+        assert!(!one.allows(Scope::Calendar, Access::ReadOnly));
+
+        // Mixable with the new vocabulary, so a caller can migrate one
+        // token at a time.
+        let mixed = ScopeSet::parse("webdav,oxicloud:calendar:ro").expect("aliased");
+        assert!(mixed.allows(Scope::Files, Access::ReadWrite));
+        assert!(mixed.allows(Scope::Calendar, Access::ReadOnly));
+        assert!(!mixed.allows(Scope::Calendar, Access::ReadWrite));
+    }
+
+    /// Aliasing three names we OWN does not weaken the namespacing rule
+    /// for names we do not.
+    ///
+    /// This is the whole reason the prefix exists: `profile` is reserved
+    /// by OIDC and would match an OxiCloud area with the OPPOSITE
+    /// meaning — read-only identity claims there, write access to user
+    /// data here. It must keep failing, and so must an invented
+    /// access on a legacy token, which was never valid.
+    #[test]
+    fn the_aliases_do_not_open_the_namespace() {
+        assert!(matches!(
+            ScopeSet::parse("openid profile email"),
+            Err(ScopeParseError::Unprefixed { .. })
+        ));
+        assert!(matches!(
+            ScopeSet::parse("webdav,profile"),
+            Err(ScopeParseError::Unprefixed { .. })
+        ));
+        // `webdav:ro` never existed, so the alias does not invent it.
+        assert!(matches!(
+            ScopeSet::parse("webdav:ro"),
+            Err(ScopeParseError::Unprefixed { .. })
+        ));
     }
 
     /// The ordinary case: a stored wire string resolves to its set.

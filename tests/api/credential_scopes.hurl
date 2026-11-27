@@ -131,24 +131,73 @@ HTTP 200
 
 
 # ─────────────────────────────────────────────────────────────
-# Step 6 — The PRE-MIGRATION vocabulary is REJECTED.
+# Step 6 — The PRE-MIGRATION vocabulary still WORKS.
 #
-# `webdav` was a valid scope before the area rename. It is now
-# refused rather than ignored, which is a deliberate departure from
-# RFC 6749 §3.3's permission to skip unrecognised scope values: a
-# partial parse that resolves only the tokens it recognises would
-# leave a client believing it asked for something it did not get.
+# COMPATIBILITY PIN. `webdav` / `caldav` / `carddav` were the whole
+# scope vocabulary before areas, and the old default —
+# `webdav,caldav,carddav` — appeared in every app-password creation
+# response. So any automation that read `scopes` back and echoed it
+# later sends these, and two of this repo's own shell suites
+# hardcoded `"webdav"` and broke at mint, which is fair evidence of
+# what a human reading this API writes.
 #
-# The OIDC collision is the sharper case — a client sending the
-# textbook `scope=openid profile email` must fail cleanly, because
-# `profile` is reserved by OIDC and would otherwise match an
-# OxiCloud area with the OPPOSITE meaning: read-only identity
-# claims there, write access to user data here. Hence `oxicloud:`.
+# They are ALIASED, not ignored: each resolves to the area it used
+# to mean, at `:rw`, because the legacy vocabulary had no access
+# dimension and every one of these tokens meant full access. A
+# partial parse that silently dropped them would be the worse
+# outcome — a client believing it asked for something it did not get.
+#
+# Deprecated: the server logs `authz.scope_legacy_vocabulary` on
+# every one, so an operator can see who still sends them before the
+# alias is removed at the next major.
 # ─────────────────────────────────────────────────────────────
 POST {{base_url}}/api/auth/app-passwords
 Authorization: Bearer {{admin_token}}
 Content-Type: application/json
 { "label": "credential_scopes legacy vocabulary", "scopes": "webdav,caldav" }
+
+HTTP 200
+[Captures]
+legacy_id: jsonpath "$.id"
+legacy_pw: jsonpath "$.password"
+legacy_user: jsonpath "$.username"
+[Asserts]
+# Resolved to areas, and REPORTED as areas — a client sending the old
+# vocabulary is told the new one, which is how it learns to migrate.
+jsonpath "$.scopes" == "oxicloud:files:rw,oxicloud:calendar:rw"
+
+
+# ─────────────────────────────────────────────────────────────
+# Step 6b — And the aliased credential actually WORKS.
+#
+# The assertion above only proves the string was translated. This
+# proves the resulting set is the real thing: `/api/folders`
+# declares `files:ro`, which `webdav` → `files:rw` satisfies.
+#
+# Without this leg, a bug that translated the label but minted an
+# empty set would pass step 6 and still break every legacy caller —
+# which is the exact failure this whole pin exists to prevent.
+# ─────────────────────────────────────────────────────────────
+GET {{base_url}}/api/folders
+[BasicAuth]
+{{legacy_user}}: {{legacy_pw}}
+
+HTTP 200
+
+
+# ─────────────────────────────────────────────────────────────
+# Step 6c — Aliasing three names we OWN does not open the namespace.
+#
+# The contrast that keeps step 6 honest. `webdav` is ours to alias;
+# `profile` is not — it is reserved by OIDC and would match an
+# OxiCloud area with the OPPOSITE meaning, read-only identity claims
+# there against write access to user data here. So a legacy token
+# beside a foreign one must still fail as a whole.
+# ─────────────────────────────────────────────────────────────
+POST {{base_url}}/api/auth/app-passwords
+Authorization: Bearer {{admin_token}}
+Content-Type: application/json
+{ "label": "credential_scopes alias does not open the door", "scopes": "webdav,profile" }
 
 HTTP 400
 
@@ -534,6 +583,12 @@ HTTP 200
 
 
 DELETE {{base_url}}/api/auth/app-passwords/{{default_id}}
+Authorization: Bearer {{admin_token}}
+
+HTTP 200
+
+
+DELETE {{base_url}}/api/auth/app-passwords/{{legacy_id}}
 Authorization: Bearer {{admin_token}}
 
 HTTP 200

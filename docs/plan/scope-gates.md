@@ -2911,6 +2911,15 @@ field into an enforced one:
   token is rejected, **including the standards-reserved `openid`,
   `profile` and `email`**, so a mixed OIDC request can never partially
   resolve; `scope=` present-but-empty is malformed, not defaulted.
+- Unit + Hurl: the pre-area vocabulary is **ALIASED, not rejected**.
+  `webdav` / `caldav` / `carddav` resolve to their areas at `:rw`, each
+  logging `authz.scope_legacy_vocabulary` for removal at NEXT-MAJOR.
+  Shipped after two of this repo's own shell suites failed at mint on a
+  hardcoded `"webdav"` — and the old default appeared in every
+  app-password creation response, so automation that echoed `scopes`
+  back sends exactly this. Aliasing three names we OWN does not open the
+  namespace: `webdav,profile` still fails as a whole, and `webdav:ro` is
+  not invented, since the legacy vocabulary had no access dimension.
 - Unit: `effective = (requested ?? type_default) ∩ type_maximum` — a
   device-flow request for `account` is clamped, and an omitted scope
   yields the type default rather than every resource. This is the
