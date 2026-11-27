@@ -1,7 +1,8 @@
 import { it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/svelte';
+import { fireEvent, render, screen, waitFor } from '@testing-library/svelte';
 
 vi.mock('$lib/api/endpoints/wopi', () => ({
+	getEditorUrl: vi.fn(),
 	getEditorUrlWithFallback: vi.fn(),
 	// Real shape, not a stub returning undefined: the component feeds this
 	// straight into the iframe `src`, so a bad value fails as a missing
@@ -10,10 +11,11 @@ vi.mock('$lib/api/endpoints/wopi', () => ({
 }));
 vi.mock('$lib/utils/errors', () => ({ errorToast: vi.fn() }));
 
-import { getEditorUrlWithFallback } from '$lib/api/endpoints/wopi';
+import { getEditorUrl, getEditorUrlWithFallback } from '$lib/api/endpoints/wopi';
 import { errorToast } from '$lib/utils/errors';
 import WopiEditor from './WopiEditor.svelte';
 
+const ge = getEditorUrl as unknown as ReturnType<typeof vi.fn>;
 const g = getEditorUrlWithFallback as unknown as ReturnType<typeof vi.fn>;
 const et = errorToast as unknown as ReturnType<typeof vi.fn>;
 
@@ -116,4 +118,88 @@ it('reports a load failure via errorToast', async () => {
 it('does not load when closed', () => {
 	render(WopiEditor, { props: { open: false, fileId: 'f1', fileName: 'd.docx' } });
 	expect(g).not.toHaveBeenCalled();
+});
+
+// Regression pin: view-only formats (e.g. OnlyOffice `.doc`) open in view mode
+// with a read-only indicator and prompt the user before converting to an
+// editable format via `action=convert`.
+it('shows read-only badge and confirms single-target conversion to docx', async () => {
+	g.mockResolvedValue({
+		editor_url: 'https://onlyoffice.test/hosting/wopi/word/view?WOPISrc=x',
+		access_token: 'view-tok',
+		access_token_ttl: 9999,
+		action: 'view',
+		convert_targets: ['docx']
+	});
+	ge.mockResolvedValue({
+		editor_url: 'https://onlyoffice.test/hosting/wopi/convert-and-edit/doc/docx?WOPISrc=x',
+		access_token: 'conv-tok',
+		access_token_ttl: 9999,
+		action: 'convert'
+	});
+
+	render(WopiEditor, {
+		props: { open: true, fileId: 'f1', fileName: 'MODELE TESTAMENTS.doc', action: 'edit' }
+	});
+
+	const badge = await waitFor(() => screen.getByTestId('wopi-editor-readonly-badge'));
+	expect(badge).toBeTruthy();
+
+	const convertBtn = screen.getByTestId('wopi-editor-convert-btn');
+	await fireEvent.click(convertBtn);
+
+	const confirmBtn = await waitFor(() => screen.getByTestId('wopi-convert-confirm-btn'));
+	await fireEvent.click(confirmBtn);
+
+	await waitFor(() => expect(ge).toHaveBeenCalledWith('f1', 'convert', 'docx'));
+	const frame = await waitFor(() => screen.getByTestId('wopi-editor-frame'));
+	expect(frame.getAttribute('src')).toBe('/wopi/edit/f1?access_token=conv-tok');
+});
+
+it('lets the user choose between multiple discovery convert targets (docx / odt)', async () => {
+	g.mockResolvedValue({
+		editor_url: 'https://editor.test/word/view?WOPISrc=x',
+		access_token: 'view-tok',
+		access_token_ttl: 9999,
+		action: 'view',
+		convert_targets: ['docx', 'odt']
+	});
+	ge.mockResolvedValue({
+		editor_url: 'https://editor.test/convert/doc/odt?WOPISrc=x',
+		access_token: 'odt-tok',
+		access_token_ttl: 9999,
+		action: 'convert'
+	});
+
+	render(WopiEditor, {
+		props: { open: true, fileId: 'f1', fileName: 'legacy.doc', action: 'edit' }
+	});
+
+	const convertBtn = await waitFor(() => screen.getByTestId('wopi-editor-convert-btn'));
+	await fireEvent.click(convertBtn);
+
+	const odtRadio = await waitFor(() => screen.getByTestId('wopi-convert-format-odt'));
+	await fireEvent.click(odtRadio);
+
+	const confirmBtn = screen.getByTestId('wopi-convert-confirm-btn');
+	await fireEvent.click(confirmBtn);
+
+	await waitFor(() => expect(ge).toHaveBeenCalledWith('f1', 'convert', 'odt'));
+});
+
+it('hides convert button in view mode when convert_targets is empty', async () => {
+	g.mockResolvedValue({
+		editor_url: 'https://onlyoffice.test/hosting/wopi/word/view?WOPISrc=x',
+		access_token: 'view-tok',
+		access_token_ttl: 9999,
+		action: 'view',
+		convert_targets: []
+	});
+
+	render(WopiEditor, {
+		props: { open: true, fileId: 'f1', fileName: 'legacy.doc', action: 'edit' }
+	});
+
+	await waitFor(() => screen.getByTestId('wopi-editor-readonly-badge'));
+	expect(screen.queryByTestId('wopi-editor-convert-btn')).toBeNull();
 });

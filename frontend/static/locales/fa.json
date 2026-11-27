@@ -615,7 +615,14 @@
     "new_text_file_binary_ext_title": "پسوند غیرمتنی",
     "new_text_file_binary_ext_message": "«{{name}}» شبیه فایل متنی نیست. ویرایشگر آن را به صورت متن باز می‌کند — این معمولاً فرمت‌های دودویی را خراب می‌کند. با این حال ادامه می‌دهید؟",
     "confirm_delete_permanent": "حذف «{{name}}» برای همیشه؟ این عمل قابل بازگشت نیست.",
-    "confirm_batch_delete_permanent": "حذف {{n}} مورد برای همیشه؟ این عمل قابل بازگشت نیست."
+    "confirm_batch_delete_permanent": "حذف {{n}} مورد برای همیشه؟ این عمل قابل بازگشت نیست.",
+    "wopi_read_only": "فقط خواندنی",
+    "wopi_convert_and_edit": "تبدیل و ویرایش",
+    "wopi_convert_title": "تبدیل فایل برای ویرایش",
+    "wopi_convert_message": "فایل‌های با قالب .{{sourceExt}} در حالت فقط خواندنی باز می‌شوند. تبدیل یک نسخه جدید .{{targetExt}} در همان پوشه برای ویرایش ایجاد می‌کند و فایل اصلی دست‌نخورده باقی می‌ماند.",
+    "wopi_convert_message_multi": "فایل‌های با قالب .{{sourceExt}} در حالت فقط خواندنی باز می‌شوند. یک قالب مقصد برای ایجاد نسخه قابل ویرایش در همان پوشه انتخاب کنید تا فایل اصلی دست‌نخورده بماند.",
+    "wopi_convert_format_label": "قالب مقصد",
+    "wopi_convert_confirm": "تبدیل به .{{targetExt}} و ویرایش"
   },
   "dialogs": {
     "rename_folder": "تغییر نام پوشه",

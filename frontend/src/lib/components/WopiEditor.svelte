@@ -1,6 +1,14 @@
 <script lang="ts">
 	import { errorToast } from '$lib/utils/errors';
-	import { getEditorUrlWithFallback, wopiHostPageUrl } from '$lib/api/endpoints/wopi';
+	import {
+		getEditorUrl,
+		getEditorUrlWithFallback,
+		wopiHostPageUrl,
+		type WopiAction
+	} from '$lib/api/endpoints/wopi';
+	import { useAsyncAction } from '$lib/composables/useAsyncAction.svelte';
+	import Button from '$lib/components/Button.svelte';
+	import Modal from '$lib/components/Modal.svelte';
 	import Icon from '$lib/icons/Icon.svelte';
 	import { t } from '$lib/i18n/index.svelte';
 
@@ -36,16 +44,58 @@
 	/// discovery. Used to validate `postMessage` sources — see `onMessage`.
 	let editorOrigin = $state('');
 	let loading = $state(false);
+	let resolvedAction = $state<WopiAction>('edit');
+	let convertTargets = $state<string[]>([]);
+	let convertModalOpen = $state(false);
+	let selectedTarget = $state('');
+	const convertAction = useAsyncAction();
+
+	const sourceExt = $derived(
+		fileName.includes('.') ? (fileName.split('.').pop()?.toLowerCase() ?? '') : ''
+	);
 
 	function close() {
 		open = false;
 		hostPageUrl = '';
 		editorOrigin = '';
+		resolvedAction = 'edit';
+		convertTargets = [];
+		convertModalOpen = false;
+		selectedTarget = '';
+		convertAction.clearError();
 		onclose?.();
 	}
 
+	function openConvertModal() {
+		selectedTarget = convertTargets[0] ?? '';
+		convertAction.clearError();
+		convertModalOpen = true;
+	}
+
+	function onConvertModalClose() {
+		if (convertAction.busy) convertModalOpen = true;
+	}
+
+	async function confirmConvert() {
+		if (!fileId || !selectedTarget) return;
+		const ok = await convertAction.run(async () => {
+			const data = await getEditorUrl(fileId, 'convert', selectedTarget);
+			try {
+				editorOrigin = new URL(data.editor_url).origin;
+			} catch {
+				editorOrigin = '';
+			}
+			resolvedAction = data.action ?? 'convert';
+			convertTargets = [];
+			hostPageUrl = wopiHostPageUrl(fileId, data.access_token);
+		});
+		if (ok) {
+			convertModalOpen = false;
+		}
+	}
+
 	function onKeydown(e: KeyboardEvent) {
-		if (open && e.key === 'Escape') close();
+		if (open && e.key === 'Escape' && !convertModalOpen) close();
 	}
 
 	// The editor iframe posts status messages (Collabora / OnlyOffice WOPI
@@ -89,6 +139,9 @@
 		if (!open || !fileId) return;
 		loading = true;
 		hostPageUrl = '';
+		resolvedAction = action;
+		convertTargets = [];
+		convertModalOpen = false;
 		getEditorUrlWithFallback(fileId, fileName, action)
 			.then((data) => {
 				// `editor_url` is still returned so we can learn the origin
@@ -98,6 +151,9 @@
 				} catch {
 					editorOrigin = '';
 				}
+				resolvedAction = data.action ?? action;
+				convertTargets = data.convert_targets ?? [];
+				selectedTarget = convertTargets[0] ?? '';
 				hostPageUrl = wopiHostPageUrl(fileId!, data.access_token);
 			})
 			.catch((e) => {
@@ -119,15 +175,36 @@
 		aria-label={fileName}
 	>
 		<header class="wopi__bar">
-			<span class="wopi__title">{fileName}</span>
-			<button
-				class="wopi__close"
-				data-testid="wopi-editor-close-btn"
-				aria-label={t('common.close', 'Close')}
-				onclick={close}
-			>
-				<Icon name="times" />
-			</button>
+			<div class="wopi__title-group">
+				<span class="wopi__title">{fileName}</span>
+				{#if resolvedAction === 'view'}
+					<span class="wopi__badge" data-testid="wopi-editor-readonly-badge">
+						<Icon name="eye" />
+						{t('files.wopi_read_only', 'Read-only')}
+					</span>
+				{/if}
+			</div>
+			<div class="wopi__actions">
+				{#if resolvedAction === 'view' && convertTargets.length > 0}
+					<Button
+						variant="primary"
+						small
+						icon="exchange-alt"
+						data-testid="wopi-editor-convert-btn"
+						onclick={openConvertModal}
+					>
+						{t('files.wopi_convert_and_edit', 'Convert & edit')}
+					</Button>
+				{/if}
+				<button
+					class="wopi__close"
+					data-testid="wopi-editor-close-btn"
+					aria-label={t('common.close', 'Close')}
+					onclick={close}
+				>
+					<Icon name="times" />
+				</button>
+			</div>
 		</header>
 		<div class="wopi__frame-wrap">
 			{#if loading}
@@ -159,6 +236,81 @@
 				></iframe>
 			{/if}
 		</div>
+
+		<Modal
+			bind:open={convertModalOpen}
+			title={t('files.wopi_convert_title', 'Convert file for editing')}
+			onclose={onConvertModalClose}
+		>
+			{#if convertTargets.length === 1}
+				<p class="wopi__convert-msg">
+					{t(
+						'files.wopi_convert_message',
+						{ sourceExt, targetExt: selectedTarget },
+						'Files in .{{sourceExt}} format open in read-only mode. Converting creates a new .{{targetExt}} copy in the same folder for editing while keeping the original file untouched.'
+					)}
+				</p>
+			{:else if convertTargets.length > 1}
+				<p class="wopi__convert-msg">
+					{t(
+						'files.wopi_convert_message_multi',
+						{ sourceExt },
+						'Files in .{{sourceExt}} format open in read-only mode. Choose a target format to create an editable copy in the same folder while keeping the original file untouched.'
+					)}
+				</p>
+				<fieldset class="wopi__format-group">
+					<legend class="wopi__format-legend">
+						{t('files.wopi_convert_format_label', 'Target format')}
+					</legend>
+					<div class="wopi__format-options">
+						{#each convertTargets as ext (ext)}
+							<label
+								class="wopi__format-option"
+								class:wopi__format-option--selected={selectedTarget === ext}
+							>
+								<input
+									type="radio"
+									name="wopi-convert-target"
+									value={ext}
+									bind:group={selectedTarget}
+									onchange={convertAction.clearError}
+									disabled={convertAction.busy}
+									data-testid={`wopi-convert-format-${ext}`}
+								/>
+								<span>.{ext}</span>
+							</label>
+						{/each}
+					</div>
+				</fieldset>
+			{/if}
+
+			{#if convertAction.error}
+				<p class="form-error" role="alert">{convertAction.error}</p>
+			{/if}
+
+			{#snippet footer()}
+				<Button
+					variant="secondary"
+					disabled={convertAction.busy}
+					onclick={() => (convertModalOpen = false)}
+				>
+					{t('common.cancel', 'Cancel')}
+				</Button>
+				<Button
+					variant="primary"
+					icon="exchange-alt"
+					disabled={convertAction.busy || !selectedTarget}
+					data-testid="wopi-convert-confirm-btn"
+					onclick={confirmConvert}
+				>
+					{t(
+						'files.wopi_convert_confirm',
+						{ targetExt: selectedTarget },
+						'Convert to .{{targetExt}} & edit'
+					)}
+				</Button>
+			{/snippet}
+		</Modal>
 	</div>
 {/if}
 
@@ -176,17 +328,46 @@
 		display: flex;
 		align-items: center;
 		justify-content: space-between;
-		height: 40px;
+		gap: var(--space-3);
+		height: 44px;
 		padding: 0 1rem;
 		background: var(--color-bg-elevated, var(--color-bg-surface));
 		border-bottom: 1px solid var(--color-border);
 		color: var(--color-text-heading);
 	}
 
+	.wopi__title-group {
+		display: flex;
+		align-items: center;
+		gap: var(--space-2);
+		min-width: 0;
+	}
+
 	.wopi__title {
 		overflow: hidden;
 		text-overflow: ellipsis;
 		white-space: nowrap;
+	}
+
+	.wopi__badge {
+		display: inline-flex;
+		align-items: center;
+		gap: var(--space-1);
+		flex-shrink: 0;
+		padding: 0.15rem 0.55rem;
+		border: 1px solid var(--color-info-border);
+		border-radius: var(--radius-full);
+		background: var(--color-info-bg);
+		color: var(--color-info-text);
+		font-size: var(--text-xs);
+		font-weight: var(--weight-medium);
+	}
+
+	.wopi__actions {
+		display: flex;
+		align-items: center;
+		gap: var(--space-3);
+		flex-shrink: 0;
 	}
 
 	.wopi__close {
@@ -214,5 +395,49 @@
 		display: grid;
 		place-items: center;
 		color: var(--color-text-muted);
+	}
+
+	.wopi__convert-msg {
+		margin: 0 0 var(--space-3);
+		color: var(--color-text);
+		line-height: 1.5;
+	}
+
+	.wopi__format-group {
+		margin: 0 0 var(--space-3);
+		padding: var(--space-3);
+		border: 1px solid var(--color-border);
+		border-radius: var(--radius-md);
+	}
+
+	.wopi__format-legend {
+		padding: 0 var(--space-1);
+		color: var(--color-text-muted);
+		font-size: var(--text-xs);
+		font-weight: var(--weight-medium);
+	}
+
+	.wopi__format-options {
+		display: flex;
+		flex-wrap: wrap;
+		gap: var(--space-2);
+	}
+
+	.wopi__format-option {
+		display: inline-flex;
+		align-items: center;
+		gap: var(--space-2);
+		padding: var(--space-2) var(--space-3);
+		border: 1px solid var(--color-border);
+		border-radius: var(--radius-md);
+		background: var(--color-bg-surface);
+		color: var(--color-text);
+		font-weight: var(--weight-medium);
+		cursor: pointer;
+	}
+
+	.wopi__format-option--selected {
+		border-color: var(--color-accent);
+		background: var(--color-accent-bg);
 	}
 </style>

@@ -615,7 +615,14 @@
     "new_text_file_binary_ext_title": "Extension non textuelle",
     "new_text_file_binary_ext_message": "« {{name}} » ne ressemble pas à un fichier texte. L'éditeur l'ouvrira comme du texte — cela endommage généralement les formats binaires. Continuer quand même ?",
     "confirm_delete_permanent": "Supprimer définitivement « {{name}} » ? Cette action est irréversible.",
-    "confirm_batch_delete_permanent": "Supprimer définitivement {{n}} éléments ? Cette action est irréversible."
+    "confirm_batch_delete_permanent": "Supprimer définitivement {{n}} éléments ? Cette action est irréversible.",
+    "wopi_read_only": "Lecture seule",
+    "wopi_convert_and_edit": "Convertir et modifier",
+    "wopi_convert_title": "Convertir le fichier pour le modifier",
+    "wopi_convert_message": "Les fichiers au format .{{sourceExt}} s'ouvrent en lecture seule. La conversion crée une nouvelle copie .{{targetExt}} dans le même dossier pour l'édition tout en conservant le fichier d'origine intact.",
+    "wopi_convert_message_multi": "Les fichiers au format .{{sourceExt}} s'ouvrent en lecture seule. Choisissez un format cible pour créer une copie modifiable dans le même dossier tout en conservant le fichier d'origine intact.",
+    "wopi_convert_format_label": "Format cible",
+    "wopi_convert_confirm": "Convertir en .{{targetExt}} et modifier"
   },
   "dialogs": {
     "rename_folder": "Renommer le dossier",

@@ -615,7 +615,14 @@
     "new_text_file_binary_ext_title": "Niet-tekst-extensie",
     "new_text_file_binary_ext_message": "\"{{name}}\" lijkt geen tekstbestand. De editor opent het als tekst — dat beschadigt doorgaans binaire formaten. Toch doorgaan?",
     "confirm_delete_permanent": "\"{{name}}\" definitief verwijderen? Deze actie kan niet ongedaan worden gemaakt.",
-    "confirm_batch_delete_permanent": "{{n}} items definitief verwijderen? Deze actie kan niet ongedaan worden gemaakt."
+    "confirm_batch_delete_permanent": "{{n}} items definitief verwijderen? Deze actie kan niet ongedaan worden gemaakt.",
+    "wopi_read_only": "Alleen-lezen",
+    "wopi_convert_and_edit": "Converteren & bewerken",
+    "wopi_convert_title": "Bestand converteren om te bewerken",
+    "wopi_convert_message": "Bestanden in het .{{sourceExt}}-formaat worden geopend in alleen-lezenmodus. Converteren maakt een nieuwe .{{targetExt}}-kopie in dezelfde map aan om te bewerken en laat het originele bestand ongewijzigd.",
+    "wopi_convert_message_multi": "Bestanden in het .{{sourceExt}}-formaat worden geopend in alleen-lezenmodus. Kies een doelformaat om een bewerkbare kopie in dezelfde map te maken en het originele bestand ongewijzigd te laten.",
+    "wopi_convert_format_label": "Doelformaat",
+    "wopi_convert_confirm": "Converteren naar .{{targetExt}} & bewerken"
   },
   "dialogs": {
     "rename_folder": "Map hernoemen",

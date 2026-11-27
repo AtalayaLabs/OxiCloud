@@ -73,7 +73,57 @@ it('falls back to view mode when an edit request 422s on a PDF', async () => {
 	expect(af).toHaveBeenCalledTimes(2);
 });
 
-it('does not fall back for non-PDF edit failures', async () => {
+// Regression pin: OnlyOffice advertises only `view` + `convert` (no `edit`)
+// for legacy `.doc`; getEditorUrlWithFallback used to limit its 422 -> view
+// retry to `ext === 'pdf'`, surfacing an API 422 error on `.doc` open.
+it('falls back to view mode when an edit request 422s on a legacy .doc', async () => {
+	af.mockResolvedValueOnce(errRes(422, { message: 'not editable' })).mockResolvedValueOnce({
+		ok: true,
+		json: async () => ({
+			editor_url: 'https://wopi/word/view',
+			access_token: 't',
+			access_token_ttl: 1,
+			action: 'view',
+			convert_targets: ['docx']
+		})
+	});
+	const data = await getEditorUrlWithFallback('f1', 'MODELE TESTAMENTS.doc', 'edit');
+	expect(data.editor_url).toBe('https://wopi/word/view');
+	expect(af).toHaveBeenCalledTimes(2);
+	expect(af).toHaveBeenLastCalledWith(
+		expect.stringContaining('action=view'),
+		expect.objectContaining({ credentials: 'same-origin' })
+	);
+});
+
+it('rethrows 422 when neither edit nor view is supported', async () => {
+	af.mockResolvedValue(errRes(422, { message: 'No editor available for .zip files' }));
+	await expect(getEditorUrlWithFallback('f1', 'archive.zip', 'edit')).rejects.toMatchObject({
+		name: 'ApiError',
+		status: 422
+	});
+	expect(af).toHaveBeenCalledTimes(2);
+});
+
+it('passes action=convert and target_ext when requesting conversion', async () => {
+	af.mockResolvedValue({
+		ok: true,
+		json: async () => ({
+			editor_url: 'https://wopi/convert-and-edit/doc/docx',
+			access_token: 'ctok',
+			access_token_ttl: 9,
+			action: 'convert'
+		})
+	});
+	const data = await getEditorUrl('f1', 'convert', 'docx');
+	expect(data.action).toBe('convert');
+	expect(af).toHaveBeenCalledWith(
+		'/api/wopi/editor-url?file_id=f1&action=convert&target_ext=docx',
+		expect.objectContaining({ credentials: 'same-origin' })
+	);
+});
+
+it('does not fall back for non-422 edit failures', async () => {
 	af.mockResolvedValue(errRes(500, { message: 'server error' }));
 	await expect(getEditorUrlWithFallback('f1', 'sheet.xlsx', 'edit')).rejects.toMatchObject({
 		name: 'ApiError',

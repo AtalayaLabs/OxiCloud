@@ -714,7 +714,14 @@
     "new_text_file_prompt": "Filename (e.g. notes.md)",
     "new_text_file_hint": "Include the extension in the filename (e.g. .md, .txt, .c, .py, .rs).",
     "new_text_file_binary_ext_title": "Non-text extension",
-    "new_text_file_binary_ext_message": "\"{{name}}\" doesn't look like a text file. The editor will open it as text — that usually breaks binary formats. Continue anyway?"
+    "new_text_file_binary_ext_message": "\"{{name}}\" doesn't look like a text file. The editor will open it as text — that usually breaks binary formats. Continue anyway?",
+    "wopi_read_only": "Read-only",
+    "wopi_convert_and_edit": "Convert & edit",
+    "wopi_convert_title": "Convert file for editing",
+    "wopi_convert_message": "Files in .{{sourceExt}} format open in read-only mode. Converting creates a new .{{targetExt}} copy in the same folder for editing while keeping the original file untouched.",
+    "wopi_convert_message_multi": "Files in .{{sourceExt}} format open in read-only mode. Choose a target format to create an editable copy in the same folder while keeping the original file untouched.",
+    "wopi_convert_format_label": "Target format",
+    "wopi_convert_confirm": "Convert to .{{targetExt}} & edit"
   },
   "dialogs": {
     "rename_folder": "Rename folder",

@@ -615,7 +615,14 @@
     "new_text_file_binary_ext_title": "비텍스트 확장자",
     "new_text_file_binary_ext_message": "\"{{name}}\"은(는) 텍스트 파일이 아닌 것 같습니다. 편집기가 텍스트로 열며 — 바이너리 형식은 보통 이렇게 하면 망가집니다. 계속하시겠습니까?",
     "confirm_delete_permanent": "\"{{name}}\"을(를) 영구적으로 삭제하시겠습니까? 이 작업은 되돌릴 수 없습니다.",
-    "confirm_batch_delete_permanent": "{{n}}개 항목을 영구적으로 삭제하시겠습니까? 이 작업은 되돌릴 수 없습니다."
+    "confirm_batch_delete_permanent": "{{n}}개 항목을 영구적으로 삭제하시겠습니까? 이 작업은 되돌릴 수 없습니다.",
+    "wopi_read_only": "읽기 전용",
+    "wopi_convert_and_edit": "변환 및 편집",
+    "wopi_convert_title": "편집을 위해 파일 변환",
+    "wopi_convert_message": ".{{sourceExt}} 형식의 파일은 읽기 전용 모드로 열립니다. 변환하면 원본 파일은 그대로 둔 채 같은 폴더에 편집할 수 있는 새 .{{targetExt}} 사본이 생성됩니다.",
+    "wopi_convert_message_multi": ".{{sourceExt}} 형식의 파일은 읽기 전용 모드로 열립니다. 원본 파일은 그대로 두고 같은 폴더에 편집 가능한 사본을 만들 대상 형식을 선택하세요.",
+    "wopi_convert_format_label": "대상 형식",
+    "wopi_convert_confirm": ".{{targetExt}}로 변환 및 편집"
   },
   "dialogs": {
     "rename_folder": "폴더 이름 변경",
