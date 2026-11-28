@@ -84,6 +84,20 @@ pub const ANONYMOUS_ALLOWLIST: &[&str] = &[
 /// `get(get_thumbnail).put(upload_thumbnail)` already in the tree — does not
 /// silently inherit anonymous access.
 pub fn anonymous_may_reach(matched_path: Option<&str>, method: &Method) -> bool {
+    anonymous_may_reach_with_base_path(matched_path, method, "")
+}
+
+/// Apply the public-share route allowlist after removing the configured
+/// deployment prefix from Axum's nested `MatchedPath`.
+///
+/// Axum includes a router's mount point in the matched route pattern. Only an
+/// exact path-segment prefix is removed; a lookalike such as `/oxicloudish`
+/// cannot be treated as a deployment at `/oxicloud`.
+fn anonymous_may_reach_with_base_path(
+    matched_path: Option<&str>,
+    method: &Method,
+    base_path: &str,
+) -> bool {
     if method != Method::GET {
         return false;
     }
@@ -91,6 +105,18 @@ pub fn anonymous_may_reach(matched_path: Option<&str>, method: &Method) -> bool 
     // fallback. Either way we cannot tell what was matched, so we refuse.
     let Some(path) = matched_path else {
         return false;
+    };
+    let path = if base_path.is_empty() {
+        path
+    } else {
+        let Some(path) = path.strip_prefix(base_path) else {
+            return false;
+        };
+        // A base path is a complete router segment, not a raw string prefix.
+        if !path.starts_with('/') {
+            return false;
+        }
+        path
     };
     ANONYMOUS_ALLOWLIST.contains(&path)
 }
@@ -113,7 +139,11 @@ pub async fn anonymous_allowlist_layer(req: Request, next: Next) -> Response {
         .get::<MatchedPath>()
         .map(|m| m.as_str().to_owned());
 
-    if anonymous_may_reach(matched.as_deref(), req.method()) {
+    if anonymous_may_reach_with_base_path(
+        matched.as_deref(),
+        req.method(),
+        crate::common::config::server_base_path(),
+    ) {
         return next.run(req).await;
     }
 
@@ -216,5 +246,36 @@ mod tests {
     #[test]
     fn a_missing_matched_path_is_refused() {
         assert!(!anonymous_may_reach(None, &Method::GET));
+    }
+
+    /// Nested Axum routers include their mount point in `MatchedPath`; strip
+    /// only the configured path segment so public shares work behind a prefix.
+    #[test]
+    fn allowlisted_reads_match_with_deployment_base_path() {
+        for base_path in ["/oxi", "/cloud/oxi"] {
+            for path in ANONYMOUS_ALLOWLIST {
+                let prefixed = format!("{base_path}{path}");
+                assert!(
+                    anonymous_may_reach_with_base_path(Some(&prefixed), &Method::GET, base_path,),
+                    "{prefixed} is an allowlisted route beneath {base_path}",
+                );
+            }
+        }
+    }
+
+    /// The prefix must be a whole path segment and must be present when the
+    /// server is configured under a base path; prefix lookalikes stay denied.
+    #[test]
+    fn deployment_base_path_matching_fails_closed() {
+        for path in [
+            "/api/folders/{id}/resources",
+            "/oxicloud/api/folders/{id}/resources",
+            "/oxi/api/users/{id}",
+        ] {
+            assert!(
+                !anonymous_may_reach_with_base_path(Some(path), &Method::GET, "/oxi"),
+                "{path} must not match an allowlisted route under /oxi",
+            );
+        }
     }
 }
