@@ -299,7 +299,7 @@ impl Access {
     #[must_use]
     pub const fn from_method(method: &str) -> Self {
         match method.as_bytes() {
-            b"GET" | b"HEAD" | b"OPTIONS" | b"PROPFIND" | b"REPORT" => Self::ReadOnly,
+            b"GET" | b"HEAD" | b"OPTIONS" | b"PROPFIND" | b"REPORT" | b"SEARCH" => Self::ReadOnly,
             _ => Self::ReadWrite,
         }
     }

@@ -581,6 +581,26 @@ mod tests {
         assert_eq!(Access::from_method("WEIRD"), Access::ReadWrite);
         assert_eq!(Access::from_method("PROPFIND"), Access::ReadOnly);
         assert_eq!(Access::from_method("REPORT"), Access::ReadOnly);
+
+        // SEARCH shares REPORT's handler — `nextcloud/webdav_handler`
+        // routes `"REPORT" | "SEARCH"` to the same one — and is a SAFE
+        // verb by RFC 5323. It classified as ReadWrite until this pin,
+        // so a `files:ro` credential could run a REPORT and was refused
+        // on a SEARCH that reached identical code. The default failed
+        // SAFE, which is why it was a false refusal rather than a hole,
+        // and also why nothing surfaced it: no common credential is
+        // `files:ro` on the DAV surface, because an app password holds
+        // `files:rw`. A read-only device token would have found it.
+        assert_eq!(Access::from_method("SEARCH"), Access::ReadOnly);
+
+        // The standard safe set is now complete for what this server
+        // accepts: GET/HEAD/OPTIONS (RFC 9110), PROPFIND (RFC 4918),
+        // REPORT (RFC 3253), SEARCH (RFC 5323). TRACE is deliberately
+        // absent — it appears only as an OpenAPI spec-walker key, never
+        // as a route, and an unrouted method should be refused anyway.
+        // HTTP QUERY (httpbis draft) joins the list when something uses
+        // it; until then the `_` arm covers it at the safe end.
+        assert_eq!(Access::from_method("TRACE"), Access::ReadWrite);
     }
 
     /// `scopeless()` is a DECLARED state, not the absence of one — which

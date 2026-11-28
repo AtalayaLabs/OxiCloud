@@ -147,6 +147,12 @@ fn method_static(method: &str) -> &'static str {
         "LOCK" => "LOCK",
         "UNLOCK" => "UNLOCK",
         "REPORT" => "REPORT",
+        // Beside REPORT because they share a handler
+        // (`nextcloud/webdav_handler` routes `"REPORT" | "SEARCH"` to the
+        // same one) and both are SAFE verbs. Without this arm SEARCH fell
+        // through to `leak()`, taking the interner's locked path on every
+        // first sighting for no reason.
+        "SEARCH" => "SEARCH",
         "MKCALENDAR" => "MKCALENDAR",
         // Anything else falls back to the interner. It MUST still produce
         // an `Op`: `op_from_parts` returning `None` makes the gate pass
@@ -408,6 +414,12 @@ mod tests {
             // LOCK mutates lock state, so it is a WRITE — the
             // classification most easily got wrong by reading the verb.
             ("/webdav/{*path}", "LOCK", Scope::Files, Access::ReadWrite),
+            // SEARCH end-to-end through the GATE, not just the
+            // classifier: it reaches the same handler as REPORT
+            // (`"REPORT" | "SEARCH"`), so resolving it to a WRITE meant a
+            // `files:ro` credential was refused on one and allowed on the
+            // other with identical code behind both.
+            ("/webdav/{*path}", "SEARCH", Scope::Files, Access::ReadOnly),
             // An unlisted or future method is a write: fail-closed, so it
             // demands the stronger scope rather than slipping through on
             // a read-only credential.
