@@ -1,6 +1,6 @@
 -- Repair credential rows whose scopes were the bare token `all`.
 --
--- `20261126000000_credential_scopes_to_areas.sql` translated the three
+-- `20261127080000_credential_scopes_to_areas.sql` translated the three
 -- documented legacy values — `webdav`, `caldav`, `carddav` — and appended
 -- `sharing:ro`. It was written against the DEFAULT the code shipped, not
 -- against the values a real database holds, and a reference instance turned
