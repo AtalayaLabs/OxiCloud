@@ -783,8 +783,13 @@ jobs:
     # Also runs on pushes to main that touch the backend, ONLY to warm the
     # cache below: PRs can restore caches saved on main but not each
     # other's, and this job used to run on PRs alone — so every new PR
-    # started from a cold dependency build. On main it skips the SPA and
-    # the artifact upload, and just builds and saves the cache.
+    # started from a cold dependency build. On main it skips the artifact
+    # upload, and just builds and saves the cache.
+    #
+    # No SPA build here: the artifact is the bare binary (no static-dist/),
+    # and `--features plugins` does not embed assets. Every consumer
+    # brings its own frontend (front-test builds an instrumented one) or
+    # runs without one (api-test, see tests/api/web_static_cache_headers.hurl).
     needs: changes
     if: |
       github.event_name == 'pull_request' ||
@@ -821,18 +826,6 @@ jobs:
           # another forced invalidation.
           prefix-key: "v1-ubuntu-22.04"
           save-if: ${{ github.ref == 'refs/heads/main' }}
-      # The SPA isn't needed for the cache-warming run on main.
-      - name: Setup Node
-        if: github.event_name == 'pull_request'
-        uses: actions/setup-node@v4
-        with:
-          node-version: 26.3.0
-          cache: npm
-          cache-dependency-path: frontend/package-lock.json
-      - name: Build SPA (Vite -> static-dist/)
-        if: github.event_name == 'pull_request'
-        working-directory: frontend
-        run: npm ci && npm run build
       # --features plugins so the e2e Playwright job (which sets
       # OXICLOUD_ENABLE_PLUGINS) can exercise the admin Plugins tab. The api/webdav
       # and unit jobs reuse this binary but leave plugins disabled at runtime.
@@ -1163,8 +1156,13 @@ jobs:
 
   front-test:
     name: Frontend end-to-end tests (via Playwright)
-    # ensure that api tests are ok before
-    needs: api-test
+    # Depends on `build` alone, NOT on `api-test`: it consumes nothing but
+    # the `oxicloud-release` artifact. Chaining it behind api-test made
+    # Build -> Hurl -> Playwright the critical path (~15 + ~18 + ~20 min);
+    # running the two suites side by side takes ~20 min off every PR's
+    # wall-clock. The price is that a PR whose API tests fail still pays
+    # for an e2e run.
+    needs: build
     if: github.event_name == 'pull_request'
     timeout-minutes: 60
     # Pinned to 22.04 (Jammy) for two reasons:
