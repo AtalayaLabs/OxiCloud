@@ -639,6 +639,7 @@ impl CalDavAdapter {
                 ("xmlns:D", "DAV:"),
                 ("xmlns:C", "urn:ietf:params:xml:ns:caldav"),
                 ("xmlns:CS", "http://calendarserver.org/ns/"),
+                ("xmlns:IC", "http://apple.com/ns/ical/"),
             ]),
         ))?;
 
@@ -676,6 +677,7 @@ impl CalDavAdapter {
                 ("xmlns:D", "DAV:"),
                 ("xmlns:C", "urn:ietf:params:xml:ns:caldav"),
                 ("xmlns:CS", "http://calendarserver.org/ns/"),
+                ("xmlns:IC", "http://apple.com/ns/ical/"),
             ]),
         ))?;
 
@@ -708,6 +710,7 @@ impl CalDavAdapter {
                 ("xmlns:D", "DAV:"),
                 ("xmlns:C", "urn:ietf:params:xml:ns:caldav"),
                 ("xmlns:CS", "http://calendarserver.org/ns/"),
+                ("xmlns:IC", "http://apple.com/ns/ical/"),
             ]),
         ))?;
 
@@ -1072,11 +1075,15 @@ impl CalDavAdapter {
         // Calendar timezone (empty for UTC)
         xml_writer.write_event(Event::Empty(BytesStart::new("C:calendar-timezone")))?;
 
-        // Calendar color
+        // Calendar color — Apple iCal namespace is what clients
+        // (DAVx5, Apple Calendar, Thunderbird) request and PROPPATCH;
+        // the CalendarServer variant is kept for compatibility.
         if let Some(color) = &calendar.color {
-            xml_writer.write_event(Event::Start(BytesStart::new("CS:calendar-color")))?;
-            xml_writer.write_event(Event::Text(BytesText::new(color)))?;
-            xml_writer.write_event(Event::End(BytesEnd::new("CS:calendar-color")))?;
+            for tag in ["IC:calendar-color", "CS:calendar-color"] {
+                xml_writer.write_event(Event::Start(BytesStart::new(tag)))?;
+                xml_writer.write_event(Event::Text(BytesText::new(color)))?;
+                xml_writer.write_event(Event::End(BytesEnd::new(tag)))?;
+            }
         }
 
         // Support calendar-access (RFC4791)
@@ -1140,6 +1147,7 @@ impl CalDavAdapter {
             "C:supported-calendar-component-set",
         )))?;
         xml_writer.write_event(Event::Empty(BytesStart::new("C:calendar-timezone")))?;
+        xml_writer.write_event(Event::Empty(BytesStart::new("IC:calendar-color")))?;
         xml_writer.write_event(Event::Empty(BytesStart::new("CS:calendar-color")))?;
         xml_writer.write_event(Event::Empty(BytesStart::new("C:calendar-access")))?;
         xml_writer.write_event(Event::Empty(BytesStart::new(
@@ -1216,16 +1224,26 @@ impl CalDavAdapter {
                     }
                 }
 
-                // CalendarServer namespace properties
-                ("http://calendarserver.org/ns/", "calendar-color") => {
-                    if let Some(color) = &calendar.color {
-                        xml_writer
-                            .write_event(Event::Start(BytesStart::new("CS:calendar-color")))?;
-                        xml_writer.write_event(Event::Text(BytesText::new(color)))?;
-                        xml_writer.write_event(Event::End(BytesEnd::new("CS:calendar-color")))?;
+                // calendar-color: Apple iCal namespace (what clients such
+                // as DAVx5 / Apple Calendar request and PROPPATCH) and the
+                // CalendarServer variant. Answering only the latter left
+                // every client with an empty color although PROPPATCH had
+                // stored it.
+                (
+                    ns @ ("http://apple.com/ns/ical/" | "http://calendarserver.org/ns/"),
+                    "calendar-color",
+                ) => {
+                    let tag = if ns == "http://apple.com/ns/ical/" {
+                        "IC:calendar-color"
                     } else {
-                        xml_writer
-                            .write_event(Event::Empty(BytesStart::new("CS:calendar-color")))?;
+                        "CS:calendar-color"
+                    };
+                    if let Some(color) = &calendar.color {
+                        xml_writer.write_event(Event::Start(BytesStart::new(tag)))?;
+                        xml_writer.write_event(Event::Text(BytesText::new(color)))?;
+                        xml_writer.write_event(Event::End(BytesEnd::new(tag)))?;
+                    } else {
+                        xml_writer.write_event(Event::Empty(BytesStart::new(tag)))?;
                     }
                 }
 
@@ -1268,6 +1286,7 @@ impl CalDavAdapter {
                 ("xmlns:D", "DAV:"),
                 ("xmlns:C", "urn:ietf:params:xml:ns:caldav"),
                 ("xmlns:CS", "http://calendarserver.org/ns/"),
+                ("xmlns:IC", "http://apple.com/ns/ical/"),
             ]),
         ))?;
 
@@ -1400,6 +1419,7 @@ impl CalDavAdapter {
                 ("xmlns:D", "DAV:"),
                 ("xmlns:C", "urn:ietf:params:xml:ns:caldav"),
                 ("xmlns:CS", "http://calendarserver.org/ns/"),
+                ("xmlns:IC", "http://apple.com/ns/ical/"),
             ]),
         ))?;
         Ok(())
