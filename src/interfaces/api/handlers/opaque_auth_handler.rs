@@ -456,7 +456,6 @@ pub struct OpaqueLookupResponse {
         (status = 503, description = "OPAQUE service not configured", body = crate::interfaces::errors::ApiErrorBody),
     ),
     // Public — step 0 of the OPAQUE login handshake, before any credential.
-    security(),
     tag = "auth"
 )]
 pub async fn login_lookup(
@@ -577,7 +576,6 @@ pub struct OpaqueLoginKe3Dto {
     ),
     // Public — KE1 of the OPAQUE handshake; the session it leads to does
     // not exist yet.
-    security(),
     tag = "auth"
 )]
 pub async fn login_ke1(
@@ -687,7 +685,6 @@ pub async fn login_ke1(
     ),
     // Public — KE3 is what issues the session; requiring one would be
     // circular.
-    security(),
     tag = "auth"
 )]
 pub async fn login_ke3(
@@ -925,7 +922,6 @@ pub struct OpaqueParamsResponse {
     ),
     // Public — the client needs these parameters to build its very first
     // handshake message.
-    security(),
     tag = "auth"
 )]
 pub async fn opaque_params(State(state): State<Arc<AppState>>) -> impl IntoResponse {

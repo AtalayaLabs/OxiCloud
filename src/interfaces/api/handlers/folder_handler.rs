@@ -477,7 +477,6 @@ pub async fn create_folder(
         (status = 400, description = "Invalid relative path or path limit exceeded", body = crate::interfaces::errors::ApiErrorBody),
         (status = 404, description = "Folder not found or caller lacks Create permission", body = crate::interfaces::errors::ApiErrorBody),
     ),
-    security(("bearerAuth" = [])),
     tag = "folders"
 )]
 pub async fn upload_preflight(

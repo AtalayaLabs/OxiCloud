@@ -2113,7 +2113,6 @@ pub async fn upload_file_with_thumbnails(
         (status = 412, description = "Concurrent modification: expected_hash / If-Match no longer matches", body = crate::interfaces::errors::ApiErrorBody),
         (status = 507, description = "Storage quota exceeded", body = crate::interfaces::errors::ApiErrorBody),
     ),
-    security(("bearerAuth" = [])),
     tag = "files"
 )]
 pub async fn replace_file_content(

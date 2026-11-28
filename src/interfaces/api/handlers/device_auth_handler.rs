@@ -70,7 +70,6 @@ pub fn device_auth_protected_routes() -> GatedRouter<Arc<AppState>> {
     // instead of leaving it unspecified: the `security-defined` rule in
     // `checks/openapi/redocly.yaml` requires every operation to state one
     // way or the other, so a new endpoint can't silently omit auth.
-    security(),
     tag = "device-auth"
 )]
 pub async fn device_authorize(
@@ -103,7 +102,6 @@ pub async fn device_authorize(
     ),
     // Public by design — RFC 8628 step 2, the poll loop. Authenticating
     // this would defeat the flow: the token it returns IS the credential.
-    security(),
     tag = "device-auth"
 )]
 pub async fn device_token(
