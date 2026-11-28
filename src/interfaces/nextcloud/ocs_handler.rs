@@ -390,7 +390,12 @@ pub async fn handle_sharees_search(
     // already filtered by the service, preserving the old post-limit
     // filtering semantics.
     let usernames = auth_service
-        .search_sharee_usernames(&search, 26)
+        .search_sharee_usernames(
+            user.id,
+            &search,
+            26,
+            state.core.config.features.expose_system_users,
+        )
         .await
         .unwrap_or_default();
 
