@@ -71,9 +71,16 @@ jsonpath "$.password" matches "^oxicloud-[A-Za-z0-9]{20,}$"
 # `username` is what NC Basic Auth expects for this account.
 jsonpath "$.username" == "{{admin_username}}"
 # `scopes` falls back to the handler's default when the request
-# omits the field — pins the three-scope default so a backend
+# omits the field — pins the three-area default so a backend
 # change to it surfaces here, not downstream.
-jsonpath "$.scopes" == "webdav,caldav,carddav"
+#
+# This assertion used to read `webdav,caldav,carddav`, and updating
+# it is the whole point of having it: the AREA vocabulary replaced
+# the protocol one, and a credential now names WHAT it reaches
+# rather than which protocol it speaks. The SPA never sends this
+# field (it relies on the default), so the rename reached clients
+# only through this value.
+jsonpath "$.scopes" == "oxicloud:files:rw,oxicloud:calendar:rw,oxicloud:contacts:rw,oxicloud:sharing:ro"
 # Request omitted `expires_in_days` → server stores NULL → wire
 # emits the field as JSON null (no `skip_serializing_if` on the
 # DTO). `null` is a legitimate "never expires" marker, so pin the
@@ -96,13 +103,13 @@ jsonpath "$.instructions.curl_example" exists
 POST {{base_url}}/api/auth/app-passwords
 Authorization: Bearer {{admin_token}}
 Content-Type: application/json
-{ "label": "app-passwords hurl #2", "scopes": "webdav", "expires_in_days": 7 }
+{ "label": "app-passwords hurl #2", "scopes": "oxicloud:files:rw", "expires_in_days": 7 }
 
 HTTP 200
 [Captures]
 ap2_id: jsonpath "$.id"
 [Asserts]
-jsonpath "$.scopes" == "webdav"
+jsonpath "$.scopes" == "oxicloud:files:rw"
 # Explicit `expires_in_days` → non-null wire field, ISO-8601 string.
 jsonpath "$.expires_at" exists
 jsonpath "$.expires_at" matches "^[0-9]{4}-[0-9]{2}-[0-9]{2}T"

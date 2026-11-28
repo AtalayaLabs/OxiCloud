@@ -1,7 +1,6 @@
 use crate::domain::entities::user::{FederationKind, User, UserRole};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use smol_str::SmolStr;
 use std::sync::Arc;
 use utoipa::ToSchema;
 use uuid::Uuid;
@@ -59,6 +58,19 @@ impl UserRoleDto {
             UserRoleDto::Owner => "owner",
             UserRoleDto::Admin => "admin",
             UserRoleDto::User => "user",
+        }
+    }
+}
+
+impl From<UserRoleDto> for UserRole {
+    /// The DTO carries exactly the three roles a row may hold, so this is
+    /// total — no `Anonymous` case to consider, which is the same reason
+    /// `UserRole::from_stored` refuses `"anonymous"`.
+    fn from(d: UserRoleDto) -> Self {
+        match d {
+            UserRoleDto::Owner => UserRole::Owner,
+            UserRoleDto::Admin => UserRole::Admin,
+            UserRoleDto::User => UserRole::User,
         }
     }
 }
@@ -614,32 +626,37 @@ pub struct UpgradeToInternalDto {
 ///
 /// Built once per authenticated request in the auth middlewares.
 /// `username`/`email` are `Arc<str>` (refcount-bump clones from the cached
-/// `TokenClaims` / Basic-auth cache — JSON shape unchanged) and `role` is an
-/// inline `SmolStr` ("admin"/"user" fit the 23-byte inline buffer, so the
-/// per-request live-role render allocates nothing).
+/// `TokenClaims` / Basic-auth cache — JSON shape unchanged) and `caller` is
+/// a `Copy` enum one byte wide, so the per-request build allocates nothing.
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
-pub struct CurrentUser {
+pub struct CurrentCaller {
     pub id: Uuid,
     #[schema(value_type = String)]
     pub username: Arc<str>,
     #[schema(value_type = String)]
     pub email: Arc<str>,
-    #[schema(value_type = String)]
-    pub role: SmolStr,
-    /// DPoP session-binding thumbprint threaded from the JWT's
-    /// RFC 9449 §5 `cnf.jkt` claim. `None` for unbound sessions
-    /// (app passwords, NC clients, pre-DPoP). The DPoP middleware
-    /// reads it to enforce "bound → proof required" from an
-    /// already-validated token — no session-row lookup on the
-    /// hot path (see `docs/plan/dpop.md` Gate 9).
+    /// WHO this caller is — one value, replacing the `role` +
+    /// `is_external` pair. The pair could express three states that cannot
+    /// exist, one of which the schema already forbids; see [`CallerKind`].
+    ///
+    /// There is no "public" value because a caller with no credential has
+    /// no `CurrentCaller` at all, so the absence of this extension IS
+    /// "public".
+    ///
+    /// `#[serde(skip)]` like the fields below. Safe to drop from the wire
+    /// shape: `CurrentCaller` is in no OpenAPI path and is serialized
+    /// nowhere — its `Serialize` / `ToSchema` derives are vestigial.
+    #[serde(skip)]
+    pub kind: crate::domain::entities::user::CallerKind,
+
     #[serde(skip)]
     pub dpop_jkt: Option<String>,
 
     /// What the credential said about itself: the JWT `sid` and `iat`.
     ///
     /// Here rather than only in request extensions because a `Gate` is
-    /// handed `&CurrentUser` and nothing else (`docs/plan/scope-gates.md`
-    /// — `require(gate, caller: &CurrentUser)`), so `Gate::Elevated`
+    /// handed `&CurrentCaller` and nothing else (`docs/plan/scope-gates.md`
+    /// — `require(gate, caller: &CurrentCaller)`), so `Gate::Elevated`
     /// cannot reach extensions to find the session it must check
     /// `auth.sessions.elevated_at` on. Carrying the pair on the caller is
     /// the single channel both a gate and a handler can read.
@@ -659,9 +676,29 @@ pub struct CurrentUser {
     /// must not change the wire shape.
     #[serde(skip)]
     pub token: crate::domain::entities::presented_token::PresentedToken,
+    /// The credential's frozen scope set — what this caller may reach on
+    /// the SCOPE axis, independent of who they are.
+    ///
+    /// Four sources, and they do not share a mechanism, which is why this
+    /// field exists rather than each check deriving it:
+    ///
+    /// * a Bearer or cookie JWT → the `scope` claim, or EVERY scope when
+    ///   the claim is absent (§ Rollout: tokens predating the claim must
+    ///   keep working, and a session's ceiling is everything anyway);
+    /// * Basic auth with an app password → the `auth.app_passwords.scopes`
+    ///   row, which has no claim to carry;
+    /// * a public-share ring → [`ScopeSet::ring`], exactly `files:ro`;
+    /// * a device-flow token → the `scope` claim, narrowed at mint.
+    ///
+    /// No `Default`, deliberately: an empty set fails closed, so a
+    /// construction site that forgot to think about scopes would refuse
+    /// everything rather than compile. Making it a required field turns
+    /// that into a compile error at the site instead.
+    #[schema(value_type = String)]
+    pub scopes: crate::application::ports::scope_ports::ScopeSet,
 }
 
-impl CurrentUser {
+impl CurrentCaller {
     /// Typed view of the `role` string.
     ///
     /// An unrecognised value resolves to `Anonymous` — the *least*
@@ -671,8 +708,7 @@ impl CurrentUser {
     /// real user. Here it becomes the principal that can reach almost
     /// nothing.
     pub fn role_enum(&self) -> crate::domain::entities::user::UserRole {
-        crate::domain::entities::user::UserRole::from_session(&self.role)
-            .unwrap_or(crate::domain::entities::user::UserRole::Anonymous)
+        self.kind.role()
     }
 
     /// True for a principal with no `auth.users` row behind it — today,

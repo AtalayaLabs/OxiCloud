@@ -45,7 +45,6 @@ use crate::interfaces::middleware::server_status::{HeaderPayload, build_header_p
         (status = 200, description = "Server runtime status", body = HeaderPayload),
         (status = 401, description = "Authentication required", body = crate::interfaces::errors::ApiErrorBody),
     ),
-    security(("bearerAuth" = [])),
 )]
 pub async fn get_server_status(State(state): State<Arc<AppState>>) -> Json<HeaderPayload> {
     Json(build_header_payload(&state))

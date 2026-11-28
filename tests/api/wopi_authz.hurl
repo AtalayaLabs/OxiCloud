@@ -458,6 +458,83 @@ HTTP 401
 # username, but the grants that made this test meaningful are
 # gone.
 # ─────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────
+# SCOPE axis — a `files:ro` credential gets a READ-ONLY editor,
+#              not a 403.
+#
+# `GET /api/wopi/editor-url` used to declare `files:rw` explicitly,
+# against its own verb, because the token it mints is usable for
+# `POST /wopi/files/{id}/contents` — so a read-only credential
+# would have walked away with write capability, and refusing the
+# whole mint was the only defence available.
+#
+# `authorize_wopi_access` now intersects the token's `can_write`
+# bit with the caller's `files:rw`, so the mint can be `files:ro`
+# again: a read-only credential receives a token that CANNOT
+# write, and keeps the legitimate ability to open a document
+# read-only. Same shape as the collab socket, where a `files:ro`
+# caller subscribes to a document and is refused only on the
+# update frame.
+#
+# Three legs, because the first alone proves nothing: the mint must
+# SUCCEED (not 403), the token must report `UserCanWrite=false`,
+# and a write with it must be REFUSED. A regression that dropped
+# the intersection would pass leg 1 and fail legs 2 and 3; one that
+# re-tightened the declaration would fail leg 1.
+# ─────────────────────────────────────────────────────────────
+POST {{base_url}}/api/auth/app-passwords
+Authorization: Bearer {{alice_token}}
+Content-Type: application/json
+{ "label": "wopi_authz files read-only", "scopes": "oxicloud:files:ro" }
+
+HTTP 200
+[Captures]
+ro_ap_id: jsonpath "$.id"
+ro_ap_pw: jsonpath "$.password"
+ro_ap_user: jsonpath "$.username"
+[Asserts]
+jsonpath "$.scopes" == "oxicloud:files:ro"
+
+
+# Leg 1 — the mint is REACHED. `files:ro` satisfies the relaxed
+# declaration; a 403 here means the gate was re-tightened.
+GET {{base_url}}/api/wopi/editor-url?file_id={{file_id}}&action=edit
+[BasicAuth]
+{{ro_ap_user}}: {{ro_ap_pw}}
+
+HTTP 200
+[Captures]
+ro_wopi_token: jsonpath "$.access_token"
+
+
+# Leg 2 — and the token it handed back cannot write, even though
+# `action=edit` was requested and Alice OWNS the file (so the grant
+# axis says yes). The only thing saying no is the credential's scope.
+GET {{base_url}}/wopi/files/{{file_id}}?access_token={{ro_wopi_token}}
+
+HTTP 200
+[Asserts]
+jsonpath "$.UserCanWrite" == false
+jsonpath "$.SupportsUpdate" == false
+
+
+# Leg 3 — writing with it is refused, same as the view-token leg
+# above: the token's can_write bit says no before any authz runs.
+POST {{base_url}}/wopi/files/{{file_id}}/contents?access_token={{ro_wopi_token}}
+Content-Type: application/octet-stream
+```
+read-only credential trying to write
+```
+
+HTTP 401
+
+
+DELETE {{base_url}}/api/auth/app-passwords/{{ro_ap_id}}
+Authorization: Bearer {{alice_token}}
+
+HTTP 200
+
+
 DELETE {{base_url}}/api/files/{{file_id}}
 Authorization: Bearer {{alice_token}}
 

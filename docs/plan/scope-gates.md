@@ -1,7 +1,7 @@
 # Scope gates — one home for principal-kind checks
 
-Branch: `feat/scope-and-session-elevation`. **Trigger: PR #853**
-(calendars REST surface) for the gate half — see § When. The credential-
+Branch: `feat/scopes`. **Trigger: PR #853**
+(calendars REST surface) for the Gate-axis half — see § When. The credential-
 scope half (§ Credential scopes) has its own trigger: the device flow
 already collects and displays scopes it does not enforce.
 
@@ -16,68 +16,311 @@ document — see the two § Required sections.
 
 ## Status
 
-**Nothing here is implemented.** Keep this current as that changes.
+**PR 1 is DONE and VERIFIED.** All four folded gates are declarations, the
+engine enforces them, the spec is a projection of the same table, and one
+`GatedRouter` owns everything under `/api`. Green on `gate_matrix`, `auth`,
+`app_passwords`, `device_auth`, `external_users` and
+`admin_role_hierarchy` after the final restructure — which mattered,
+because that commit moved every `/api` mount and so every layer stack
+with it. Step-by-step state is § PR 1 — status; this table is the coarse
+view. Keep both current.
 
 | item | status |
 |---|---|
-| Gates fold — `Gate`, `ScopePolicy`, the three consumers | **not started** |
-| Credential scopes — `Scope`, `ScopeSet`, the 235-operation map | **not started** |
-| Authentication by default (`NotAnonymous` inverted) | **not started** |
-| `src/AGENTS.md` rule + `authorization-axes.md` | **not started** |
+| Policy engine — `Condition`, `Policy`, the compile step, the operation table, the dump, `evaluate` | **built** — PR 1 steps 2 → 4-iii |
+| `.policy([...])` at the route, per VERB | **built** — `policy_router.rs`; `.policy()` on a `MethodRouter` is a compile error, since it could only declare for the whole path |
+| The policy gate, ENFORCING | **live** on the three DAV nests, `/api/admin` and the whole protected `/api` subtree |
+| `require_internal_user_layer` | **DELETED** — and a third fail-open with it (`7a6f939ae`) |
+| All four folded gates | **DELETED** — `require_internal_user_layer`, `require_admin`, `anonymous_allowlist_layer` and `transfer_ownership`'s hand-rolled owner check. Each is now a declaration at its route |
+| `policy_declarations.rs` | holds **nothing with a route** — only the six DAV `(area, access)` operations, which have none |
+| A bare `Router` in the API tree | **does not compile** — `nest` and `.policy()` take only a `GatedRouter`, with no escape hatch |
+| `/api` declarations living at their routes | **done** — every declaration with a route is at its route, per verb where the verbs differ |
+| Credential scopes — `ScopeReq`, `ScopeSet`, the area map | **step 1 done** (`24d130c73`) — `ScopeReq` exists and defaults to unsatisfiable; nothing declares or refuses yet. PR 2. `Scope`/`ScopeSet` exist and are INERT: no credential carries a set, and an absent one grandfathers to FULL |
+| Authentication by default (`NotAnonymous` inverted) | **falls out, not built** — `Policy::default()` IS an authenticated user, so an undeclared operation is already closed to anonymous callers |
+| A password-change condition | **never** — it is a scope narrowing, not a condition; the layer is deleted by `authn-pipeline.md` part B after PR 2. § Fold in |
+| OpenAPI generation | **derived from the policy engine** — three per-axis markers plus the `security` array, and generation REPORTS any annotation that disagrees |
+| `authorization-axes.md` | **written and current** — describes the END state, so it names no layer being deleted |
+| `AGENTS.md` / `src/AGENTS.md` rules | **written** — grant-vs-scope, declare-at-the-route, the two per-method traps |
 
-What HAS landed on this branch is the companion document's work —
-`authn-pipeline.md` part A, which shares the branch and touches the same
-middleware. See its § Status. Two consequences worth knowing before
-starting here:
+The behavioural baseline is `tests/api/gate_matrix.hurl`, green before the
+first layer moved. It exists because the acceptance below — the compiled
+table identical before and after — compares a HAND-WRITTEN table against
+itself, so it proves the fold matches the table and never that the table
+matches the layers.
+
+The companion document's work — `authn-pipeline.md` part A — is MERGED
+(PR #951). It touched the same middleware this plan folds, so four of its
+consequences landed before the first line here:
 
 - **The two fail-open arms are already resolved**, as 503 rather than as
   a denial (§ The two fail-open arms). The gates fold inherits that
-  answer rather than deciding it.
+  answer rather than deciding it. A THIRD fail-open was found during the
+  fold — `require_internal_user_layer` passed a request through when no
+  `CurrentCaller` was present — and went away with the layer.
 - **`resolve_live_role` now takes a `PresentedToken`** and `UserFlags`
   carries `sessions_valid_from` and `revoked_session_ids`. The fold
   touches those call sites, so expect them to look different from the
   snippets here.
+- **`CurrentCaller` carries `token: PresentedToken`**, so `sid` is on the
+  caller. That retires the choice § `sid` is no longer deferrable framed,
+  and it is the prerequisite `Elevation` was waiting for.
+- **`require_no_password_change_pending_layer` cannot be deleted by this
+  plan** — the mechanism meant to replace it did NOT land. See the
+  fold-in table.
+
+## Glossary
+
+Eight words, one meaning each. The design arrived at these after several
+of them had been doing double duty, so they are used strictly below —
+and the retired ones are listed so a stale usage is recognisable rather
+than merely odd.
+
+| word | means | does NOT mean |
+|---|---|---|
+| **axis** | one of the three authorization questions — Gate / Scope / Grant (`docs/architecture/authorization-axes.md`) | a field of a `Policy` — those are *conditions* |
+| **`Condition`** (and "condition") | ONE requirement on ONE axis: `MinRole`, `MinPrincipal`, scope, elevation. An operation declares a SLICE of them; the compile step resolves each into a field of `Policy` | an axis — a `Policy` spans two axes, so its fields cannot be axes |
+| **`Policy`** | declared `Condition`s folded root→leaf. Total, one per operation | a declaration |
+| **`RequestPolicy`** | the trait evaluated PER REQUEST — axum, DAV dispatch, WS bus | anything at login |
+| **`AdmissionPolicy`** | the trait evaluated PER AUTHN PHASE — login, refresh | anything per request |
+| **`Admission`** | what `AdmissionPolicy` returns: `AdmittedCaller` + the minted `ScopeSet` | a check |
+| **authn phase** | login, refresh — where `AdmissionPolicy` runs | a router layer, or "session phase": an app password creates no session yet still runs phases 1 and 3 on every request |
+| **grant** | may this caller touch THIS resource — service layer, `authz.require` | a `Policy`, or a condition |
+| **integrity** | signature, DPoP proof, CSRF — is the REQUEST authentic | an axis or a condition (§ Not axes) |
+
+**Retired, and why:**
+
+- **"gate" as a TYPE name** — it named three different things: the Gate
+  axis, any caller-kind check, and `gate_layer`. No type carries it now
+  (`MinRole`, `MinPrincipal`, `RequestPolicy`). **"Gate axis"** and
+  **"Gate-axis condition"** remain correct, since Gate *is* one of the
+  three axes; a bare "a gate" meaning "a check" is tolerated in prose but
+  *condition* or *check* is preferred. This document's own title is
+  historical.
+- **"facet"** — introduced to separate a `Policy`'s fields from the three
+  axes; superseded by *condition*, which does not reuse the word.
+- **"`ScopePolicy`"** — one trait covering both moments, and named after
+  one of four conditions.
+- **bare "phase"** — always *authn phase*.
 
 ## Goal
 
 One definition of "may this KIND of caller reach this surface at all",
-callable from a router layer or a service, replacing five hand-wired
+callable from a router layer or a service, replacing the hand-wired
 middleware layers that each decide the same class of question with their
-own fail-open policy.
+own fail-open policy. Five exist; PR 1 folds THREE (§ Fold in) — of the
+other two, one is a scope narrowing and one is an integrity check.
+
+Two shapes: an operation declares a **slice of `Condition`s**, and the
+compile step folds those into a `Policy` — total, every axis resolved.
+§ Declare, compile, evaluate.
+
+A `Condition` is one requirement on one axis. Declaring is therefore
+order-free and additive, and the slice needs no entry point: `[a, b]` and
+`[b, a]` compile to the same `Policy`.
 
 ```rust
 // application/ports/scope_ports.rs
-/// Properties of the CALLER. Never client-requestable — § Three axes.
-pub enum Gate {
-    // ── from the USER row, re-read live per request ──
-    Internal,                // not is_external
-    Admin,                   // role.at_least(Admin); Owner satisfies it
-    Owner,                   // UserRole::Owner, NOT storage.grant_role
-    /// SUPERSEDED by `authn-pipeline.md`: forced-reset becomes a scope
-    /// narrowed to `{security}` at mint. Here for the fold-in table only.
-    PasswordChangeSettled,
-    // ── from HOW the caller authenticated ──
-    /// Applied by DEFAULT to every route; a static Basic-auth app
-    /// password is refused unless the mount declares the opt-in below.
-    NotAppPassword,
-    /// The explicit opt-in, and the only one of the pair at a callsite —
-    /// so `grep PermitAppPassword` prints the whole app-password attack
-    /// surface. § Credential-kind gating.
-    PermitAppPassword,
-    /// Also DEFAULT — § Authentication by default. The positive marker
-    /// is declared by the handful of genuinely public routes.
-    NotAnonymous,
-    AnonymousAllowed,
-    // ── from the SESSION / credential ──
-    DpopBound,
-    // Not v1: no elevation state in the schema yet. Designed in
-    // `session-elevation.md`, which adds `auth.sessions.elevated_at`.
-    // The `CurrentUser` half of its prerequisite is DONE — the caller
-    // carries `token: PresentedToken`, so this gate reads
-    // `caller.token.session_id`. Lands with no reshaping.
-    // Elevated,
+
+/// ONE requirement on ONE axis. An operation declares a slice of these.
+///
+/// Every variant TIGHTENS except `AnonymousAllowed`, which widens — and
+/// whose conflict with a role is a boot error (§ 2b). So a slice cannot
+/// express a silent contradiction; the only two it can express are both
+/// refused at startup.
+pub enum Condition {
+    Role(MinRole),
+    Principal(MinPrincipal),
+    Scope(Scope, Access),
+    // Elevated,                  // with auth.sessions.elevated_at
 }
 
+impl Condition {
+    pub const fn role(r: MinRole) -> Self;
+    /// No credential at all. The whole public surface, greppable:
+    /// § Authentication by default.
+    pub const fn public() -> Self;
+    /// A public-share session (the ring) suffices. Also admits a user —
+    /// `/api/files/{id}` serves both.
+    pub const fn visitor_allowed() -> Self;
+    pub const fn scope(s: Scope, a: Access) -> Self;
+    // pub const fn elevated() -> Self;
+}
+
+/// What the engine EVALUATES: the declared `Condition`s folded root→leaf.
+/// Total — the compile step resolves every axis, so no `Option` survives
+/// and the check is field reads.
+///
+/// Properties of the CALLER. Never client-requestable — § Three axes.
+pub struct Policy {
+    /// `None` = any authenticated principal. Folds by MAXIMUM; a
+    /// declaration that would widen is a boot error.
+    pub role: Option<MinRole>,
+    /// The least privileged principal admitted. NOT an `Option`: unlike
+    /// role, there is no "any" answer — every operation admits some
+    /// least principal, and the default is `User`, which is what makes
+    /// "no declaration ⇒ authentication required" fall out rather than
+    /// be enforced. § Authentication by default.
+    pub principal: MinPrincipal,
+    // pub elevation: Option<Elevation>,   // with auth.sessions.elevated_at
+    /// Resolved scope requirement. Scope is its own AXIS, not a Gate-axis
+    /// condition: client-requestable and frozen at mint, so it is checked
+    /// against the credential's `ScopeSet` rather than the user row.
+    ///
+    /// A TOTAL enum, not an `Option`, and the reason is the one that
+    /// makes `role`'s `Option` fine: `role: None` means "any
+    /// authenticated principal", which is a real requirement, whereas
+    /// `scope: None` would mean "no scope required" — fail-open, and the
+    /// exact bug § The feature is half-built exists to fix. So the
+    /// absence is unrepresentable: `Undefined` is the default and a BOOT
+    /// error, and "no scope required" is `None` written on purpose.
+    ///
+    /// PR 1 shipped this as `Option<(Scope, Access)>`, inert because
+    /// nothing declared one. PR 2 step 1 replaces the type; § PR 2 — a
+    /// new route must not be silently scopeless has the rest.
+    pub scope: ScopeReq,
+}
+
+/// From the USER row, re-read live per request. ORDERED: each variant
+/// implies the one before it, which is what makes the reduction a `max`.
+///
+/// `Admin ⇒ Internal` is provable from the `users_external_not_privileged`
+/// CHECK constraint rather than conventional, so dropping `Internal`
+/// beside `Admin` is sound. A test pins that dependency — removing the
+/// constraint would quietly make the reduction wrong.
+pub enum MinRole {
+    Internal,   // not is_external
+    Admin,      // role.at_least(Admin); Owner satisfies it
+    Owner,      // UserRole::Owner, NOT storage.grant_role
+}
+
+/// The LEAST privileged principal an operation admits. Three states, not
+/// two — "no credential at all" and "a share session" are different
+/// things today and were both called *anonymous*:
+///
+///   * `Public`  — no credential. Public by MOUNT today (no
+///     `auth_middleware`): `/api/auth/login`, `/api/setup`,
+///     `/api/s/{token}`.
+///   * `Visitor` — a public-share session exists, carrying a
+///     `visitor_id` that "matches no `auth.users` row"
+///     (`middleware/auth.rs`), password-challenged or not. Confined
+///     today by `anonymous_allowlist_layer`, whose route list IS this
+///     set: `/api/files/{id}`, `/api/folders/{id}/download`, …
+///   * `User`    — an authenticated user session. The DEFAULT.
+///
+/// ORDERED ascending in strictness, so the fold takes the MAX, like
+/// `MinRole` — and admitting a visitor also admits a user, which it must,
+/// since `/api/files/{id}` serves both.
+///
+/// The password challenge on a protected share is NOT a fourth state: it
+/// runs before the ring is minted, so by the time any operation sees the
+/// caller there is simply a ring. That makes it an `AdmissionPolicy`
+/// concern — no operation has an opinion about whether the share had a
+/// password.
+#[derive(Default)]
+pub enum MinPrincipal {
+    Public,
+    Visitor,
+    #[default]
+    User,
+}
+
+/// NOT a v1 axis — there is no elevation state in the schema yet.
+/// Designed in `session-elevation.md`, which adds
+/// `auth.sessions.elevated_at`. Its `CurrentCaller` prerequisite is DONE:
+/// the caller carries `token: PresentedToken`, so this reads
+/// `caller.token.session_id`.
+///
+/// DPoP binding is deliberately NOT here — § Not axes: integrity checks.
+// pub enum Elevation { Required }
+
+```
+
+### At the declaration site
+
+```rust
+// A SUBTREE: declared once; every child inherits, including later ones.
+admin_handler::admin_routes(app_state)
+    .policy([Condition::role(MinRole::Admin)])
+
+// ONE CHILD TIGHTENS: says nothing about role, so Admin is kept.
+.route("/sessions/{id}", delete(revoke_session)
+    .policy([Condition::elevated()]))          // → [role(Admin), elevated]
+
+// TWO CONDITIONS, order free.
+.route("/change-password", put(change_password)
+    .policy([Condition::elevated(),
+             Condition::scope(Scope::Security, Access::ReadWrite)]))
+```
+
+Fully worked across `/api/admin`, `/api/auth` and `/api/files` — the
+three principals, a scope floor tightened per method, and the visitor
+surface — in `docs/architecture/authorization-axes.md` § How the axes
+compose. Kept there rather than duplicated here: that page is where a
+reader debugging a refusal looks.
+
+**One `.policy()` per operation, and each axis at most once inside it.**
+Both duplicates are boot errors (§ 2b):
+
+- a second `.policy()` would be ambiguous, because repeated builder calls
+  in Rust conventionally OVERRIDE — a reader would take the second as
+  replacing the first;
+- the same axis twice in one slice —
+  `[Condition::role(Admin), Condition::role(Owner)]` — has no legitimate
+  meaning. Across a NEST CHAIN that same pair is ordinary inheritance and
+  folds to `Owner`; within one declaration it is someone writing two
+  things where they meant one.
+
+The distinction is the scope of the rule: **folding is for chains,
+not for the slice.**
+
+**`.policy()` has to RECORD, and that is the open implementation
+question.** A `Policy` is not a layer — it goes into the compiled table —
+but axum's `Router` is opaque, with nowhere to accumulate a
+`(path, method, [Condition])` triple. Two shapes, and PR 1 should try the
+first before settling:
+
+1. an extension trait on `MethodRouter` / `Router` that records into a
+   registry while returning the router, keeping the syntax above;
+2. failing that, an explicit builder we own —
+   `api.route("/auth/change-password", put(h), [Condition::scope(…)])`,
+   returning `(Router, PolicyTable)` from `build()`.
+
+The second always works and reads worse. Since the ergonomics of the
+declaration site is half of why this design is worth building, the
+difference is worth an afternoon's attempt rather than an assumption.
+
+Either way the registry must be constructible **without a running app**,
+because `generate-openapi` has no database — § The spec is rendered FROM
+the policy table.
+
+Adding an axis means one `Option` field, one constructor and one fold
+rule. It cannot change how the existing axes fold, and it cannot change
+any existing declaration — which is the property that makes this worth
+building rather than hand-wiring the next check too.
+
+**Four axes at request time: scope, role, principal, elevation.** The
+first three ship in PR 1; elevation is not optional, only blocked —
+`auth.sessions.elevated_at` does not exist yet, and three classes of
+operation need it (§ Declaring session elevation: non-safe
+`/api/admin/*`, `security` mutations, irreversible deletions). It lands
+as a fourth `Option` field with no reshaping.
+
+Two things that look like axes are not, and keeping them out is most of
+why the list is this short:
+
+- **credential kind is a MINT-time input, not a request-time axis.** The
+  login phase already narrows by credential type —
+  `effective = (requested ?? type_default) ∩ type_maximum`, § Defaults —
+  so an app password reaching `/api/auth/password` is refused because its
+  `ScopeSet` lacks `security`, not because something noticed it was an
+  app password. `Condition::scope(Scope::Security, …)` is the whole
+  mechanism; a credential-kind condition would be a second implementation of
+  a decision already made once.
+- **integrity checks** — JWT signature, DPoP proof, CSRF — § Not axes.
+
+No password-change condition either: that is a scope narrowing too — § Fold in.
+
+```rust
 /// What the CREDENTIAL was issued for. Client-requestable, frozen at
 /// mint. NOT named `Resource`, which the GRANT axis owns — and whose
 /// variants carry an id, so `Resource::Calendar(Uuid)` is *one*
@@ -91,7 +334,7 @@ pub enum Scope {
 }
 pub enum Access { ReadOnly, ReadWrite }
 
-/// Two bitmasks rather than a map: unlike a gate this is checked on hot
+/// Two bitmasks rather than a map: unlike the role condition this is
 /// paths with no DB round trip to hide behind (§ Lookup and checking
 /// cost). Eight scopes fit a `u8`, and `rw` implies `ro` by
 /// construction.
@@ -100,30 +343,163 @@ pub struct ScopeSet {
     writable: u8,   // ⊆ readable, maintained on insert
 }
 
-pub trait ScopePolicy {
+/// PER REQUEST — axum, the DAV dispatchers, the WS bus. The caller
+/// already exists; this consumes one.
+///
+/// ONE method. A single requirement is a `Policy` with one condition set,
+/// so a `require` / `require_all` pair would be an artefact of
+/// representing requirements as a list.
+pub trait RequestPolicy {
     /// Takes the CALLER CONTEXT, not a bare user id — § What a scope is
     /// bound to.
-    async fn require(&self, gate: Gate, caller: &CurrentUser) -> Result<(), AppError>;
-    /// Conjunction. Normalised first: subsumption collapses implied
-    /// gates, opt-ins cancel their defaults, a contradiction fails at
-    /// startup. § `require_all` normalises.
-    async fn require_all(&self, gates: &[Gate], caller: &CurrentUser)
+    async fn require(&self, policy: &Policy, caller: &CurrentCaller)
         -> Result<(), AppError>;
-    async fn require_scope(&self, need: Scope, access: Access, caller: &CurrentUser)
-        -> Result<(), AppError>;
+}
+
+/// PER AUTHN PHASE — login and refresh. There is no caller yet; this
+/// PRODUCES one.
+///
+/// Separate trait rather than a second method, so the phases cannot be
+/// confused by construction: this one takes a `&User` and no
+/// `CurrentCaller`, so it cannot be called per request; `RequestPolicy`
+/// needs a `CurrentCaller`, so it cannot be called at login. The handoff is
+/// one-directional — admission mints the credential the request side
+/// reads.
+pub trait AdmissionPolicy {
+    async fn admit(
+        &self,
+        user: &User,
+        kind: CredentialKind,
+        requested: Option<ScopeSet>,
+    ) -> Result<Admission, DomainError>;   // AdmittedCaller + minted ScopeSet
 }
 ```
 
-Three consumers, picked by what the gate protects:
+Note the asymmetry, which is the structural reason these are two traits:
+**only the request side is declarative.** Operations declare conditions,
+compiled to a per-operation `Policy`. Admission has no per-operation
+declaration — it is global config plus the credential's ceiling
+(§ Defaults). The absence is correct, not missing.
 
-- **`InternalCaller` capability token** — for a top-level create. The
-  only deny-by-default form: forgetting it does not compile. § Why 2.
-- **`gate_layer(state, Gate::Internal)`** — for a protocol subtree
-  (`/webdav`, `/caldav`, `/carddav`, `/api/admin/*`), where the denial
-  is the surface rather than one method.
-- **`InternalUser` / `AdminUser` extractors** — for a REST handler with
-  no service method of its own. Weakest (forgetting = open), so prefer
-  the token wherever a service stamps ownership.
+## Declare, compile, evaluate
+
+Three stages, because the two things wanted of this design pull in
+different directions: declaring a requirement must be easy, and deciding
+one must be cheap and total.
+
+### 1. Declare — a slice of `Condition`s
+
+An implementor says only what they constrain. One method per axis:
+
+```rust
+/admin              [Condition::role(MinRole::Admin)]
+/admin/sessions/*   [Condition::elevated()]            // inherits Admin
+/admin/fake-route   [Condition::role(MinRole::Owner)]  // tightens role only
+/api/auth/password  [Condition::scope(Scope::Security, RW)]
+```
+
+A declaration names only the axes it constrains. An axis it omits is
+**inherited**, which is what lets a child add elevation without
+re-asserting — and thereby overtightening — what a parent had widened.
+
+A new axis is a new `Condition` variant plus a constructor and a fold
+rule. It cannot change how existing axes fold, nor any existing
+declaration, which is what makes the engine extensible without a rewrite.
+
+### 2. Compile — fold root→leaf, once at startup
+
+Per axis, **tighten-only**:
+
+| axis | fold | widening attempt |
+|---|---|---|
+| role | `max` (`Owner > Admin > Internal`) | **boot error** |
+| app-password | `Denied` wins | needs an explicit `Override` |
+| principal | strictest wins (`User` > `Visitor` > `Public`) | a declaration that WIDENS is a boot error — which is what `anonymous_allowlist_layer` already is |
+| scope | union of what is required | — |
+
+The result is a `Policy`: **total**, every axis resolved, no `Option`
+left. One per operation.
+
+### 2b. Compile-time validation — the reason the split pays
+
+A fold has to walk every declaration anyway, so it can refuse to produce
+a `Policy` that no caller could satisfy or that contradicts itself. These
+are **boot errors**: "won't start", the second tier of § Maximise
+deny-by-default, and unreachable today because a stack of independent
+layers has no moment where all the declarations are in one place.
+
+| refused at boot | why |
+|---|---|
+| `public()` or `visitor_allowed()` **+ any role** | structurally unsatisfiable: `UserRole::Anonymous` is "**never stored in `auth.users`**… it exists only on a session and its JWT, and `from_stored` deliberately cannot produce it" (`user.rs:21`). No role can ever be satisfied, so the route is unreachable and one of the two declarations is a lie. |
+| `public()` or `visitor_allowed()` **+ elevation** | elevation is a human re-proving themselves against an account. There is no account. |
+| `public()` or `visitor_allowed()` **+ a scope** | a share-ring visitor carries no `ScopeSet`; the requirement can never be met. |
+| a role declaration that **widens** its parent's | `Owner` nest, `Internal` child: the fold is `max`, so the child's intent is silently discarded. Better to refuse than to ignore. |
+| an operation with **no** policy | from the spec cross-check below. Deny-by-default means an undeclared operation is a boot failure, not an open door. |
+| a policy naming **no live operation** | a policy left behind by a deleted route, which would otherwise sit unmatched forever. |
+| **the same axis twice in ONE declaration** | `[Condition::role(Admin), Condition::role(Owner)]` has no legitimate meaning — someone wrote two things where they meant one. Across a NEST CHAIN the same pair is ordinary inheritance and folds to `Owner`; folding is for chains, not for the slice. |
+| **two `.policy()` declarations** on one operation | ambiguous: repeated builder calls conventionally override, so accumulating would read as the second replacing the first. Put both conditions in one slice. |
+
+The first row is the one worth having. An implementor writing
+`public()` on a route under `/admin` means *"make this
+public"*, while the nest says *"admins only"* — and whichever wins, the
+other declaration was wrong. Stacked layers resolve that to
+"unreachable" in silence; the compile step makes someone decide.
+
+Note what is NOT a contradiction: an admin whose credential is scoped
+`files:ro`. Role and scope intersect by design (§ Three axes) — the
+admin simply cannot use *that credential* for admin work.
+
+### 3. Evaluate — one `Policy`, one check
+
+Field reads only. Role's cached read already happened in
+`auth_middleware` (§ Lookup and checking cost), so a policy check adds
+nothing per request — and it runs **once**, not once per nesting level.
+
+## Keyed by operation, not by route
+
+A `Policy` cannot hang off an axum route, because on three of the four
+surfaces a route is not the unit of authorization:
+
+| surface | axum routes | operation identity |
+|---|---|---|
+| REST | 279, one per operation | (method, path) — a layer works |
+| WebDAV / CalDAV / CardDAV | **one** `any` handler each | the DAV method (PROPFIND, MKCOL, MOVE…) |
+| WS bus | **one** route, `/api/rt/ws` | the `rt.*` method name |
+| collab data plane | the same single route | the binary frame kind (`0x01`, `0x02`, SYNC) |
+
+So the compiled table is keyed by operation identity, and the axum layer
+is **one lookup site among several**. The DAV dispatcher,
+`handle_text_frame` and `handle_binary_frame` each look up the same table
+with their own key.
+
+This is not a generalisation for its own sake — it is where the bugs
+were. The AWARENESS frame kind (`36c8c6a37`) and the CardDAV door to
+`create_address_book` were both ungated precisely because neither has a
+route to put a layer on.
+
+It also corrects an earlier reading of the three `.require(...)` calls in
+`rt_ws.rs`: they are **not** misplaced grant checks that belong in a
+service. `handle_subscribe`, `handle_collab_capabilities` and
+`handle_collab_flush` are method dispatch inside one route, so no layer
+can reach them. They are the WS surface's policy checks written by hand
+because this mechanism does not exist yet, and they become table lookups.
+
+### Both surfaces are already enumerated
+
+`resources/gen/openapi.json` lists 279 REST operations;
+`resources/gen/asyncapi.json` lists the `rt.*` methods. So the table is
+cross-checkable in both directions: every operation in either spec must
+have a compiled policy, and every policy must name a live operation. An
+ungated frame kind fails that check as readily as an ungated route.
+
+### Consumers that are not a lookup
+
+- **`InternalCaller` capability token** — for a top-level create, which
+  has no parent resource and therefore no grant to check. The only
+  deny-by-default form where forgetting does not compile. § Why 2.
+- **Extractors** (`InternalUser` / `AdminUser`) — weakest, since
+  forgetting leaves the route open. Prefer the token wherever a service
+  stamps ownership.
 
 ## What a scope is bound to
 
@@ -141,15 +517,15 @@ user is currently allowed. Both halves are load-bearing:
   prevent. So user-derived variants re-read per request, as
   `require_internal_user` and `decide_live_role` already do.
 
-Hence `require(gate, caller: &CurrentUser)`: a bare `Uuid` cannot
+Hence `require(gate, caller: &CurrentCaller)`: a bare `Uuid` cannot
 express the session half, and a signature taking one quietly forces
-every gate to be user-bound.
+every condition to be user-bound.
 
-`CurrentUser` (`dtos/user_dto.rs:621`) carries `id`, `username`,
+`CurrentCaller` (`dtos/user_dto.rs:621`) carries `id`, `username`,
 `email`, `role` (**from the JWT claim**, hence stale-prone, hence
 `decide_live_role`), `dpop_jkt` — and now `token: PresentedToken`, the
 `sid` and `iat` the credential presented. **This question is closed; the
-field is in.** `Gate::Elevated` can read `caller.token.session_id`
+field is in.** `Elevation` can read `caller.token.session_id`
 without reshaping `require`.
 
 It carries the whole `PresentedToken` rather than a bare `sid` because
@@ -157,13 +533,13 @@ both claims come from the same credential and `resolve_live_role` needs
 them together; a second encoding of the same fact is how two channels
 drift apart. Which is why the field replaced a request-extension publish
 that had briefly served the same purpose: `CurrentUserId` is itself
-derived from `extensions.get::<Arc<CurrentUser>>()`, so the caller struct
+derived from `extensions.get::<Arc<CurrentCaller>>()`, so the caller struct
 was already reachable everywhere the extension was, and one channel beats
 two.
 
 Extensions could not have served a `Gate` in any case — `require(gate,
-caller: &CurrentUser)` passes the caller and nothing else, by design, so
-a gate has no route to the request. That constraint is what decided the
+caller: &CurrentCaller)` passes the caller and nothing else, by design, so
+a condition evaluator has no route to the request. That is what decided
 question: the fact has to be on the caller.
 
 `#[serde(skip)]`, like `dpop_jkt` — this is a serialized DTO with an
@@ -172,7 +548,7 @@ Verified by regenerating `resources/gen/openapi.json`: no diff. CI diffs
 that file, so the skip is guarded by the artifact rather than by a unit
 test.
 
-Follow the precedent in that file: `CurrentUser::role` resolves an
+Follow the precedent in that file: `CurrentCaller::role` resolves an
 unrecognised value to `Anonymous`, "the least privileged answer". Same
 posture — an undetermined scope denies.
 
@@ -200,9 +576,15 @@ password scoped `files:ro` administers nothing — not because the scope
 says "not admin", but because `/api/admin` requires the `Admin` gate and
 no scope string can supply it.
 
+**Vocabulary.** The three rows above are the **axes** — separate types.
+Inside the Gate axis are four independent **conditions** — role,
+role, principal, scope, elevation — which are fields of one
+type (§ Goal), and reduction never crosses between them (§ Reduction is
+per condition).
+
 Consequences, both agreed:
 
-- **`/api/admin/*` is a role check, not a scope.** `Gate::Admin`, read
+- **`/api/admin/*` is a role check, not a scope.** `MinRole::Admin`, read
   live. It never appears in the scope vocabulary, so `scope=admin` has
   nothing to parse into.
 - **`/api/dedup` is no longer admin.** `check_hash`,
@@ -216,14 +598,17 @@ All three axes, on one request:
 
 | axis | check | where |
 |---|---|---|
-| Gate | `Gate::NotAnonymous` — enforced today by `anonymous_allowlist_layer` | router layer |
+| Gate | the principal condition at its default `User` — enforced today by `anonymous_allowlist_layer` | router layer |
 | Scope | `oxicloud:sharing:rw` | router layer / extractor |
 | Grant | `authz.require(Subject::User(caller), Permission::Share, resource)` — owners short-circuit | `grant_handler.rs` |
 
-The gate is `NotAnonymous`, **not** `Internal` — and the difference is
-easy to blur. An external user has an `auth.users` row and legitimately
-re-shares what was shared with them (§ Rejected: default-deny). An
-anonymous public-link visitor has no user row at all: `UserRole::Anonymous`
+The condition is ANONYMITY, **not** role — and the difference is easy to
+blur. `MinPrincipal::User` refuses a visitor with no user row;
+`MinRole::Internal` refuses an external USER, who has one.
+
+An external user has an `auth.users` row and legitimately re-shares what
+was shared with them (§ Rejected: default-deny). An anonymous
+public-link visitor has no user row at all: `UserRole::Anonymous`
 "is never stored in `auth.users`… it exists only on a session and its
 JWT". So there is no subject to record as `granted_by`, and permitting it
 would turn a read-only link into an access-granting capability — anyone
@@ -237,8 +622,9 @@ refusal for neighbours like `/api/users/{id}`, `/api/groups/search` and
 `/api/auth/app-passwords`.
 
 So this row folds in rather than appearing: per § Fold in,
-`anonymous_allowlist_layer` becomes `gate_layer(Gate::NotAnonymous)`
-and keeps its allowlist.
+`anonymous_allowlist_layer`'s route list IS the `Visitor` set, so each of
+its entries becomes `[Condition::visitor_allowed()]` on that route and the
+layer goes away.
 
 Neither the scope nor the grant substitutes for the other, and that is the
 design working rather than redundancy:
@@ -295,19 +681,50 @@ for the same reason.
 
 | scope (shown without the `oxicloud:` prefix) | routes it opens (non-exhaustive) |
 |---|---|
-| `files` | `/webdav`, `/remote.php/dav/files`, `/wopi`, `/api/files`, `/api/folders`, `/api/uploads`, `/api/batch`, `/api/trash`, `/api/favorites`, `/api/recent`, `/api/dedup`, `/api/drives` |
+| `files` | `/webdav`, `/remote.php/dav/files`, `/wopi`, `/api/files`, `/api/folders`, `/api/uploads`, `/api/batch`, `/api/trash`, `/api/favorites`, `/api/recent`, `/api/dedup`, `/api/drives`, `/api/photos/*`, `/api/playlists/*` (except its sharing routes) |
 | `calendar` | `/caldav`, `/.well-known/caldav`, `/api/calendars` (#853) |
 | `contacts` | `/carddav`, `/.well-known/carddav`, `/api/address-books`, `/api/contacts` |
-| `photos` | `/api/photos`, `/api/photos/geo` (Places), `/api/people` (faces) |
-| `music` | `/api/playlists` |
+| `faces` | `/api/people/*` — the BIOMETRIC index only |
+| `admin` | `/api/admin/*`, `/api/groups` mutations — the instance CONTROL surface, not a data area |
 | `account` | `/api/auth/me`, `/me/profile`, `/me/image` — **enumerated, never the `/api/auth/*` prefix** — `/api/notifications`, `/remote.php/dav/avatars` |
 | `security` | `/api/auth/change-password`, `/oidc/link/start`, `/oidc/unlink`, `/upgrade-to-internal`, `/opaque/register/*`, `/app-passwords`, `/device/devices`, `/device/verify` |
-| `sharing` | `/api/grants`, `/api/shares`, `/api/s`, OCS sharing, and recipient lookup: `/api/users/{id}`, `/api/groups/search` |
-| `mail` | **reserved** — no mailbox exists; the parser REJECTS it, since a name that parses but gates nothing is the device-flow bug again |
+| `sharing` | `/api/grants`, `/api/shares`, `/api/s`, OCS sharing, and recipient lookup: `/api/users/{id}`, `/api/groups/search`, and `/api/playlists/{id}/share*` |
+| `mail` | **reserved** — no mailbox exists; the parser REJECTS it, since a name that parses but guards nothing is the device-flow bug again |
 
 Non-exhaustive by design: a new route under an existing area inherits
 its scope. A route fitting no row means a scope is missing, which is a
 decision rather than a lookup.
+
+**Photos and music are not areas — they are ways to DISPLAY files.** A
+scope names a data area, and the test is whether withholding it withholds
+something. It does not here: `/api/photos/resources` is a timeline
+projection of image files and `/api/photos/geo` reads EXIF GPS out of the
+file bytes, both of which a `files:ro` credential already reaches through
+`/api/files`. The reverse direction confirms it — a "photos-only"
+credential cannot fetch image bytes or thumbnails, which live under
+`/api/files`, so the scope would be useless alone while implying it
+protected something. Same for playlists: a playlist-only credential
+cannot stream audio.
+
+Two consequences, and they pull in opposite directions, which is why the
+line is drawn between them rather than around "media":
+
+- **`/api/playlists/{id}/share*` is `sharing`, not `files`.** Those three
+  routes create and list grants to other users. A file-sync credential
+  has no business sharing your playlists.
+- **`/api/people/*` is its OWN scope, `faces`.** It is the one media
+  surface that passes the test: a face index is biometric data NOT
+  derivable from the file bytes, and `merge`/`recluster` mutate it. So
+  the app-password default (`files,calendar,contacts`) withholds
+  biometrics by construction — the same reason `enable_faces` is opt-in.
+
+**The split is by OPERATION, not by collection, and that matters for
+routes not yet written.** Album sharing is planned and playlist sharing
+exists; both are `sharing`, while everything else under those collections
+is `files`. So a `share*` subresource arriving under any media collection
+follows the playlist precedent rather than inheriting its parent's area —
+the question is never "which collection is this under" but "does this
+create a grant to another user".
 
 Three naming traps:
 
@@ -320,16 +737,63 @@ Three naming traps:
   capability, one scope. Splitting them breaks the share picker while
   protecting nothing, since either half reveals the roster.
 
-`photos` covers Places and People because both are derived from the
-photos — EXIF coordinates, pixel analysis. A separate scope would
-protect nothing while implying it did. That is the test a scope must
-pass: withholding it has to withhold something.
+Places is in `files` for the same reason the rest of photos is: EXIF
+coordinates are IN the file bytes, so a `files` credential reads them
+whether or not `/api/photos/geo` exists. Faces is not, because pixel
+analysis produces data the bytes do not contain. The test a scope must
+pass is whether withholding it withholds something — Places fails it,
+faces passes.
 
 Deliberately absent: `/api/admin/*` and `/api/groups` mutations are
-`Gate::Admin`; `/api/search` and `/api/rt/ws` read across areas and are
+`MinRole::Admin`; `/api/search` and `/api/rt/ws` read across areas and are
 filtered by what the caller already holds; credential management and
 account-security routes are in `security`; login, public and ops routes
 are scopeless (§ Deliberately scopeless).
+
+### Access follows the VERB — `scope_by_verb`, with an override where it lies
+
+A declaration names an area and lets the ACCESS follow the method:
+
+```rust
+.policy([Condition::scope_by_verb(Scope::Files)])         // ro on GETs, rw on writes
+.policy([Condition::scope(Scope::Files, Access::ReadWrite)])  // override, where the verb lies
+```
+
+Named for the MECHANISM — "by verb", not "auto" — because the call site
+should say where the access came from. A separate constructor rather than
+a third `Access` variant, and that is a typing decision rather than a
+convenience: `Access` is also what a CREDENTIAL carries, so a `ByVerb`
+variant there would make `ScopeSet::allows(area, ByVerb)` type-check and
+mean nothing. Verb-derivation is a property of the DECLARATION, so it
+lives on `Condition` (`ScopeByVerb(Scope)`) and `Access` stays two-state
+everywhere a request is actually checked.
+
+`scope_by_verb` resolves at COMPILE time, not per request: `Op::Rest` carries the
+method, so one prefix declaration yields `files:ro` for the GETs beneath
+it and `files:rw` for the writes. The compiled `ScopeReq::Area(Scope,
+Access)` stays two-state — nothing is inferred while serving a request,
+which is the property § 2 depends on. Without this, every prefix would
+need splitting per verb and the ten declarations would become thirty.
+
+**But the verb is a heuristic, and here it lies in both directions.** The
+over-restrictive direction is a nuisance; the other is an escalation:
+
+| operation | `scope_by_verb` gives | truth | consequence |
+|---|---|---|---|
+| `GET /api/wopi/editor-url` | `files:ro` | **mints a WOPI token usable for `POST /wopi/files/{id}/contents`** | a READ-ONLY credential obtains write capability. Must declare `files:rw` explicitly |
+| `POST /api/batch/files/get`, `/api/batch/folders/get`, `/api/batch/download`, `/api/dedup/check-batch` | `files:rw` | reads, with the id list in the body | a read-only credential cannot do a batch read. Should declare `ro` explicitly |
+
+So `scope_by_verb` is what a prefix declares, and an explicit
+`scope(area, ReadOnly | ReadWrite)` at the route overrides it. The
+rule for implementors is one line: **if the method does not describe the
+EFFECT, state the access.** A credential-minting GET is the case to watch,
+because the verb reads as harmless precisely when it is not.
+
+The cost of `scope_by_verb` is that the access stops being visible at the
+declaration site — a reader of `scope_by_verb(Files)` on a nest cannot see
+which operations become `rw`. That is why the dump renders the RESOLVED
+access per operation, and why the spec publishes it: the answer is
+inspectable, just not local.
 
 ### Read-only is multiplied, not orthogonal
 
@@ -455,9 +919,24 @@ only what its row names. A new type added without thought about
 
 | credential | default when omitted | maximum (allowlist) |
 |---|---|---|
-| App password | `files,calendar,contacts` (`:rw`) | same — **no `security`**, **no `account`** (§ Credential-kind gating) |
-| Device flow | `files,calendar,contacts` (`:rw`) — today's `webdav,caldav,carddav`, namespaced | `files,calendar,contacts,account` — **no `security`** |
+| App password | `files,calendar,contacts` (`:rw`) + `sharing:ro` | same — **no `security`**, **no `account`**, **no `admin`**, **no `sharing`** (§ Credential-kind gating) |
+| Device flow | `files,calendar,contacts` (`:rw`) + `sharing:ro` — today's `webdav,caldav,carddav`, namespaced | `files,calendar,contacts,account` — **no `security`**, **no `admin`** |
 | Interactive web session | n/a — never requests scopes | every scope `:rw`, `security` included |
+
+**No `account`, and avatars are why that is safe.** The ceiling briefly
+included `account:ro` so NC desktop could fetch
+`/remote.php/dav/avatars/{user}/{size}`. It does not need to: that route
+is keyed by `{user}` rather than being the caller's own profile, and
+`avatar_handler` falls through to SVG initials for ANY username — so it
+enumerates nothing, confirms nothing, and is declared SCOPELESS. With
+that settled, no sync client needs a profile grant at all.
+
+**No `sharing` either**, which is a real trade rather than a free one. It
+governs `/ocs/…/sharees`, the share-recipient picker, so an app-password
+client loses autocomplete in the NC share dialog — sharing itself still
+works in the web UI, and no OCS share-CREATION endpoint exists. Kept out
+because the asymmetry is one-way: widening a ceiling later is safe,
+narrowing one breaks clients already in the field.
 
 App password is not `files` alone: `app_password_handler` describes
 these as credentials for "DAV / NC-Basic clients (DAVx⁵, Thunderbird,
@@ -492,9 +971,16 @@ would hand the dangerous half to an rclone credential.
 | `/api/auth/app-passwords` | **mints credentials** |
 | `/api/auth/device/devices`, `/device/verify` | lists, revokes and *approves* device credentials |
 
-Plus 2FA/TOTP when it lands — none exists yet — and self-service session
-revocation, which also does not exist: `/api/admin/sessions` is
-`Gate::Admin`, not `security`.
+Plus 2FA/TOTP when it lands — none exists yet.
+
+Self-service session management SHIPPED (`7fab8811c`) and belongs here:
+`GET /api/auth/sessions` is `security:ro`, `DELETE /api/auth/sessions/{id}`
+is `security:rw` — revoking a credential is a credential operation.
+`/api/admin/sessions` is the other exposition of the same low-level
+functions and is `MinRole::Admin` instead, which is the pattern worth
+noting: two operations, two policies, one implementation
+(`list_sessions_scoped`, `revoke_session_and_invalidate`). The policy is
+per-operation; the logic is shared.
 
 **Why a named scope rather than an exception list**, on three counts:
 
@@ -511,7 +997,7 @@ revocation, which also does not exist: `/api/admin/sessions` is
 3. It appears on consent screens if ever requested, instead of failing
    with an unexplained rejection.
 
-**`Gate::Elevated` is the second factor, and this is its first real
+**`Elevation` is the second factor, and this is its first real
 consumer.** Holding `security:rw` is necessary and not sufficient: a
 mutation also needs a recently re-authenticated session, the admin
 sudo-mode state designed in `docs/plan/session-elevation.md`. Scope answers
@@ -590,9 +1076,10 @@ The current `SCOPELESS` list, each entry with its reason:
     used to seize a session from a client that already bound.
 
   A session may therefore be required to carry DPoP while holding no
-  right whatever to change the password. Those are different questions:
-  `Gate::DpopBound` asks how strongly this credential is held,
-  `Scope::Security` asks what it was issued to do.
+  right whatever to change the password. Those are different questions,
+  and not even the same KIND of question: the DPoP proof is an integrity
+  check (§ Not axes), `Scope::Security` is what the credential was issued
+  to do.
 - **`/api/auth/logout`** — ends the caller's own session. Any credential
   may do that; refusing would leave no way to put a key beyond use.
 - **`/api/rt/ticket`** — message-bus ticket issuance, DPoP-gated and
@@ -640,28 +1127,28 @@ column on `auth.users` (widened by
 property of the caller with no resource to name — exactly parallel to
 `Admin`. Its live callsite already exists:
 `POST /api/admin/transfer-ownership` answers 403 "Only the current owner
-may transfer ownership", which becomes `Gate::Owner` instead of a
+may transfer ownership", which becomes `MinRole::Owner` instead of a
 hand-rolled check.
 
 Two implementation notes, because both are traps:
 
-- **`Gate::Admin` is `role.at_least(Admin)`, not `role == Admin`.** The
+- **`MinRole::Admin` is `role.at_least(Admin)`, not `role == Admin`.** The
   entity doc is explicit that Owner "outranks `Admin`, so it satisfies
-  every admin gate without those gates naming it". An implementer who
+  every admin check without those checks naming it". An implementer who
   writes equality locks the instance owner out of the admin panel.
-  `UserRole::at_least` already exists; the gate delegates to it rather
+  `UserRole::at_least` already exists; the condition delegates to it rather
   than re-deriving a comparison.
 - **`UserRole::outranks` is NOT a `Gate`.** It is the strict companion,
   used for "may this admin act upon *that* admin" — it takes a target,
   so by the rule above it is a grant question. Do not try to express
-  "may demote this user" as a gate.
+  "may demote this user" as a condition.
 
 ### What this actually fixes
 
 Not callsite brevity. The hole that motivated this
 (`create_address_book` / `create_playlist` reachable by externals over
 REST while the CardDAV door to the same service method was gated) was
-not "the gate was hard to call" — it was "nobody noticed there was
+not "the check was hard to call" — it was "nobody noticed there was
 none". A layer you must remember to add fails exactly the way a check
 you must remember to write does. So the value is two narrower things:
 
@@ -674,7 +1161,7 @@ you must remember to write does. So the value is two narrower things:
    explaining why. That decision deserves one reviewable home, not five
    copies that each re-derive it.
 2. **Make forgetting impossible, not merely visible.** An extractor
-   (`caller: InternalUser`) only makes the gate *visible* — forget it
+   (`caller: InternalUser`) only makes the check *visible* — forget it
    and the route is open, which is the same failure mode in nicer
    clothes. Deny-by-default means the omission must not compile.
 
@@ -692,8 +1179,8 @@ you must remember to write does. So the value is two narrower things:
        pub fn user_id(&self) -> Uuid { self.user_id }
    }
 
-   impl dyn ScopePolicy {
-       pub async fn require_internal(&self, caller: &CurrentUser)
+   impl dyn RequestPolicy {
+       pub async fn require_internal(&self, caller: &CurrentCaller)
            -> Result<InternalCaller, AppError>;
    }
    ```
@@ -718,20 +1205,142 @@ you must remember to write does. So the value is two narrower things:
 
 ## Scope of the change
 
-### Fold in (the five existing layers, plus one hand-rolled check)
+### Fold in (three of the five layers, plus one hand-rolled check)
 
 | Today | Becomes |
 |---|---|
-| `require_internal_user_layer` | `gate_layer(Gate::Internal)` |
-| admin middleware on `/api/admin/*` | `gate_layer(Gate::Admin)` |
-| `require_no_password_change_pending_layer` | **deleted**, not folded — `authn-pipeline.md` narrows the scope at mint instead, so the five mount points go away |
-| `require_dpop_layer` | `gate_layer(Gate::DpopBound)` |
-| hand-rolled owner check in `transfer_ownership` | `Gate::Owner` |
-| `anonymous_allowlist_layer` | `gate_layer(Gate::NotAnonymous)` + keeps its allowlist — and is the mechanism § Authentication by default would promote to the root |
+| `require_internal_user_layer` — SIX sites, not 11: three DAV nests in `main.rs` (**removed**, `06a046593`) plus three per-METHOD sites in `routes.rs` | `[Condition::role(MinRole::Internal)]` — on the six DAV operations, and method-qualified for the three REST sites, which `.policy()` cannot express because a `MethodRouter` hides its methods |
+| ~~admin middleware on `/api/admin/*`~~ | **removed** (`b80c1a12b`) — `admin_router.policy([role(Admin)])` on the nest |
+| ~~hand-rolled owner check in `transfer_ownership`~~ | **removed** (`7dc03cfb7`) — `policy_post(h).policy([role(Owner)])` at the route, tightening the admin nest |
+| `anonymous_allowlist_layer` (1 site) | `[Condition::visitor_allowed()]` on the allowlisted routes; keeps the allowlist itself, and is the mechanism § Authentication by default would promote to the root |
+| `require_no_password_change_pending_layer` (8 sites) | **untouched** — a scope narrowing, deleted later by `authn-pipeline.md` part B. Below. |
+| `require_dpop_layer` (8 sites) | **untouched** — an integrity check, not an axis. § Not axes: integrity checks |
 
 `anonymous_allowlist_layer` is the loose fit — it carries a route
 allowlist and must stay `route_layer` (it needs `MatchedPath`). Fold the
 *decision* and leave the allowlist where it is.
+
+**A DAV operation is `(area, access)`, not `(surface, method)`.** The
+method carries exactly one authorization-relevant bit — read or write —
+so keying by it spends 36 declarations on six facts; and the AREA rather
+than the protocol is what a scope names, since a protocol vocabulary
+"would name the same permissions twice" (§ Areas, not protocols). An
+unlisted method classifies as a WRITE, fail-closed.
+
+**The NextCloud DAV doors are NOT in PR 1's fold.** They reach the same
+areas, but no folded layer covers `/remote.php/*`: the NC router carries
+only `access_log`, and `require_internal_user_layer` appears nowhere under
+`interfaces/nextcloud/`. Declaring `MinRole::Internal` for an NC
+operation would ADD a gate rather than fold one.
+
+That exposes an asymmetry worth its own diff: native `/webdav` refuses an
+external user and `/remote.php/dav/files` appears not to — the same
+"a gate on one door is a hole in the other" shape as
+`create_address_book`. `/remote.php/webdav` is a 301 to the former and
+serves no data itself. `/remote.php/ocs` is likewise untouched by PR 1;
+its SCOPES (`sharing`, `account`) are PR 2.
+
+**Gate and Scope on the declaration; Grant in the service.** This is what
+the whole design reduces to, and it is why the table is keyed by
+OPERATION rather than by route. AGENTS.md puts AuthZ in the service layer
+for coverage — REST, DAV and WS share service methods, so a gate on one
+door is a hole in the other — and a router layer can only gate the door
+it is attached to. `Op::Rest` / `Op::Dav` / `Op::Ws` / `Op::CollabFrame`
+name every door of one service method, so **declaring each door is the
+remedy, not keeping the gate in the service.**
+
+A role check inside a service is therefore misfiled rather than
+deliberate. Count the doors before moving one —
+`git grep '<method>(' -- src/ | grep interfaces/` — to be sure every one
+is declared; declaring a single door and deleting the service check is
+the `create_calendar` / `create_address_book` bug again.
+
+`transfer_ownership` is the easy case, verified:
+`auth_application_service::transfer_ownership` has exactly one caller in
+`interfaces/` (`admin_handler.rs`), so one `Op::Rest` declaration
+replaces its `caller.role != UserRole::Owner` with nothing left
+uncovered.
+
+**But folding it changes an audit event, and that needs a decision.**
+Today the denial emits `event = "server_owner.transfer_rejected"`,
+`reason = "caller_not_owner"`. A router policy denial emits an `authz.*`
+event instead. AGENTS.md: `event` "stays stable — log aggregators key off
+it". So this fold silently retires an event an operator's alerting may
+key on — and neither the policy dump (fields only) nor a status-code
+matrix (HTTP only) would notice. Either keep emitting the old event from
+the policy denial path for this operation, or treat it as a breaking
+audit change and say so in the release notes.
+
+### Not axes: integrity checks
+
+A separate category, and keeping it separate is what stops the axis list
+growing without limit. These ask **"is this request authentic?"** — a
+precondition to authorization, not a part of it:
+
+| check | asks |
+|---|---|
+| JWT signature + expiry | was this token issued by us, and is it still valid? |
+| DPoP proof (RFC 9449) | does the holder of this bound session possess the key? |
+| CSRF double-submit | did this state-changing request come from our own page? |
+
+Three properties they share, none of which a declarable axis has:
+
+- **the operation has no opinion.** `require_dpop_layer` is applied to
+  all 8 nests identically, and `csrf_middleware` to 7; what varies is
+  `OXICLOUD_DPOP_MODE` — an env var, not a route.
+- **`None` is meaningless.** "This route does not care whether a bound
+  session proved possession" is not a sentence anyone wants to write.
+- **failure means the REQUEST is untrustworthy**, not that the caller is
+  the wrong kind. The response says so: `401` +
+  `WWW-Authenticate: DPoP error="invalid_dpop_proof"`, never a 403.
+
+So `require_dpop_layer` is not folded. It belongs at the root choke point
+§ Authentication by default creates, beside CSRF — declared once for the
+whole surface rather than per operation.
+
+What survives of the session axis is **elevation**, which does vary per
+operation (`/admin/sessions/*` needs it, most routes do not) and where
+`None` means something. It waits on `auth.sessions.elevated_at`.
+
+**The password-change layer is not a Gate-axis condition at all** — it is a SCOPE
+narrowing, so it never needed a condition. Admission narrows a forced-reset
+session; anything outside that scope is refused, and the FE redirects to
+password settings rather than showing an error.
+
+**The narrowing is `{security:rw, account:ro}`, not `{security}`.** Check it
+against the layer's actual allowlist, which is three operations and not
+one area:
+
+| allowlisted today | area | needs |
+|---|---|---|
+| `PUT /api/auth/change-password` | `security` | `security:rw` |
+| `GET /api/auth/me` | `account` | `account:ro` |
+| `POST /api/auth/logout` | — | nothing; § Deliberately scopeless |
+
+`{security}` alone would refuse `GET /api/auth/me`, which is how the SPA
+discovers it is jailed and loads its shell at all — so the narrowing would
+break the very screen it exists to force. And `{security, account}`
+unqualified would WIDEN today's behaviour, because `account:rw` admits
+`PUT /me/profile`, which the layer refuses now.
+
+`{security:rw, account:ro}` reproduces the current allowlist exactly, and
+it is the clearest case in this document for § Read-only is multiplied,
+not orthogonal: a global `readonly` flag could not express "write my
+password but only read my profile".
+
+Hence the order, with no cycle:
+
+1. **PR 1** leaves the layer's eight mount points untouched. No
+   `PasswordChangeSettled` condition is built — it would be a third home for
+   a check that is about to disappear.
+2. **PR 2** ships `Scope` and its enforcement.
+3. **`authn-pipeline.md` part B** then narrows at admission and deletes
+   the layer. Its "needs `scope-gates.md`" means needs PR 2, and PR 2
+   needs nothing from it.
+
+(`authn-pipeline.md` § The forced-reset deadlock is a different, runtime
+concern: a `{security}`-narrowed session needs elevation via the password
+it is being forced to change. It only exists once step 3 does.)
 
 ### Keep as layers, not extractors
 
@@ -739,7 +1348,41 @@ allowlist and must stay `route_layer` (it needs `MatchedPath`). Fold the
 a layer is both natural and cheaper there. Extractors are for REST
 handlers only.
 
-### Per-route gates to retire
+### The field `CurrentCaller` must carry first
+
+An axis-policy is a field read only if the caller actually carries it,
+and the caller now carries every field the four conditions read:
+
+| condition | reads | carried as |
+|---|---|---|
+| `MinRole` | the role | `CallerKind::Internal(UserRole)` |
+| `MinPrincipal` | public / visitor / user | the `CallerKind` variant itself |
+| scope | the token's scope set | `PresentedToken` |
+| elevation | the elevation stamp | `PresentedToken` |
+
+`CurrentCaller.kind: CallerKind` is one `Copy` enum:
+
+```rust
+pub enum CallerKind {
+    Visitor,              // public-share session: no auth.users row
+    External,             // role is necessarily User (a schema CHECK)
+    Internal(UserRole),   // user | admin | owner
+}
+```
+
+It replaced a `role: SmolStr` + `is_external: bool` pair that could
+express three states which cannot exist (anonymous+internal,
+anonymous+external, admin/owner+external — the last already forbidden by
+`CHECK (NOT (is_external AND role <> 'user'))`). `MinPrincipal` therefore
+compares variants rather than parsing a string and consulting a bool, and
+`require_internal_user` no longer issues a second `get_user_flags` per
+DAV request: the flags pass that resolves the role resolves the kind.
+
+This follows `token: PresentedToken` (`9a42e4299`) — the middleware holds
+the fact once, rather than dropping it and leaving a consumer to
+re-derive it or to be unable to ask.
+
+### Per-route conditions to retire
 
 - `routes.rs` — the two `contacts_create` / `music_create` sub-routers
   (added with the external-user fix) collapse into an extractor on the
@@ -749,34 +1392,41 @@ handlers only.
 
 ## Lookup and checking cost
 
-`require_internal_user` calls `auth.get_user_flags(caller_id).await` —
-a DB lookup per request. The live-read decision above means that cost is
-**deliberate and stays**: putting `is_external` on the JWT claims to
-make the check free is the one thing § What a scope is bound to rules
-out, because an upgraded guest would then stay locked out until
-re-login.
+`require_internal_user` calls `auth.get_user_flags(caller_id).await`.
+That is a **cached read, not a query per request**: `user_flags_cache` is
+a moka cache with a 30 s TTL and `try_get_with`, so concurrent callers
+for one user collapse into a single lookup and a user's row is read at
+most twice a minute. The DB appears on a miss.
 
-So the rule is placement, not caching:
+The live-read decision stands and the cache makes it affordable: putting `is_external` on the JWT claims is the one thing
+§ What a scope is bound to rules out, because an upgraded guest would
+then stay locked out until re-login. A cache can be invalidated on
+upgrade or demotion; a minted claim cannot — and `invalidate_user_flags`
+is already the mechanism every revocation path uses.
 
-- Ownerless creates and the DAV / admin subtrees are **cold** paths. One
-  lookup there is free in practice. Keep the token and the layers there.
-- Do **not** spread GATE checks onto the hot paths — listing,
-  thumbnails, auth (AGENTS.md § Performance). Those are grant questions
-  anyway, answered by `authz.require` against a resource, and a gate
-  there would be both a per-request query and the wrong check.
+So the rule is placement, and the reason is not cost:
 
-If a gate check ever does become necessary on a hot path, the answer is
-a short-TTL cache in the policy keyed by user id — not a claim on the
-token. A cache can be invalidated on upgrade/demotion; a minted token
-cannot.
+- Ownerless creates and the DAV / admin subtrees are cold. Keep the
+  token and the layers there.
+- Keep GATE checks off the hot paths — listing, thumbnails, auth
+  (AGENTS.md § Performance) — because those ask a **grant** question,
+  answered by `authz.require` against a resource. A gate there is the
+  wrong check, not an expensive one.
 
-This paragraph is about **gates only**, and said "scope" before the two
+The 30 s TTL carries a second consequence worth stating: a Gate-axis answer
+can be up to 30 s stale. For `is_external` and role that is the intended
+trade (§ What a scope is bound to), and every path that tightens already
+calls `invalidate_user_flags` so the window closes immediately rather
+than on expiry. A future condition whose staleness is NOT acceptable must
+invalidate on change, not shorten the TTL for everyone.
+
+This paragraph is about **Gate-axis conditions only**, and said "scope" before the two
 axes were separated. Scopes resolve the other way round on purpose: they
 ARE a claim on the token, because unlike `is_external` a scope cannot
 change under its credential (§ Freezing at mint), so there is nothing to
 invalidate and a hot-path check is free.
 
-### Checking cost: gates and scopes are not alike
+### Checking cost: role and scope are not alike
 
 The two axes have opposite cost profiles, and representing them the same
 way gets one of them wrong.
@@ -784,13 +1434,100 @@ way gets one of them wrong.
 | | gate | scope |
 |---|---|---|
 | source | `auth.users`, re-read live | JWT claim, frozen at mint |
-| per check | a DB round trip | pure CPU |
-| paths | cold by design (§ Lookup and checking cost) | **hot** — every `/webdav` request, every `/api/files` listing |
+| per check | cached read — moka, 30 s TTL, single-flight; DB on a miss | pure CPU |
+| staleness | up to the TTL, closed early by `invalidate_user_flags` | none — cannot change under its credential |
+| paths | cold by design, EXCEPT the defaults — see below | **hot** — every `/webdav` request, every `/api/files` listing |
 
-A gate check is dominated by its query, so the set representation is
-irrelevant: iterating a three-element slice costs nanoseconds against a
-round trip measured in microseconds at best. That is why `require_all`
-takes `&[Gate]` — clarity is the only axis in play.
+Neither axis is dominated by a query, so **representation is not a
+performance question for either of them**, and the choice of one field per axis is
+made on representability alone: it makes a contradictory pair impossible
+to construct, where a slice makes it impossible to miss only if something
+checks. § Reduction is per condition.
+
+The scope masks are still the right call, for their own reason rather
+than by contrast with a round trip: a scope check runs on paths AGENTS.md
+names as hot, several times per DAV request, and `u8` masks make it one
+`&` and a compare with `writable ⊆ readable` held as an invariant — so
+`rw` implying `ro` is not a branch at every callsite.
+
+### Per-request policy vs per-AuthN-phase check
+
+Two decision points, and placing a check in the wrong one is the easiest
+mistake this design can still make. Both are needed; neither substitutes
+for the other.
+
+| decided at | checks | the question |
+|---|---|---|
+| **AuthN phase** — login, and **re-run at every refresh** | account active · verified email · OPAQUE migration · credential-kind → scope ceiling · forced-reset narrowing | *may this account have a credential at all, and what is it issued for?* Failure means **no session**, not a refused request. |
+| **Per request** | role · principal · scope · elevation | *may this caller reach this operation?* Failure is a refused request on a valid session. |
+
+**Verified email is the worked example**, because it looks like it could
+be an axis and is not. The question is whether the account may hold a
+session at all — uniformly, for every operation — which is why the
+exemption is by ROLE (`Owner` bypasses it, admins do not) rather than by
+route. No operation has an opinion about it, so by § Not axes it is not
+an axis.
+
+"AuthN phase" does not mean "once, forever". Refresh re-runs admission
+(`authn-pipeline.md` § Refresh is a re-verification ceremony), and an
+active client refreshes at the access-token lifetime — so an authn-phase
+check is re-evaluated roughly hourly, and the staleness it admits is
+bounded by that rather than by the 7-day refresh window.
+
+Which is what makes the split safe: a per-request check is for facts that
+must bite *immediately*, an authn-phase check for facts that may bite *at
+the next ceremony* — and `authn-pipeline.md`'s rule covers the gap
+("every state change that **tightens** must either revoke sessions or be
+in the per-call read").
+
+### Which per-request axis is evaluated how
+
+| axis | source | changes mid-credential? | evaluated |
+|---|---|---|---|
+| role (`Internal`/`Admin`/`Owner`) | `auth.users`, via `user_flags_cache` | **yes** — promote, demote, guest→internal | already resolved by `auth_middleware` into `CurrentCaller.role` |
+| principal | the credential | no | field read |
+| scope | the credential's `ScopeSet`, frozen at mint | no | mask `&` and compare |
+| elevation | `auth.sessions.elevated_at` | yes — it expires | pending the column |
+
+So a root gate layer adds **no lookup** to an authenticated request: the
+one cached read already happens in `auth_middleware`, and the rest are
+field reads — once `CurrentCaller` carries `is_external`.
+
+Cost does not decide placement; staleness does:
+
+1. **Does any operation have an opinion about it?**
+   - **No** — it is an authn-phase check, uniform across the surface.
+     Verified email, account active, the scope ceiling.
+   - **Yes** — it is an axis; question 2 places it.
+2. **Can the fact change while the credential is alive?**
+   - **No** — read it off the credential per request: free, no
+     staleness, nothing to invalidate. Principal and scope are here.
+   - **Yes** — per-call read. `user_flags_cache` makes it free and
+     `invalidate_user_flags` closes the TTL window. Role, `is_external`
+     and elevation are here.
+
+The test an implementor can actually run: *state what happens if this
+fact changes one second after login.* If the answer is "the caller keeps
+something they should have lost", it is per-call or the change revokes.
+
+This belongs in `src/AGENTS.md` — § Required: amend.
+
+### The defaults put a check on every request
+
+"Cold by design" holds for the named gates, not for the defaults.
+`MinPrincipal::User` as the default only bites if every
+route is gated — the root choke point § Authentication by default argues
+for — so the design does put a check on listing and thumbnails.
+
+The cache makes that affordable, but **measure it before wiring a root
+layer**, and measure the right thing: not steady-state hit cost but
+single-flight at the 30 s boundary under K concurrent requests for one
+user, which is a sync client's shape. `examples/bench_auth_herd.rs` is
+that shape for the sibling cache. Benches run against 5433, not 5432.
+
+(§ Rejected: default-deny across all of `/api` refuses a root
+`MinRole::Internal` on correctness grounds — the external exemption list
+would cover most of `/api` — which is a separate argument from cost.)
 
 A scope check has no query to hide behind. It runs on paths AGENTS.md
 names as hot (listing, thumbnails, auth), on every DAV request a sync
@@ -808,7 +1545,7 @@ scope could silently reinterpret an existing credential.
 ## Rejected: default-deny across all of `/api`
 
 The tempting reading of "secure by default" is
-`gate_layer(Gate::Internal)` on the whole protected `/api` router plus
+`a compiled `Policy` requiring `MinRole::Internal`` on the whole protected `/api` router plus
 an allowlist of what externals may reach. Rejected, for a reason worth
 recording so it isn't re-proposed:
 
@@ -835,7 +1572,7 @@ plan is otherwise balanced. Ranked, because not all denial is equal:
 | 1. **Won't compile** | the omission is a type error | `InternalCaller` token — `auth_user.id` stops type-checking on an ownerless create |
 | 2. **Won't start** | boot panics on a misconfiguration | an unknown job name in `OXICLOUD_JOBS_SCHEDULED` already does this; the scope parser rejecting an unknown resource is the same posture |
 | 3. **Won't pass CI** | the omission fails a test | exhaustiveness test — a route in neither the scope map nor `SCOPELESS` |
-| 4. **Fails closed at runtime** | the default answer is refusal | `Gate::NotAppPassword` applied by the root layer; ceilings as allowlists; `CurrentUser::role` resolving an unknown value to `Anonymous`, "the *least* privileged answer" |
+| 4. **Fails closed at runtime** | the default answer is refusal | ceilings as allowlists; `CurrentCaller::role` resolving an unknown value to `Anonymous`, "the *least* privileged answer" |
 | 5. **Merely visible** | a reviewer must notice | an extractor on a handler — forget it and the route is open. Use only where 1-4 do not fit |
 
 Prefer the lowest number available. Where this plan chose 4 over 1 it
@@ -857,26 +1594,20 @@ callsite to constrain), not because 4 is good enough.
   *grandfathering* rule with a defined end: once no pre-enforcement
   token can still be valid, absent becomes empty.
 
-### `require_all` normalises, per axis
+### Reduction is per condition
 
-Composed gates must flatten, because the default `NotAppPassword` plus
-an explicit `PermitAppPassword` is a contradiction the router would
-otherwise carry to runtime, and `[Internal, Admin, Owner]` is three
-lookups answering one question.
+**Reduction is per condition, never global.** The conditions are independent, so
+a role conjunction collapses to its maximum while the app-password condition
+stays untouched; reducing across conditions would silently drop a condition.
 
-**Reduction is per axis, not global.** The axes are independent — a
-principal-kind gate says nothing about a credential-kind one — so
-`[Internal, Admin, Owner]` reduces to `[Owner]` on the role axis while
-`NotAppPassword` survives untouched on its own. Collapsing across axes
-would silently drop a gate.
+One field per condition makes both problems vanish instead of needing checks:
+the contradictory pair is unrepresentable, and the role reduction is a
+field assignment (`max`) rather than a lattice walk.
 
-Which suggests the type: one field per axis rather than a `Vec<Gate>`,
-so a contradiction is unrepresentable and the reduction is a field
-assignment instead of a lattice walk. `Admin ⇒ Internal` is provable
-from the `users_external_not_privileged` CHECK, so dropping `Internal`
-beside `Admin` is sound rather than a convention — a test should pin
-that dependency, since removing the constraint would quietly make the
-reduction wrong.
+`Admin ⇒ Internal` makes that `max` sound, and it is provable from the
+`users_external_not_privileged` CHECK rather than conventional — so a
+test pins it, since removing the constraint would make the reduction
+wrong.
 
 ### Authentication by default
 
@@ -963,9 +1694,11 @@ architecture. The intent is that **app passwords disappear in favour of
 OIDC for interactive login and the device flow for everything else**,
 with OxiCloud's own client replacing the NextCloud one.
 
-That makes `PermitAppPassword` a **deprecation instrument** rather than a
-permanent gate: five mounts today, three once NC support goes, zero at
-the end. Each removal is a reviewable step instead of a flag day.
+That makes the app-password CEILING a **deprecation instrument** rather
+than a permanent allowance: as each sync surface moves to the device
+flow, the ceiling narrows by one area, and when the last goes the
+credential type can be retired. Each step is reviewable instead of a
+flag day.
 
 Two notes for whoever picks that up:
 
@@ -994,10 +1727,11 @@ between a credential being verified and a session existing — is
 - **Scope is minted there, enforced here.** The login phase derives a
   `ScopeSet` from `(method, credential) ∩ ceiling` and may narrow it
   further for a restricted account; this document only ever reads it.
-- **`Gate::PasswordChangeSettled` is deleted by it.** The forced-reset
-  state becomes a scope narrowed to `{security}` at mint, so
-  `require_no_password_change_pending_layer` and its five mount points
-  go away rather than folding into a gate.
+- **The password-change check is deleted by it.** The forced-reset state
+  becomes a scope narrowed to `{security}` at mint, so
+  `require_no_password_change_pending_layer` and its five mount points go
+  away rather than becoming a condition. Until part B lands, PR 1 leaves the
+  layer untouched — § Fold in.
 - **The two fail-open arms fold into it.** Their resolution is 503 on a
   transient failure (§ The two fail-open arms), which needs a transient
   error kind — and part A is where `admit()` first has to distinguish
@@ -1024,10 +1758,11 @@ The rule to add, under § AuthZ enforcement points:
 
 > **Every route declares all three axes explicitly. There is no default.**
 >
-> - **Gate** — which KIND of caller may reach this surface
->   (`Gate::Internal`, `Admin`, `Owner`, `NotAnonymous`, `DpopBound`,
->   `PasswordChangeSettled`). Declared even when the answer is "any
->   authenticated caller".
+> - **Gate** — which KIND of caller may reach this surface, as a slice of `Condition`s
+>   value naming the conditions it needs (role, principal, scope, elevmity,
+>   session-binding). Declared even when the answer is "any
+>   authenticated caller", which is an empty slice and still written
+>   down.
 > - **Scope** — what the CREDENTIAL was issued for
 >   (`oxicloud:<area>:<ro|rw>`), or an explicit `SCOPELESS` entry with
 >   the reason. "No scope" is a decision that gets written down, never an
@@ -1064,8 +1799,8 @@ only in a plan file:
 > 3. **Won't pass CI** — the omission fails a test, as a route absent
 >    from both the scope map and `SCOPELESS` does.
 > 4. **Fails closed at runtime** — the default answer is refusal
->    (`Gate::NotAppPassword` on the root layer; ceilings as allowlists;
->    `CurrentUser::role` resolving an unknown value to `Anonymous`).
+>    (ceilings as allowlists;
+>    `CurrentCaller::role` resolving an unknown value to `Anonymous`).
 > 5. **Merely visible** — a reviewer must notice. An extractor on a
 >    handler is this: forget it and the route is open. Use only where
 >    1-4 cannot express the question.
@@ -1099,7 +1834,7 @@ cross-referenced rather than duplicated:
   declaration rides in the spec rather than a side table, and
   `openapi-spec-drift` keeps it fresh by construction.
 - **"OpenAPI has no field for a minimum role… use a pseudo-scope
-  (`["role:admin"]`)."** Gates therefore declare as `role:` pseudo-scopes
+  (`["role:admin"]`)."** Gate requirements therefore declare as `role:` pseudo-scopes
   alongside the real `oxicloud:` ones. The `oxicloud:` prefix (§ Wire
   format) is what keeps the two unambiguous in one array — a
   client-requestable scope and a non-requestable gate can share the
@@ -1181,7 +1916,7 @@ verb alone" is satisfied without giving up automatic coverage.
 ### The array is AND
 
 `security(("bearerAuth" = ["role:admin", "elevated"]))` requires
-`Gate::Admin` **and** `Gate::Elevated`. OpenAPI puts conjunction inside
+`MinRole::Admin` **and** `Elevation`. OpenAPI puts conjunction inside
 one requirement object and disjunction between objects, and the two
 forms look nearly identical:
 
@@ -1196,11 +1931,18 @@ session to admin mutations**: any user who re-authenticated at
 conjunction belongs in a method name, where it cannot be misread:
 
 ```rust
-policy.require_all(&[Gate::Admin, Gate::Elevated], caller).await?;
+// One call, and the conjunction is in the value rather than in the
+// reader's head. `.elevated()` joins the builders in § Goal when the
+// elevation axis exists — not v1.
+policy.require(compiled, caller).await?;   // [role(Admin)] + [elevated()]
 
-// Equivalent, and what a pair of layers composes to anyway:
-policy.require(Gate::Admin, caller).await?;
-policy.require(Gate::Elevated, caller).await?;
+// Two calls are EQUIVALENT here, and that is a property of the conditions
+// being independent: `role` and `elevation` cannot overwrite one
+// another, so sequencing two requires composes rather than conflicts.
+// The single call is preferred for being one audit line, not because
+// the pair is wrong.
+// Declared separately, folded by the compile step into ONE `Policy`:
+//   /admin [role(Admin)]  +  /admin/sessions [elevated()]
 ```
 
 No gate combination in this design means "either". If one ever appears
@@ -1215,7 +1957,7 @@ is. Conjunction is the right default for every entry.
 **Elevation is not an admin feature.** `session-elevation.md` is named for
 its first consumer, and the name is now too narrow: elevation is a
 property of any session, and an ordinary user needs it for the same
-reason an admin does. Three consumer classes, so `Gate::Elevated` is not
+reason an admin does. Three consumer classes, so `Elevation` is not
 speculative:
 
 | needs elevation | audience | because |
@@ -1271,25 +2013,75 @@ another one. Every ceiling in § Defaults is bypassable in one request by
 the credential type most likely to be pasted into a config file, mailed
 to oneself, or committed by accident.
 
-Scopes cannot fix this. The vocabulary is resource-shaped on purpose
-(§ Areas, not protocols), and `/api/files` and `/webdav` both
-need `files` — so no scope distinguishes the browser API from the sync
-door. This is a question about the KIND of caller, which is the
-definition of a gate.
+**Scope closes it, and no credential-kind axis is needed** — but it takes
+TWO areas, not one, and this section originally named only the first.
+
+The second is `/api/admin/*`, 59 of the 250 operations. A role check does
+not help: `MinRole::Admin` reads the USER row, so an admin's app password
+carries the admin role, and a credential created for DAVx⁵ could
+administer the instance. Those operations are the `admin` area, which no
+restricted credential type is granted — so the refusal comes from the
+scope axis rather than from anything noticing the credential kind.
+
+Everything else in the hole is in the `security` area — § Defaults classifies
+`/app-passwords`, `/change-password`, `/oidc/link/start`,
+`/oidc/unlink`, `/upgrade-to-internal`, `/opaque/register/*`,
+`/device/devices` and `/device/verify` there — and the app-password
+ceiling grants **no `security`**. So an app password minting another one
+is refused by `Condition::scope(Scope::Security, …)`, not by anything
+noticing it was an app password.
+
+So both halves close the same way: `security` stops an app password
+minting another credential, `admin` stops it administering the instance,
+and neither needs a request-time look at the credential kind. That makes
+credential kind a MINT-time input rather than a request-time
+axis: `effective = (requested ?? type_default) ∩ type_maximum` already
+decides, once, what each credential type can reach. A condition would be a
+second implementation of the same decision, and the two would drift.
+
+**Likely future direction: refuse app passwords on `/api` outright.** Ed's
+position, recorded because it is a different argument from the one below
+rather than a contradiction of it. The reasoning here is about
+CAPABILITY — an app password with `files` can read the same bytes through
+`/api/files` or `/webdav`, so refusing one door changes nothing an
+attacker can do. Ed's is about BLAST RADIUS: an app password is a
+long-lived secret that gets pasted into config files, mailed to oneself
+and committed by accident, and the number of doors such a credential may
+knock on should be minimal regardless of what it can do once inside. On
+that reading the REST surface is simply not what the credential is for.
+
+**App passwords exist only because clients cannot do OIDC** — DAVx⁵,
+Thunderbird, rclone, the NC desktop client. They are a compatibility
+anomaly, not a first-class credential, and a feature that exists for
+legacy clients has no business reaching the surface the first-class
+clients use.
+
+What that needs before it can ship is evidence about who would break: the
+test suite's Basic-auth usage is entirely on `/remote.php/dav/*`, and
+`docs/guide/dav-client-setup.md` frames app passwords as DAV-only, so
+nothing KNOWN depends on Basic on `/api`. An audit of real deployments,
+and a deprecation window, is the missing piece — not a design decision.
+
+What scope genuinely cannot express is a PROTOCOL distinction —
+`/api/files` and `/webdav` both need `files`, so no scope admits an app
+password to the sync door while refusing it on the browser API. That is
+accepted rather than worked around, for two reasons: the restriction
+would add nothing (same bytes, same permission, different verb), and
+protocol-shaped restriction is what § Areas, not protocols rejects for
+the scope vocabulary in the first place. Wanting it here would be
+wanting the shape the plan already argued against.
 
 ### Deny by default, permit explicitly
 
-`Gate::NotAppPassword` is applied by the root layer, so **every** route
-refuses a Basic-auth app password until something says otherwise. Mounts
-that legitimately accept one declare `Gate::PermitAppPassword`.
+The ceiling is an **allowlist** per credential type, so the deny-by-
+default property lives there: a new credential type whose author never
+considers `security` gets it **withheld**. Forgetting is safe.
 
-Positive opt-in rather than `remove(Gate::NotAppPassword)`, for a reason
-beyond taste: `grep PermitAppPassword` then prints the **complete**
-app-password attack surface in one command. A subtractive form cannot be
-audited that way — you would be grepping for an absence, and a route
-that silently inherits the default looks identical to one someone
-deliberately opened. Only the positive marker ever appears at a
-callsite, so the double negative never shows up in route code.
+That is also better than the per-route opt-in this section used to
+propose. The auditable artifact is **one table** — § Defaults — rather
+than a set of call sites to grep for; "what can an app password reach?"
+is answered by reading a row, not by trusting that every route that
+should have declared an opt-in did.
 
 The permit set is exactly the sync surfaces, and nothing else:
 
@@ -1305,32 +2097,108 @@ the `/api` door.
 ### What it requires
 
 The principal must carry **how it authenticated**, not just who it is.
-`CurrentUser` today cannot answer "was this a Basic app password or a
+`CurrentCaller` today cannot answer "was this a Basic app password or a
 Bearer JWT", so the credential kind is threaded alongside `dpop_jkt` —
 which is the precedent: that field exists precisely to answer a
 session-shaped question without a DB round trip.
 
-### Not in the spec's security array
+### The spec is rendered FROM the policy table, not read into it
 
-The other gates declare as pseudo-scopes (`role:admin`, `elevated`)
-because they are *requirements*. `PermitAppPassword` is a
-**relaxation**, and an array of required scopes is the wrong place for
-one — it would read as "this route requires an app password".
+`openapi.json` already carries the structure: 228 operations emit
+`security: [{"bearerAuth": []}]` — an empty scope array — and 21 emit
+`security: []` for public routes. So showing scopes needs no new
+mechanism, only a non-empty array.
 
-It also does not need to be there. The permit set is five mounts, none
-of which appears in `resources/gen/openapi.json` (§ Deliberately
-scopeless records that the spec holds no non-`/api` paths). So the
-assertion is mount-level, not per-operation:
+The direction matters, and it is engine → spec:
 
-> No `/api` operation carries `PermitAppPassword`, and the permit set is
-> exactly `{webdav, caldav, carddav, remote.php, ocs}`.
+| | |
+|---|---|
+| spec → engine | declarations become stringly-typed; inheritance is lost (`role:admin` repeated per operation instead of once on the nest); a docs-only edit changes enforcement; and the DAV / WS surfaces carry no `#[utoipa::path]` at all |
+| **engine → spec** | one declaration site, with inheritance; the spec is accurate **by construction** because it renders the compiled `Policy`; `generate-openapi` plus CI's existing drift check (`ci.yml:303`) turn a forgotten regeneration into a CI failure |
 
-### Ceiling tightening that follows
+So the compiled table is the source and the spec is a projection of it.
+A policy change then reaches Swagger and the generated TypeScript client
+automatically, and cannot silently disagree with what is enforced —
+which is stronger than the cross-check this plan proposed earlier, since
+drift becomes impossible rather than merely detectable.
 
-With `/api` closed to app passwords, their scope ceiling drops `account`
-— `/api/auth/me*` is unreachable by them anyway, and the NC avatar path
-sits under `/remote.php/dav/avatars`, which is permitted. New ceiling:
-`files,calendar,contacts`.
+**SHIPPED** (`0159fb215`, `7fbf0a6b6`), then reshaped once: the spec's
+auth marker is ONE object per operation, mirroring `Policy` field for
+field, on all 250 operations, with explicit nulls.
+
+    x-oxicloud-policy  { "role":      null | internal | admin | owner,
+                         "principal": public | visitor | user,
+                         "scope":     null | "files:rw" }   (inert until PR 2)
+    security: []       when the principal is Public
+
+Three sibling keys came first — `x-oxicloud-minrole`,
+`x-oxicloud-principal`, `x-oxicloud-scope` — each emitted only when it
+DIFFERED from the default, since marking 250 operations `principal: user`
+looked like noise. Two things were wrong with that:
+
+- **absence could not be read.** An unmarked operation might require a
+  user session or have no requirement at all, and a frontend deciding
+  whether to prompt for elevation before issuing a call cannot act on
+  that. Ed's case, and the reason the object is always complete.
+- **the shape was a hand-made projection**, so every new axis would need
+  a fresh decision about how to express it — and a decision taken under
+  time pressure is where formats collapse. Keying on `Policy`'s own field
+  names removes the decision: the JSON evolves when the struct does.
+
+A hash rather than an array, because an array would mirror the
+DECLARATION (`[Condition; N]`) while an operation's effective policy is
+the FOLD of several declarations — nest plus route. The object mirrors
+what `evaluate` is handed.
+
+`scope` is `null` on all 250 today. The native OpenAPI slot for scopes
+(the array in a security requirement) is NOT usable for it: `bearerAuth`
+is declared `type: http, scheme: bearer`, and the spec requires that
+array to be empty for any scheme that is not `oauth2`/`openIdConnect`.
+Using it would mean redeclaring the scheme as `oauth2` and describing a
+flow we do not implement for the bearer most calls use — a PR 2
+decision, recorded here so it is not rediscovered.
+
+It gained three gates the constants could not express: `owner` on
+transfer-ownership (previously mislabelled `role:admin`), and `internal`
+on three operations that were unmarked. The 58 admin and 7 visitor
+operations are the SAME set, verified by comparing marked
+`(method, path, axis)` tuples across the change.
+
+**The constraint this was thought to impose — "no database, so
+declarations must be `const`" — does not hold.** `generate-openapi` builds
+the service graph in memory and reads the registry from it. No database is
+needed, because `connect_lazy` yields a `PgPool` without connecting and
+the two queries `build_app_state` runs while constructing both tolerate
+failure by design. So declarations stay at their routes; nothing has to
+move to a `const` to be visible offline.
+
+**And generation VALIDATES the declarations.** `security(...)` is derived,
+so an annotation that disagrees is stale or a declaration is missing, and
+`just openapi` names every one. First run: 211 agree, 21 disagree — the
+whole public surface, which omits `security(...)` while nothing declares
+it `public()`. Those 21 are the work queue; `AGENTS.md` carries the rule
+that `security(...)` is never hand-written.
+
+Gate conditions project as pseudo-scopes (`role:admin`, `elevated`)
+because they are requirements, even though no client may request one. A
+*relaxation* must never appear there — it would read as "this route
+requires an app password" — which is moot now that credential kind is a
+mint-time input (§ Credential-kind gating) rather than a condition.
+
+### Ceiling: app passwords get no `account`
+
+`/api/auth/me*` is in the `account` area, and an app password has no
+business reading or writing a profile — the credential exists for sync
+clients. The NC avatar path sits under `/remote.php/dav/avatars`, which
+is `files`-shaped, so dropping `account` costs DAVx5 and rclone nothing.
+
+Ceiling: `files,calendar,contacts`.
+
+This used to be derived from "`/api` is closed to app passwords, so
+`account` is unreachable anyway". That argument died with the
+credential-kind condition — nothing closes `/api` by credential type any
+more. The tightening stands on its own: the ceiling is an allowlist, and
+`account` was never justified in it.
 
 ## Required: documentation
 
@@ -1340,10 +2208,16 @@ plan file — plans record *why a change was made*, architecture docs
 record *how the system works now*, and a reader debugging a 403 needs
 the second.
 
-### New: `docs/architecture/authorization-axes.md`
+### `docs/architecture/authorization-axes.md` — WRITTEN
 
 One page covering all three axes and how a request is decided, with
 ReBAC remaining the deep dive for Grant.
+
+Written ahead of the fold because the gate/grant distinction and the
+request path are true TODAY; what is not yet enforced says so. Still
+owed once PR 1 and PR 2 land: the `Condition` / `Policy` types, the scope vocabulary
+table, and elevation.
+
 
 A new file rather than an extension of `rebac-authorization.md`, because
 that document is focused and already disclaims this material. Its
@@ -1431,10 +2305,505 @@ The halves have opposite risk profiles and must not share a green suite:
 
 | PR | change | acceptance |
 |---|---|---|
-| 1 — gates | folds five layers plus the `transfer_ownership` check into `Gate`; adds `NotAppPassword` | **behaviour-preserving** — `external_users.hurl` stays green *unchanged*, which is the whole criterion |
+| 1 — gates | a caller carrying what the conditions read; `Condition` / `Policy` + `MinRole` / `MinPrincipal`; the compile step, the boot refusals and the operation table; then fold three layers plus the `transfer_ownership` check | **behaviour-preserving**, and provable rather than hoped: the compiled table before and after the fold must be IDENTICAL, with `external_users.hurl` green *unchanged* |
 | 2 — scopes | turns `device_codes.scopes` from an inert column into enforcement | **not** behaviour-preserving; carries every lockout risk below |
 
 Landing them together means PR 2's risk rides in on PR 1's green suite.
+
+#### PR 1 — status
+
+| # | step | state |
+|--:|---|---|
+| 1 | the caller carries what the conditions read | **done** — `f481cfa8f` · `17f44e3b4` · `401c250a5` |
+| 2 | `Condition` / `Policy` + `MinRole` / `MinPrincipal` (`application/ports/scope_ports.rs`) | **done** — `7ce329192`, inert |
+| 3a | the compile step + the five chain-local boot refusals | **done** — `1167e58ba`, inert |
+| 3b-i | the registry, the table, and the DUMP | **done** — `5b7ddb403`, inert |
+| 3b-ii | `.policy()` + the orphan cross-check | **done** — `9f2525edd`, inert |
+| 4a | the gate matrix — a behavioural baseline, before any layer moves | **done** — `4fc3fd79f`, green |
+| 4-i | `evaluate` — one caller against one policy, audit-neutral | **done** — `479e5f38b`, inert |
+| 4-ii | transcribe the four folded gates | **done** — `a037c5ab7`, inert |
+| 4-iii | the policy gate layer | **done** — `1f521fbed` |
+| 4-iv | SHADOW on the three DAV nests | **done** — `7eccaa28e`, needs a matrix run |
+| 4-v | SHADOW on `/api/admin` (incl. the Owner declaration) | **done** — `bd9359030`, needs a matrix run |
+| 4-vi | SHADOW on the whole protected `/api` subtree | **done** — `3dde235bf`, needs a broad matrix run |
+| 4-vii | declare at the route (`.policy()`), not a central table | **done** — `6061aba6b` |
+| 4-viii | REMOVE `require_internal_user_layer` from the DAV nests | **done** — `06a046593`, needs a matrix run |
+| 4-ix | REMOVE `require_internal_user_layer` entirely (+ its fail-open) | **done** — `7a6f939ae`, needs a matrix run |
+| 4-x | MOVE the `/api` declarations to their routes | **done** — `b9f055275` · `eaa3c1974`; only `transfer-ownership` left, which needs `admin_routes()` to return a `GatedRouter` |
+| 4-xi | REMOVE `require_admin` | **done** — `b80c1a12b`, needs a matrix run |
+| 4-xii-a | spec markers derived from the table (§ engine → spec) | **done** — `0159fb215` · `7fbf0a6b6` |
+| 4-xii-b | REMOVE `anonymous_allowlist_layer` + the constant | **done** — `0a76b9dcd`; all four gates now retired |
+| 4-xiii | collapse `music_create` / `contacts_create` | **done** — `eaa3c1974`, fell out of per-verb policies |
+| 4-xiv | declare `public()` on the 21 public operations | **done** — `54aa3bcc5` · `4d46a842d` · `acb85814d`; the validator agrees on every operation |
+| 4-xv | delete the hand-written `security(...)` annotations | **done** — `8f6aaa73c`; 231 gone, `openapi.json` byte-identical |
+| 4-xvi | a bare `Router` cannot enter the API tree | **done** — `497908491`; `nest` and `.policy()` take only a `GatedRouter`, no escape hatch |
+| 4-xvii | `into_router()` / `into_policies()` instead of `.0`/`.1` | **done** — `6d1f60582` |
+| 4-xviii | `transfer_ownership`: declare `Owner` at its route, drop the service check | **done** — `7dc03cfb7`; `policy_declarations.rs` now holds nothing with a route |
+| 4-xix | one `GatedRouter` owns everything under `/api` | **done** — `0e382ef84` · `02901745f`; `ApiSubRouters::new` is the only constructor list and `main_api_router` the only prefix list, so `main.rs` and the generator cannot see different tables. Matrix green across `gate_matrix auth app_passwords device_auth external_users admin_role_hierarchy`. Two feature-gated `/api` surfaces stay outside it — `/api/rt/ws` and `/api/wopi`, neither in the spec (§ Between PR 1 and PR 2) |
+
+Step 1 landed as `CurrentCaller.kind: CallerKind`, not the `is_external`
+bool this section first called for: the bool could express three states
+that cannot exist, so `MinPrincipal` compares enum variants instead of a
+bool plus a parsed role string. `SmolStr` roles and the stale role on
+`CachedBasicAuthResult` went with it.
+
+**The dump alone cannot prove the fold is faithful — hence step 4a.**
+The acceptance below asks for the compiled table to be identical before
+and after the fold, but that table is written BY HAND from reading the
+layers. The diff therefore proves the fold matches the table, never that
+the table matches the layers: a mis-transcribed gate makes both dumps
+agree on a widened policy. `tests/api/gate_matrix.hurl` is the
+behavioural half — it asks the running server what each principal kind
+may reach, and is green BEFORE any layer moves. Its coverage map names
+the files that already pin the other rows, so it only covers what was
+missing: `/webdav` (nothing in `tests/api` ever PROPFINDed it),
+anonymous against each folded surface, allowlisted vs non-allowlisted
+under one subtree, and the NOT-folded DPoP layer.
+
+**The third fail-open is GONE** (`7a6f939ae`), deleted with the layer that
+held it. Recorded because the reasoning is reusable:
+`require_internal_user_layer`'s else-branch passes the request through
+when no `CurrentCaller` is in the extensions ("No auth populated, or auth
+disabled globally"). It is distinct from the two `src/AGENTS.md`
+documents (those are `get_user_flags` errors). It is unreachable today
+only because `auth_middleware` is layered OUTSIDE it and ends in
+`Err(AuthError::TokenNotProvided)` — so nothing uncredentialed ever
+reaches the inner layer. The fold reshuffles exactly that stack, so the
+ordering guarantee has to survive it, or the gate becomes
+pass-through-on-missing-caller. A compiled policy has no such arm:
+`MinPrincipal::satisfied_by(None)` is true only for `Public`.
+
+**The acceptance was met behaviourally, not by a dump diff — say so.**
+This section asks for the compiled table to be identical before and after
+the fold. The dump exists (`PolicyTable::render`) but no before-snapshot
+was ever taken: by the time it could have been, the comparison would have
+been between two hand-written tables, which § 4a already argues proves
+nothing about the layers. What was used instead is
+`tests/api/gate_matrix.hurl` plus the existing suites, run green at every
+shadow step with BOTH enforcing, and again after each removal. That is the
+stronger check, and it is the one that caught the visitor-DELETE hole the
+dump could not have.
+
+**Step 3 must ship the table DUMP, not just the table.** This section's
+acceptance — the compiled table identical before and after the fold — is
+unprovable today, because nothing can render that table. The snapshot has
+to be taken while the gates still live in middleware and handlers, so
+step 3 lands the renderer and its snapshot test, and step 4 asserts the
+snapshot byte-identical after folding. Reversing the two reduces PR 1 to
+"the suite is still green", which is the hoped-for-not-proven outcome this
+table exists to rule out.
+
+§ 2b lists **eight** refusals, and they do not all need the same
+machinery — which is why step 3 splits:
+
+| refusal | needs | step |
+|---|---|---|
+| `public`/`visitor` + any role | the folded chain | **3a** |
+| `public`/`visitor` + a scope | the folded chain | **3a** |
+| a role declaration that widens | the folded chain | **3a** |
+| a principal declaration that widens | the folded chain | **3a** |
+| the same axis twice in ONE slice | the slice | **3a** |
+| an operation with no policy | — | **rejected**, see below |
+| a policy naming no live operation | the table × the spec's operation list | **3b-ii** |
+| two `.policy()` on one site | nothing — it does not COMPILE | **3b-ii** |
+| `public`/`visitor` + elevation | a `Condition::Elevated` variant | blocked |
+
+**Row 5 is REJECTED — it contradicted § Authentication by default, and
+that section is the better mechanism.** Row 5 refused "an operation with
+no policy" at boot on deny-by-default grounds, but `Policy::default()`
+IS an authenticated user, so an undeclared operation is already closed to
+anonymous callers and the property falls out of the type instead of
+needing a check. Refusing it would have meant declaring all 279 REST
+operations and keeping them in sync, to catch an exposure that a nest
+declaration already covers wherever a nest exists.
+
+So a bare `Router` or handler needs no `.policy()` call, and an
+undeclared operation compiles to the safe default. The residual risk is
+named rather than hidden: an operation that *should* be admin-only and
+sits under no admin nest gets `principal=User` — any authenticated user.
+That is the fold's job to catch in step 4, by comparing the dump against
+what the layers enforce today.
+
+**Row 8 got stronger than specified.** It asked for a boot error on two
+`.policy()` declarations for one operation. `.policy()` returns a
+`Gated<T>` that does not itself implement `Policied`, so
+`.policy(..).policy(..)` does not COMPILE — a contradiction the compiler
+refuses beats one the server refuses at boot. The array literal is what
+makes one slice the natural way to write several conditions.
+
+**Deleting `ANONYMOUS_ALLOWLIST` has a consumer nobody had counted.**
+`SecurityAddon` (`interfaces/api/mod.rs`) GENERATES the OpenAPI security
+markers from that constant, deliberately — "deriving one from the other
+means they cannot disagree" — with a drift test enforcing it. So the
+published spec's anonymous-reachable set is downstream of the constant,
+and deleting it either strands the markers or fails that test.
+
+That is § engine → spec arriving early rather than a problem: the
+generator should read the COMPILED TABLE and mark every operation whose
+`principal` is `Visitor`. Strictly better than today, twice over — it
+covers every visitor-reachable operation rather than one hand-kept list,
+and it is per VERB, so the spec stops implying a path is
+anonymous-reachable when only its GET is.
+
+**Row 6 is load-bearing, not belt-and-braces.** `axum::Router` cannot be
+asked which paths it holds (`has_routes() -> bool` is the whole public
+introspection surface), so a declaration for a renamed or typo'd path is
+otherwise indistinguishable from one that applies, and it silently stops
+gating anything. Nothing else in the design notices. It immediately
+earned its place by catching two tests in `scope_table` that declared
+prefixes covering no operation.
+
+**ONE place to declare a route and its policy: `routes.rs`, per VERB.**
+Route, layer and policy are written together — a reader sees all three
+without cross-referencing, and the path appears exactly once.
+
+```rust
+router.nest("/admin", admin_router.policy([Condition::role(MinRole::Admin)]))
+.route("/{id}", get(download).policy([Condition::visitor_allowed()]))
+.route("/{id}", delete(remove))          // no policy: the safe default
+```
+
+`get`/`post`/`put`/`delete`/`patch` are OxiCloud's (`policy_router.rs`),
+not axum's, because axum's return a `MethodRouter` that has forgotten its
+verb — so `.policy()` on one could only declare for the whole PATH.
+`.policy()` on a `MethodRouter` is therefore a COMPILE error. Not a
+nicety: `ANONYMOUS_ALLOWLIST` is GET-only and three of its seven paths
+also carry a write, so a path-level `visitor_allowed()` on
+`/api/files/{id}` grants a share visitor `DELETE` — which it did, until
+`c79955364`.
+
+A declaration leaks in none of three directions, pinned end to end
+through merge + nest + rebase, because `/api/files/{id}`'s GET and DELETE
+live in SEPARATE routers that are merged before being nested:
+
+| operation | policy | direction tested |
+|---|---|---|
+| `GET /api/files/{id}` | `Visitor` | declared |
+| `DELETE /api/files/{id}` | `User` | same path, other verb |
+| `GET /api/files` | `User` | upward, to the collection |
+| `GET /api/files/{id}/versions` | `User` | downward, to a subpath |
+
+**Nothing with a route may be declared centrally.**
+`policy_declarations.rs` holds only operations that HAVE no route: DAV
+(one `any` handler per surface → `(area, access)`), the WS `rt.*` methods,
+and collab frame kinds. Never a copy of a list that exists elsewhere.
+
+**`.policy()` cannot record its own path**, for the same reason: neither
+a `Router` nor a `MethodRouter` knows where it will be mounted. It
+attaches conditions, and the `Site` is learned at the `nest` / `route`
+call — so the path is still written exactly once, which is the property
+the syntax was reaching for.
+
+Step 3a also found a gap in § 2. Compile: scope is specified to fold as
+"union of what is required", but `Policy::scope` holds a SINGLE pair, so
+two different areas have nowhere to live. The compiler refuses them
+(`ConflictingScopes`) rather than dropping one, so a genuine two-area
+operation forces `scope` to become a `ScopeSet` instead of quietly losing
+a requirement. The same area twice tightens access, as intended.
+
+Step 2 added `Axis` to the types above: the compile step has to tell a
+repeated axis within ONE slice (a boot error — the declaration is
+ambiguous) from a repeat across a nest CHAIN (legal inheritance), and it
+needs the axis without the payload to do it. `public()` and
+`visitor_allowed()` share the `Principal` axis, which is why declaring
+both in one slice is ambiguous rather than additive.
+
+Still open, and now blocking step 3: how a route records its policy — an
+axum `.policy()` extension trait, or an explicit builder.
+
+#### Not in PR 1 — the externals audit
+
+`CallerKind::role()` reproduces the pre-`f481cfa8f` `role` field exactly:
+`External` reports `User`. That was deliberate, because an external user's
+role IS `user`, so every site reading the role alone matched externals
+before and still does — rewriting them as `matches!(.., Internal(User))`
+during the migration would have silently stopped matching them.
+
+Which of those ~25 sites SHOULD exclude externals is therefore unexamined.
+It is independent of the policy engine and belongs in its own diff: each
+site is a judgement call that is either a fix or a regression, and folding
+them into a rename or into step 4 hides them from review.
+
+### Between PR 1 and PR 2 — WOPI
+
+WOPI has TWO surfaces that authenticate differently, and only one of them
+belongs to the engine.
+
+| surface | auth | in the spec? | action |
+|---|---|---|---|
+| ~~`/api/wopi/*`~~ | **DONE** (`bee8c9667`) — `GatedRouter` + the policy gate via `route_layer`, and the operation is documented. No declaration needed: the default policy already demands a user, which is what `AuthUser` asks for | yes, now | make it a `GatedRouter` AND document it with `#[utoipa::path]` |
+| `/wopi/*` | `?access_token=`, validated in the handler (`wopi_handler.rs`) | **no** | leave it a plain `Router` |
+
+**`/wopi/*` must NOT be gated.** It carries no `CurrentCaller`, so the
+gate axes have nothing to read: `evaluate` would see `None`, the default
+policy demands a user, and every Office client would get a 401. Its
+CREDENTIAL should be `files`-scoped, which is the scope axis on a token —
+PR 2's business, not a gate on a route.
+
+**`/api/wopi/*` is the real gap, and it is a documentation gap first.**
+Neither surface has a single `#[utoipa::path]`, so neither appears in
+`openapi.json` — and by § Which routers must be gated the engine is
+therefore silent about both. That silence hides the operation
+`src/AGENTS.md` singles out as dangerous: `GET /api/wopi/editor-url`
+returns a token usable for `POST /wopi/files/{id}/contents`, a
+credential-minting GET.
+
+So the two halves are independent and only the second has value on its
+own:
+
+1. `/api/wopi` → `GatedRouter`, which makes a per-verb declaration
+   possible but changes nothing observable while the routes are
+   undocumented;
+2. document `/api/wopi/*`, which is what brings it under
+   `just openapi`'s validator — and forces the question of what
+   `editor-url` should require. A session is today's answer; a
+   token-minting GET arguably wants `files:rw` once scopes exist.
+
+Sequenced here rather than inside PR 1 because PR 1 is a FOLD — it retires
+four existing gates without changing what any operation requires — while
+this ADDS coverage to a surface that had none.
+
+#### PR 2 — status
+
+Ordered so that each step is either INERT or verifiable on its own, the
+way PR 1 was. Two orderings are load-bearing rather than tidy:
+
+- **the area declarations must precede the boot refusal.** `ScopeReq`
+  defaults to `Undefined` and `Undefined` is a boot error, so switching
+  the check on before every operation is classified refuses to start —
+  and would do it in CI first, where `generate-openapi` compiles all of
+  them.
+- **the JWT claim must precede enforcement.** Tokens minted before the
+  claim existed carry no scopes, and the rule for them is "absent claim ⇒
+  every scope `:rw`" (precedent: `sid`). Enforce first and every token in
+  flight is refused.
+
+| # | step | state |
+|--:|---|---|
+| 1 | `ScopeReq { Undefined, None, Area(Scope, Access) }`; `Policy::scope: ScopeReq`, `Default = Undefined`. Refusal OFF | **done** — `24d130c73`; inert. The spec renders `Undefined` as `null` so the step-3 query below means something: **250 of 250** unclassified today. The dump renders `?` for it, distinct from `-` for a declared none |
+| 2 | `Condition::scope_by_verb(area)`, `Condition::scope(area, access)` and `Condition::scopeless()` | **done** — `e88039ac4`; inert. One `Access::from_method` now serves REST compile-time resolution AND the DAV gate — `DAV_READ_METHODS` was the same five methods. Added a rule the design lacked: the scope axis TIGHTENS, so `scopeless()` under an area parent is a `ScopeWidens` boot error |
+| 3 | the ~10 AREA-PREFIX declarations (§ Areas, not protocols), plus `scopeless()` on the login/public/ops routes (§ Deliberately scopeless) | SHIPPED |
+| 4 | the `Undefined` refusal at GENERATION time, over REST **plus the DAV operations** | **done** — `0fd7e4011`; it found exactly one gap, the six `Op::Dav` pairs, which had the role gate and no scope. Also made compile FAILURES visible (`compile_failures`), which had been silently swallowed — 32 of them |
+| 4c | the gated OCS routes declare theirs, plus a runtime warning for any undeclared gated operation | **done** — `1ee33d993`; eleven OCS routes were inside the gate with no declaration, `DELETE /ocs/v2.php/core/apppassword` among them (NC's credential endpoint, so an app password could have revoked another). The generation check is BLIND to them — `/ocs/*` and `/api/wopi/editor-url` are in no spec, so its op list is a hand-maintained `non_spec_ops()` with nothing proving completeness. `authz.scope_undeclared` now fires once per operation at runtime to cover that blind spot |
+| 4b | the NextCloud surface joins the axis | **done** — `315664d1d`; `/remote.php/{webdav,dav/files,dav/trashbin,dav/uploads}` map onto the SAME `Op::Dav` as native `/webdav`, avatars to `Op::Dav(Account, …)`, and the gate is applied INSIDE `basic_auth_middleware`. `/ocs/*` remains — its POSTs do not follow the verb, so it needs an area per path | — gates merges via CI's `openapi-spec-drift`; `just gen-openapi` is the local proof. NOT a boot check: feature-gated routers would make a stock deployment refuse to start |
+| 5 | `auth.app_passwords.scopes` column + backfill `files,calendar,contacts`; WIDEN existing `device_codes` rows with `account` | SHIPPED |
+| 6 | the wire parser → `ScopeSet`: namespaced, both delimiters, `effective = (requested ?? type_default) ∩ type_maximum`, empty REJECTED, `mail` REJECTED | SHIPPED |
+| 7 | mint: the scope set into the JWT claim; absent claim ⇒ every scope `:rw`. **Store AND echo the EFFECTIVE set, not the requested one** | SHIPPED |
+| 8 | `CurrentCaller` carries the `ScopeSet` | SHIPPED |
+| 8b | the message bus, per TOPIC: a topic-class → area map, the `/api/rt/ticket` mint carrying the credential's `ScopeSet`, `rt.error` as the refusal | not started — DECIDED design, § The two surfaces with no caller |
+| 8c | WOPI: intersect the minted token's `can_write` with the caller's scope, so `/wopi/*` needs no gate | not started — after 8b, per Ed |
+| 9 | SHADOW: pass the scopes to `evaluate` and LOG what would be denied, enforcing nothing | SHIPPED |
+| 10 | ENFORCE: the gate refuses on `authz.scope_denied` / `scope_not_granted` | SHIPPED |
+| 11 | Hurl pins: an app-password credential refused OUTSIDE its areas and allowed INSIDE; a device credential likewise; an interactive session unaffected | SHIPPED |
+
+**Step 3 has a mechanical acceptance, which is why it is worth doing
+before the boot refusal rather than alongside it.** Every operation
+publishes its policy since `3302841c3`, so once the areas are declared:
+
+```
+jq '[.. | objects | select(has("x-oxicloud-policy")) |
+     .["x-oxicloud-policy"].scope] | map(select(. == null)) | length' \
+  resources/gen/openapi.json     # must be 0
+```
+
+A `null` there means an operation nobody classified — the same thing the
+boot refusal will reject, but visible as a diff before it can fail a
+deploy, and attributable to a path rather than to a startup log line.
+
+**What is NOT in PR 2**, recorded so it is not assumed: the consent
+screen rendering resolved access ("Files — read and write") is UI work
+that § Defaults requires but this PR does not ship, and the four
+credential populations in § Defaults are only as correct as the ceiling
+table — a new credential type added later gets `security` withheld by
+construction, which is the intended failure direction.
+
+### The two surfaces with no caller: WOPI and the message bus
+
+Both are outside the gate, both for the same reason, and neither is fixed
+by a declaration. **Where there is no `CurrentCaller`, the scope must be
+FROZEN INTO THE TOKEN at mint** — which is § Freezing at mint applied
+where it is not optional.
+
+#### `/wopi/*` — the scope rides in the WOPI token
+
+`/wopi/files/{id}`, `/contents` and `/edit/{id}` are called by the Office
+server, authenticated by `?access_token=` validated inside each handler.
+There is no caller for the axes to read, so gating the subtree would 401
+every Collabora request. That is settled (§ Between PR 1 and PR 2) and is
+not revisited here.
+
+What IS missing: `GET /api/wopi/editor-url` requires `files:rw` and
+derives the token's `can_write` from the caller's real Update permission
+(`resolve_mint_target`) — but NOT from the caller's SCOPE. So a
+credential holding `files:ro` can still be issued a write-capable WOPI
+token if its owner has Update rights, and that token then writes through
+`POST /wopi/files/{id}/contents` where no scope check runs.
+
+The fix is one intersection at mint: `can_write &= caller carries
+files:rw`. Then `/wopi/*` needs no gate at all, because the token it
+honours cannot exceed the scope of the credential that asked for it.
+
+**Blocked on step 8** — `CurrentCaller` does not carry a `ScopeSet` yet,
+so there is nothing to intersect with. Sequenced AFTER the message bus
+(Ed): the bus establishes how a frozen scope set travels with a
+long-lived credential, and WOPI's token intersection is the same idea
+with a shorter life.
+
+#### `/api/rt/ws` — per TOPIC, not per method
+
+The message bus is subscription-based: `rt.subscribe { topic }`, where a
+topic is `folder:{id}`, `collab:{file_id}` or `user:{id}:authz`. The
+session auto-subscribes to its own authz topic.
+
+**DECIDED: per TOPIC, not per method** (Ed, 2026-11-26). `Op::Ws(&str)`
+is keyed by the METHOD, and that is the wrong shape for this axis. One `rt.subscribe` covers every topic class, so no
+per-method declaration can say "`folder:` topics need `files`". The gate
+cannot answer a question whose subject arrives in the frame body.
+
+So the check belongs INSIDE the subscribe handler, against the scope set
+frozen into the ticket at `/api/rt/ticket` — which is scopeless by design
+(§ Deliberately scopeless), because the ticket is the credential-bearing
+step and the socket is not. What it needs:
+
+- a TOPIC CLASS → area map: `folder:` and `collab:` are `files`,
+  `user:{id}:authz` is `account`, a job topic would be `admin`;
+- the ticket to carry the minting credential's `ScopeSet`, so a
+  `files`-only app password cannot receive calendar events through a
+  socket;
+- a refusal shape that fits the protocol — `rt.error` on the subscribe,
+  not an HTTP status, since there is no response to give one.
+
+Long-lived sessions make this sharper than a request-scoped check: a
+scope frozen at mint governs the whole socket, so a credential narrowed
+AFTER the socket opened keeps its subscriptions until it reconnects. That
+is the same trade § Freezing at mint already accepts, but the window is
+minutes rather than milliseconds.
+
+**Blocked on step 8** for the same reason as WOPI.
+
+### PR 2 — a new route must not be silently scopeless
+
+The two axes reach safety by opposite routes, and that asymmetry is the
+design:
+
+| axis | an undeclared operation gets | how that is safe |
+|---|---|---|
+| gate | `principal = User` | a DEFAULT that is itself a requirement — a session is needed, so a new route is gated by the type |
+| scope | `ScopeReq::Undefined` | a default that is UNSATISFIABLE — spec generation fails, so CI refuses the merge and the implementor declares an area or writes `scopeless()` |
+
+The gate can have a safe default because "a user session" is a real
+requirement that happens to be the common case. Scope has no such value:
+the only candidate default is "no scope required", which is fail-open —
+precisely the device-flow bug, where a credential restricted to `files`
+reaches a surface nobody classified. So rather than choose a default,
+`Undefined` makes the absence **unmergeable**: a forgotten route fails
+spec generation, not a request in production.
+
+Add `/remote.php/new-feature` or `/new-feature-dav/` and it inherits a
+session requirement from the gate axis and an unsatisfiable scope from
+this one — the second is what stops it shipping unclassified.
+
+`public()` turned out NOT to be a prerequisite for shadowing `/api`:
+`main.rs:1049` warns that nesting two routers at one prefix composes
+their layers, but that does not apply to `nest` plus an inner `.layer()`
+— a layer on one nested router does not reach a sibling. Pinned by
+`policy::nest_layer_semantics`, because the consequence of guessing wrong
+is refusing every login. `public()` is still needed before the gate can
+become the ONLY enforcement, since the public routers are outside
+`auth_middleware` and the default policy demands a session.
+
+**So the scope requirement is TOTAL and defaults to unsatisfiable.** Not
+an `Option` that defaults to "no requirement":
+
+```rust
+pub enum ScopeReq {
+    Undefined,            // the DEFAULT — unsatisfiable; a boot error
+    None,                 // explicitly no scope required; greppable
+    Area(Scope, Access),
+}
+```
+
+`Policy::scope: ScopeReq`, `Default = Undefined`. Three named states, no
+`Option`, and "no scope required" becomes a declaration an implementor
+writes — exactly as `public()` is written on the principal axis rather
+than fallen into. `/api/config` is the worked case: `ScopeReq::None` +
+`MinPrincipal::Public`.
+
+**NOT `Option<(Scope, Access)>` plus a `Scope::None` variant**, which is
+the `CallerKind` mistake repeated: `Option::None` and `Scope::None` would
+both be reachable and mean different things. Naming all three states is
+what makes the wrong combination unrepresentable.
+
+**`Undefined` is caught at GENERATION time, not at boot.** Boot is the
+wrong phase, and feature flags are why: the operation list for the check
+comes from the SPEC — a `Router` cannot be enumerated, which is § Both
+surfaces are already enumerated — while a feature-gated router only
+exists when its feature is on. `generate-openapi` forces every feature on
+(`FeaturesConfig::all_enabled`), so the spec holds all 250 operations;
+a server with `enable_photos=false` would then find `/api/photos/*` in
+the spec, no declaration for it, and refuse to start over a feature the
+operator deliberately turned off. Four features are off by default, so
+that is a stock deployment.
+
+Generation is the right phase for the same reason it already hosts the
+other two checks — the orphan cross-check and `audit_declared_security`
+both run there, and there is no boot-time `compile_all` anywhere. So:
+
+- **generation fails** (non-zero exit, hence CI's `openapi-spec-drift`
+  job) if any operation compiles to `Undefined`. That is EARLIER than a
+  boot refusal — pre-merge rather than pre-deploy — and it names the
+  path rather than a startup log line;
+- **the runtime keeps a deny**, not a pass-through, as defence in depth.
+  It is unreachable in practice: a disabled feature's route does not
+  exist, so the request 404s before the gate runs.
+
+This also keeps declarations AT their routes, including feature-gated
+ones, instead of forcing the ten area declarations into the central map
+to dodge a boot check.
+
+**The operation list for that check is NOT just the two specs.** § 2b's
+cross-check reads `openapi.json` and `asyncapi.json`, and ZERO DAV paths
+appear in either — a DAV surface has one `any` handler and so no
+`#[utoipa::path]`. Driving the scope check off the specs alone would
+therefore skip the six `Op::Dav(area, access)` operations, which is the
+worst possible omission: `/webdav`, `/caldav` and `/carddav` are precisely
+what app passwords and device codes are FOR, so an undeclared scope there
+is the exact fail-open this section exists to close, waved through by the
+check meant to catch it.
+
+So the list is three sources:
+
+- the REST operations in `openapi.json`;
+- the `rt.*` methods in `asyncapi.json`;
+- the DAV operations, enumerated literally — they already are, in
+  `policy_declarations.rs`, which maps each area across both accesses.
+
+A fourth source is NOT needed and that is worth stating: `/wopi/*` and
+`/api/rt/ws` are absent from every spec by design (§ Between PR 1 and
+PR 2), so the engine is silent about them and the check has nothing to
+assert. If either is ever documented, it joins the list by virtue of
+being in the spec.
+
+**Declare by AREA PREFIX so the workload stays small.** § Areas, not
+protocols already has the rule — "a new route under an existing area
+inherits its scope. A route fitting no row means a scope is missing,
+which is a decision rather than a lookup". About ten prefixes cover the
+279 operations, so making the default unsatisfiable costs ten
+declarations rather than 279. This is why the same move was REJECTED for
+the gate axis (§ PR 1 — status, row 5): there the default is already
+safe, so the work bought nothing.
+
+**Pin the `ScopeReq::None` list.** It should be rare and auditable like
+`public()`; § Deliberately scopeless already names the candidates. A test
+over that list makes adding one visible in review instead of a quiet
+one-word diff.
+
+**Two opposite "absents", same word — do not merge them.** The CREDENTIAL
+side grandfathers an absent claim to FULL (§ Absent means FULL,
+everywhere), because refusing every token minted before the claim existed
+would lock out the whole population. The OPERATION side defaults to
+`Undefined` and denies. Opposite directions; a reader who conflates them
+will "fix" one into the other.
 
 ### Absent means FULL, everywhere
 
@@ -1443,7 +2812,7 @@ each must grandfather to the complete set rather than the empty one:
 
 | population | why it has none | rule |
 |---|---|---|
-| JWTs in flight | minted before the claim existed | absent claim ⇒ every scope `:rw`. Precedent: `JwtClaims.sid` is `Option<String>`, "None on tokens minted by pre-`sid` builds" |
+| JWTs in flight | minted before the claim existed | absent claim ⇒ every scope `:rw`. Precedent: `sid` is optional for exactly this reason, "None on tokens minted by pre-`sid` builds" — but note it is declared THREE times in two types (`auth_ports.rs:73` as `Option<Uuid>`, `auth_ports.rs:389` and `jwt_service.rs:68` as `Option<String>`), so "absent" is spelled differently depending on which one you are holding. A scope claim should be declared once |
 | `auth.app_passwords` rows | no scope column exists today | migration backfills the full app-password ceiling, never NULL-as-empty |
 | `auth.device_codes` rows | default is `webdav,caldav,carddav` | maps to files+calendar+contacts and **omits `account`** — widen existing rows, or a device credential that reads an avatar starts 401ing |
 
@@ -1479,22 +2848,41 @@ change:
   header convention exists in-house and this follows it rather than
   inventing one.
 - **Audit.** Stay inside the `authz.*` domain aggregators already filter
-  (`authz.denied`, `authz.admin_denied`, `authz.external_user_blocked`
-  exist) rather than opening a `scope.*` one:
-  `authz.scope_denied` with `reason = "scope_not_granted" |
-  "access_insufficient"`, `authz.app_password_blocked`, and
-  `authz.elevation_required`. Per AGENTS.md every denial emits one
-  before returning.
+  rather than opening a `scope.*` one. The engine emits its OWN
+  vocabulary rather than reproducing each folded layer's pair
+  (`348e757d9`), one shape throughout — `<what>_required`:
 
-### `sid` is no longer deferrable
+  | event | reason | cause |
+  |---|---|---|
+  | `authz.denied` | `authentication_required` | no credential |
+  | `authz.denied` | `user_session_required` | a visitor |
+  | `authz.denied` | `internal_user_required` | `MinRole::Internal` |
+  | `authz.denied` | `higher_role_required` | Admin / Owner, with `required` as a FIELD |
+  | `authz.scope_denied` | `scope_not_granted` | PR 2 |
 
-§ What a scope is bound to leaves `sid` off `CurrentUser` "to keep the
-two changes separable". That held while `Elevated` was hypothetical; it
-now has three consumers, one of which (`security` mutations) is in this
-plan. So either PR 2 threads `sid` through, or `security` ships
-ceiling-only — which § `security` already admits is weaker, since an XSS
-riding a live browser session would pass. Decide deliberately rather
-than discovering it mid-implementation.
+  Reproducing the old pairs was tried and rejected: AGENTS.md's rule is
+  that a new denial CAUSE gets a new reason, the mapping had already gone
+  wrong for `MinRole::Owner` (borrowing `server_owner.transfer_rejected`,
+  an event about one operation), and it encoded dead history. The ROLE is
+  a structured field, so one reason covers Admin and Owner.
+
+  Retired, for release notes: `authz.admin_denied`/`not_admin`,
+  `authz.external_user_blocked`/`internal_only_surface`,
+  `server_owner.transfer_rejected`/`caller_not_owner`,
+  `authz.denied`/`anonymous_not_authenticated`,
+  `authz.denied`/`anonymous_route_not_allowlisted`. Per AGENTS.md every
+  denial still emits one before returning.
+
+### `sid` is on the caller
+
+`CurrentCaller` carries `token: PresentedToken`, whose `session_id` is the
+JWT `sid` (merged with `authn-pipeline.md` part A). So `security` gets
+the per-session form rather than ceiling-only, and `Elevation` reads
+`caller.token.session_id` once `auth.sessions.elevated_at` exists.
+
+It must live on the caller, not in request extensions: a gate is handed
+`&CurrentCaller` and nothing else, so extensions can serve a handler but
+never a gate.
 
 ## Test plan
 
@@ -1523,6 +2911,15 @@ field into an enforced one:
   token is rejected, **including the standards-reserved `openid`,
   `profile` and `email`**, so a mixed OIDC request can never partially
   resolve; `scope=` present-but-empty is malformed, not defaulted.
+- Unit + Hurl: the pre-area vocabulary is **ALIASED, not rejected**.
+  `webdav` / `caldav` / `carddav` resolve to their areas at `:rw`, each
+  logging `authz.scope_legacy_vocabulary` for removal at NEXT-MAJOR.
+  Shipped after two of this repo's own shell suites failed at mint on a
+  hardcoded `"webdav"` — and the old default appeared in every
+  app-password creation response, so automation that echoed `scopes`
+  back sends exactly this. Aliasing three names we OWN does not open the
+  namespace: `webdav,profile` still fails as a whole, and `webdav:ro` is
+  not invented, since the legacy vocabulary had no access dimension.
 - Unit: `effective = (requested ?? type_default) ∩ type_maximum` — a
   device-flow request for `account` is clamped, and an omitted scope
   yields the type default rather than every resource. This is the
@@ -1577,10 +2974,28 @@ field into an enforced one:
   `/api/files`, `/api/grants` and `POST /api/auth/app-passwords`. The
   last is the escalation that matters — a leaked app password must not
   be able to mint another.
-- Unit: the permit set is exactly `{webdav, caldav, carddav,
-  remote.php, ocs}` and **no `/api` operation carries
-  `PermitAppPassword`**. A new mount that opts in without review fails
-  here, which is the point of the positive marker.
+- Unit: the app-password CEILING is exactly `files,calendar,contacts`,
+  so no `security` or `account` operation is reachable with one. A
+  ceiling widened without review fails here — the ceiling table is the
+  one artifact to audit.
+- Unit: a multi-axis `Policy` is **conjunction** — a caller holding
+  elevation but not `Admin` is REFUSED by a policy requiring both, and so
+  is one holding `Admin` but not elevation. Pin both halves: a disjunctive
+  implementation passes the first silently and hands admin mutations to
+  any user who re-authenticated.
+- Unit: reduction — a chain declaring `MinRole::Internal`, then `Admin`,
+  then `Owner` compiles to `Owner` and still refuses a plain user. A
+  declaration that would WIDEN the role (an `Owner` nest, an `Internal`
+  child) fails at boot rather than resolving silently.
+- Unit: reduction is per condition. The role chain above compiles to
+  `Owner` while the principal condition keeps its own value — a role
+  conjunction must not reach across and alter another condition. Pin the
+  independence, not just the role result: that is what a global reduction
+  would silently break.
+- Unit: the boot refusals in § 2b. `public()` beside any
+  `MinRole` is REFUSED — structurally unsatisfiable, since
+  `UserRole::Anonymous` is never stored in `auth.users`. Likewise
+  `visitor_allowed()` with elevation, and with a scope.
 - Unit: the public set — once § Authentication by default lands, every
   route reachable without a session carries `AnonymousAllowed`, and the
   set is exactly the login flows, the share-link surface, `/status.php`,
@@ -1591,22 +3006,6 @@ field into an enforced one:
   claim, an app-password row backfilled from NULL, and a `device_codes`
   row still holding the legacy `webdav,caldav,carddav`. Each keeps
   working. This is the pin that prevents a silent lockout on upgrade.
-- Unit: `require_all` is **conjunction** — a caller holding `elevated`
-  but not `Admin` is REFUSED on `[Admin, Elevated]`, and so is one
-  holding `Admin` but not `elevated`. Pin both halves: a disjunctive
-  implementation passes the first silently and hands admin mutations to
-  any user who re-authenticated.
-- Unit: normalisation — `[Internal, Admin, Owner]` reduces to `[Owner]`
-  and still refuses a plain user; `[PermitAppPassword]` cancels the
-  default `NotAppPassword`; `[NotAppPassword, PermitAppPassword]` fails
-  at startup rather than resolving silently.
-- Unit: per-axis reduction. `[Internal, Admin, Owner]` yields exactly
-  `[Owner, NotAppPassword]` — the role axis collapses to its strongest,
-  the anonymity axis collapses because `Owner ⇒ NotAnonymous`, and the
-  credential axis keeps its default because no role can imply it. Pin
-  the last part especially: an Owner presenting an app password is a
-  coherent caller this plan intends to refuse, so a reduction that drops
-  `NotAppPassword` is a privilege widening.
 - Unit: **the subsumption lattice and the invariant under it.** Assert
   `Owner.at_least(Admin)` AND that `users_external_not_privileged` still
   reads `NOT (is_external AND role <> 'user')`. The reduction
@@ -1631,3 +3030,44 @@ At PR #853, which adds `POST /api/calendars` and the events surface —
 the third hand-written copy of the per-route gate. Three is where the
 duplication is real and the abstraction pays. Before that, this is
 building the frame before there is a third wall.
+
+## The gate was attached to one sub-router, not to `/api`
+
+Found by `credential_scopes.hurl` step 4 on the enforcement commit: a
+`files:rw` app password listed app passwords and got **200** where the
+spec published `security:ro`.
+
+`policy_gate_layer` was attached to `api_subs.protected` (plus the DAV
+nests and WOPI), and the auth family is nested into `main_api_router`
+SEPARATELY — `login`, `register`, `refresh`, `auth_public`,
+`auth_protected`, `app_passwords`, `opaque_*`, `device_*`. So ~31 route
+declarations were published in the spec and backed by no router check:
+the exact failure the engine exists to remove, in the words `main.rs`
+already used about WOPI — "a claim no router check backed".
+
+The consequence was not cosmetic. Three `Scope::Security` declarations
+live on the app-password routes, and without the gate a credential minted
+for DAVx⁵ could **mint itself a wider one**, so the ceiling that withholds
+`security` was one API call from irrelevant.
+
+Fixed by attaching the gate to the four sub-routers that already run
+`auth_middleware`: `app_passwords`, `auth_protected`, `opaque_register`,
+`device_protected`. First in each chain, so it is innermost and runs
+AFTER the caller is inserted.
+
+**Still open — the eight public auth sub-routers have no gate**, because
+they have no `auth_middleware` and therefore never hold a caller:
+`login`, `register`, `refresh`, `auth_public`, `opaque_login`,
+`opaque_params`, `setup`, `device_public`. A gate there would be a no-op
+for a correctly-declared public route and a 401 for anything else — and
+since the DEFAULT policy is `principal: user`, an undeclared route among
+them is published as requiring a user while being reachable without one.
+Closing it means auditing those declarations first, not attaching a
+layer.
+
+**Why no unit test caught it.** The spec and the gate read the same
+table, but only the gate also needs the LAYER. `cargo test` was green,
+`just gen-openapi` was clean, and the published policy was correct —
+every signal available short of a request. The first draft of the Hurl
+pin would have missed it too, by asserting a 200 through a router whose
+declarations a unit test cannot see.

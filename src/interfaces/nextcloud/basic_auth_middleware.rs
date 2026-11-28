@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use crate::application::dtos::folder_dto::FolderDto;
 use crate::common::di::AppState;
-use crate::interfaces::middleware::auth::CurrentUser;
+use crate::interfaces::middleware::auth::CurrentCaller;
 
 /// Markerless-chroot cache: default-drive root folder id → `FolderDto`.
 ///
@@ -171,10 +171,14 @@ pub async fn basic_auth_middleware(
         .verify_basic_auth(username, &password)
         .await
     {
-        // `_cached_role` is deliberately dropped: it comes from the
-        // 300 s Basic-auth verification cache, so it can name a role the
-        // user no longer holds. The live one is read below.
-        Ok((user_id, uname, email, _cached_role)) => {
+        // No role in this tuple, deliberately: the Basic-auth cache has a
+        // 300 s TTL, so a role from it can name one the user no longer
+        // holds. The live one is read below, from the 30 s flags cache.
+        //
+        // Scopes ARE in it, and the asymmetry is mutability: nothing
+        // edits an app password's `scopes` column, so a cached copy
+        // cannot name access the credential no longer has.
+        Ok((user_id, uname, email, scopes)) => {
             // Reset lockout counter on success
             if let Some(auth_svc) = state.auth_service.as_ref() {
                 auth_svc.login_lockout.record_success(username, &client_ip);
@@ -250,7 +254,6 @@ pub async fn basic_auth_middleware(
                 );
                 return Err(NextcloudAuthError::Unauthorized);
             }
-            let role = smol_str::SmolStr::new_static(flags.role.as_str());
             // Populate the deferred `user_id` field on the request
             // tracing span (declared in `middleware/trace_span.rs::ClientIpMakeSpan`).
             // Mirrors what `interfaces/middleware/auth.rs` does for the
@@ -263,19 +266,25 @@ pub async fn basic_auth_middleware(
             // no per-request `to_string` (mirrors the JWT path since ROUND5).
             tracing::Span::current().record("user_id", tracing::field::display(user_id));
             // One shared identity: the same `Arc` serves the
-            // `Arc<CurrentUser>` extension AND `NcSession.user` (the old
+            // `Arc<CurrentCaller>` extension AND `NcSession.user` (the old
             // code built the struct, cloned it for the extension, then
             // moved the original — 2-3 String allocs per request).
             // Nextcloud clients are always unbound — they authenticate
             // with app passwords via Basic Auth, no WebCrypto, no DPoP.
             // Middleware exempts unbound sessions per Gate 9 design.
-            let current_user = Arc::new(CurrentUser {
+            let current_user = Arc::new(CurrentCaller {
+                // From the `auth.app_passwords` row — every NC client
+                // authenticates with one, so this door never sees a
+                // JWT claim.
+                scopes,
+                // The same single flags read that answered `active` and the
+                // live role — § the one-read rule in this file's header.
+                kind: crate::domain::entities::user::CallerKind::from_flags(&flags),
                 // NextCloud Basic auth: no JWT, so no `sid` or `iat`.
                 token: crate::domain::entities::presented_token::PresentedToken::default(),
                 id: user_id,
                 username: uname,
                 email,
-                role,
                 dpop_jkt: None,
             });
 

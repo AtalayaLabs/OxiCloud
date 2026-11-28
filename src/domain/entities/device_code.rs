@@ -72,7 +72,9 @@ impl DeviceCode {
     /// * `device_code` — opaque token for client polling (64 hex chars)
     /// * `user_code` — short human-readable code (e.g. "ABCD-1234")
     /// * `client_name` — display name of the requesting client
-    /// * `scopes` — requested scopes (e.g. "webdav,caldav,carddav")
+    /// * `scopes` — requested scopes (e.g. `oxicloud:files:rw`); see the
+    ///   migration `20261126000000_credential_scopes_to_areas` on why these
+    ///   are AREAS rather than protocols (e.g. "webdav,caldav,carddav")
     /// * `verification_uri` — URL the user must visit
     /// * `expires_in_secs` — TTL for the device code
     /// * `poll_interval_secs` — minimum polling interval

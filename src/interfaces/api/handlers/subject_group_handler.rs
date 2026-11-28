@@ -5,14 +5,13 @@
 //! `/api/groups/search` endpoint requires only authentication so the share
 //! dialog can offer groups as recipients.
 
+use crate::application::ports::scope_ports::{Condition, Scope};
 use std::sync::Arc;
 
 use axum::{
-    Router,
     extract::{Json, Path, Query, State},
     http::{HeaderMap, StatusCode},
     response::IntoResponse,
-    routing::{delete, get, patch, post},
 };
 use serde::{Deserialize, Serialize};
 use utoipa::{IntoParams, ToSchema};
@@ -21,6 +20,7 @@ use uuid::Uuid;
 use crate::common::di::AppState;
 use crate::domain::entities::subject_group::{GroupMember, SubjectGroup};
 use crate::domain::entities::user::UserRole;
+use crate::interfaces::api::policy_router::{GatedRouter, delete, get, patch, post};
 use crate::interfaces::errors::AppError;
 use crate::interfaces::middleware::admin::{require_admin, require_authenticated};
 
@@ -142,19 +142,65 @@ impl From<GroupMember> for GroupMemberDto {
 // ── Routes ───────────────────────────────────────────────────────────────────
 
 /// Routes mounted under `/api/groups`.
-pub fn subject_group_routes() -> Router<Arc<AppState>> {
-    Router::new()
-        .route("/", post(create_group))
-        .route("/", get(list_groups))
-        .route("/search", get(search_groups))
-        .route("/{id}", get(get_group))
-        .route("/{id}", patch(update_group))
-        .route("/{id}", delete(delete_group))
-        .route("/{id}/members", get(list_members))
-        .route("/{id}/members", post(add_member))
-        .route("/{id}/members/user/{uid}", delete(remove_user_member))
-        .route("/{id}/members/group/{gid}", delete(remove_group_member))
-        .route("/{id}/effective-members", get(list_effective_members))
+/// Returns the `GatedRouter` — not a bare `Router`, because
+/// `GatedRouter::nest` accepts only the former. A subtree that declares
+/// nothing has to say so at its nest, so a router that SHOULD declare
+/// cannot quietly fail to.
+///
+/// Nothing is declared here yet: the mutating routes are gated inside the
+/// handlers (`require_admin(&state, &headers)`), which is the pattern the
+/// policy engine is meant to replace. Folding them is its own change —
+/// `/groups/search` is authenticated-only while the rest are admin-only,
+/// so this is a per-VERB declaration, not a subtree one.
+pub fn subject_group_routes() -> GatedRouter<Arc<AppState>> {
+    GatedRouter::new()
+        .route(
+            "/",
+            post(create_group).policy([Condition::scope_by_verb(Scope::Admin)]),
+        )
+        .route(
+            "/",
+            get(list_groups).policy([Condition::scope_by_verb(Scope::Admin)]),
+        )
+        .route(
+            "/search",
+            // Recipient lookup for the share picker, NOT administration —
+            // so it overrides the `admin` area its `/api/groups` prefix
+            // declares. The split is by operation, not by collection.
+            get(search_groups).policy([Condition::scope_by_verb(Scope::Sharing)]),
+        )
+        .route(
+            "/{id}",
+            get(get_group).policy([Condition::scope_by_verb(Scope::Admin)]),
+        )
+        .route(
+            "/{id}",
+            patch(update_group).policy([Condition::scope_by_verb(Scope::Admin)]),
+        )
+        .route(
+            "/{id}",
+            delete(delete_group).policy([Condition::scope_by_verb(Scope::Admin)]),
+        )
+        .route(
+            "/{id}/members",
+            get(list_members).policy([Condition::scope_by_verb(Scope::Admin)]),
+        )
+        .route(
+            "/{id}/members",
+            post(add_member).policy([Condition::scope_by_verb(Scope::Admin)]),
+        )
+        .route(
+            "/{id}/members/user/{uid}",
+            delete(remove_user_member).policy([Condition::scope_by_verb(Scope::Admin)]),
+        )
+        .route(
+            "/{id}/members/group/{gid}",
+            delete(remove_group_member).policy([Condition::scope_by_verb(Scope::Admin)]),
+        )
+        .route(
+            "/{id}/effective-members",
+            get(list_effective_members).policy([Condition::scope_by_verb(Scope::Admin)]),
+        )
 }
 
 fn service(
@@ -182,7 +228,6 @@ fn service(
         (status = 403, description = "Admin required", body = crate::interfaces::errors::ApiErrorBody),
         (status = 409, description = "Group with this name already exists", body = crate::interfaces::errors::ApiErrorBody),
     ),
-    security(("bearerAuth" = [])),
     tag = "groups",
     operation_id = "subject_group_create"
 )]
@@ -215,7 +260,6 @@ pub async fn create_group(
         (status = 401, description = "Unauthorized", body = crate::interfaces::errors::ApiErrorBody),
         (status = 403, description = "Admin required", body = crate::interfaces::errors::ApiErrorBody),
     ),
-    security(("bearerAuth" = [])),
     tag = "groups",
     operation_id = "subject_group_list"
 )]
@@ -250,7 +294,6 @@ pub async fn list_groups(
         (status = 200, description = "Matching non-virtual groups", body = [GroupDto]),
         (status = 401, description = "Unauthorized", body = crate::interfaces::errors::ApiErrorBody),
     ),
-    security(("bearerAuth" = [])),
     tag = "groups",
     operation_id = "subject_group_search"
 )]
@@ -264,7 +307,7 @@ pub async fn search_groups(
     // list_members. External users have no business enumerating
     // groups; defence-in-depth on top of the ReBAC layer (which
     // already prevents them from being added to any group anyway).
-    let (caller_id, role) = require_authenticated(&state, &headers).await?;
+    let (caller_id, kind) = require_authenticated(&state, &headers).await?;
     if let Some(auth_svc) = state.auth_service.as_ref()
         && let Err(err) = crate::interfaces::middleware::user::require_internal_user(
             &auth_svc.auth_application_service,
@@ -281,7 +324,7 @@ pub async fn search_groups(
         );
         return Err(err);
     }
-    let can_manage = UserRole::str_at_least(&role, UserRole::Admin);
+    let can_manage = kind.role().at_least(UserRole::Admin);
     let svc = service(&state)?;
     // The share-dialog autocomplete doesn't render a member-count chip, so
     // emit 0 rather than spending a `COUNT(*)` per row. Frontend consumers
@@ -309,7 +352,6 @@ pub async fn search_groups(
         (status = 403, description = "Admin required", body = crate::interfaces::errors::ApiErrorBody),
         (status = 404, description = "Group not found", body = crate::interfaces::errors::ApiErrorBody),
     ),
-    security(("bearerAuth" = [])),
     tag = "groups",
     operation_id = "subject_group_get"
 )]
@@ -339,7 +381,6 @@ pub async fn get_group(
         (status = 404, description = "Group not found", body = crate::interfaces::errors::ApiErrorBody),
         (status = 409, description = "Name already taken", body = crate::interfaces::errors::ApiErrorBody),
     ),
-    security(("bearerAuth" = [])),
     tag = "groups",
     operation_id = "subject_group_update"
 )]
@@ -377,7 +418,6 @@ pub async fn update_group(
         (status = 403, description = "Admin required, or group is virtual", body = crate::interfaces::errors::ApiErrorBody),
         (status = 404, description = "Group not found", body = crate::interfaces::errors::ApiErrorBody),
     ),
-    security(("bearerAuth" = [])),
     tag = "groups",
     operation_id = "subject_group_delete"
 )]
@@ -403,7 +443,6 @@ pub async fn delete_group(
         (status = 403, description = "Admin required", body = crate::interfaces::errors::ApiErrorBody),
         (status = 404, description = "Group not found", body = crate::interfaces::errors::ApiErrorBody),
     ),
-    security(("bearerAuth" = [])),
     tag = "groups",
     operation_id = "subject_group_list_members"
 )]
@@ -439,7 +478,6 @@ pub async fn list_members(
         (status = 404, description = "Group not found", body = crate::interfaces::errors::ApiErrorBody),
         (status = 409, description = "Member already in group", body = crate::interfaces::errors::ApiErrorBody),
     ),
-    security(("bearerAuth" = [])),
     tag = "groups",
     operation_id = "subject_group_add_member"
 )]
@@ -491,7 +529,6 @@ pub async fn add_member(
         (status = 403, description = "Admin required, or virtual group", body = crate::interfaces::errors::ApiErrorBody),
         (status = 404, description = "Group or member not found", body = crate::interfaces::errors::ApiErrorBody),
     ),
-    security(("bearerAuth" = [])),
     tag = "groups",
     operation_id = "subject_group_remove_user_member"
 )]
@@ -522,7 +559,6 @@ pub async fn remove_user_member(
         (status = 403, description = "Admin required, or virtual group", body = crate::interfaces::errors::ApiErrorBody),
         (status = 404, description = "Group or member not found", body = crate::interfaces::errors::ApiErrorBody),
     ),
-    security(("bearerAuth" = [])),
     tag = "groups",
     operation_id = "subject_group_remove_group_member"
 )]
@@ -551,7 +587,6 @@ pub async fn remove_group_member(
         (status = 403, description = "Admin required", body = crate::interfaces::errors::ApiErrorBody),
         (status = 404, description = "Group not found", body = crate::interfaces::errors::ApiErrorBody),
     ),
-    security(("bearerAuth" = [])),
     tag = "groups",
     operation_id = "subject_group_effective_members"
 )]

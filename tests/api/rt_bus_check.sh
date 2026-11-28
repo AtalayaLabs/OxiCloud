@@ -2380,4 +2380,104 @@ rm -f "$out_s30_own"
 log "S30c OK (unreadable file refused; owner still answered)"
 log "S30 OK"
 
-log "All thirty message-bus scenarios passed."
+# ── Scenario 31 — SCOPE axis over the TICKET path ───────────────────────────
+#
+# Everything above authenticates with a session JWT, which carries every
+# scope: a session's ceiling IS every area, so its token has no `scope`
+# claim and the axis is silent. These scenarios are the first to put a
+# NARROWED credential on the socket.
+#
+# The ticket path on purpose. It is the one browsers use, and it was the
+# hole: `POST /api/rt/ticket` runs under the full middleware chain and so
+# knows the caller's scopes, while the WS upgrade that redeems the ticket
+# has no middleware at all. If the ticket did not carry the set, a narrow
+# credential could be checked over REST and then redeem into a socket
+# where nothing knew what it held.
+#
+# Everything runs as the ADMIN, which is what makes the refusal
+# attributable: `job:*` needs the admin ROLE and `admin:ro`. The role is
+# satisfied by construction, so a refusal can only be the scope axis.
+log "S31: a files:ro app password is refused on job:* but allowed on a folder."
+
+s31_ap=$(c_post "$base_url/api/auth/app-passwords" "$admin_token" \
+  '{"label":"rt_bus_check files:ro","scopes":"oxicloud:files:ro"}')
+s31_ap_id=$(printf '%s' "$s31_ap" | jq -r '.id')
+s31_ap_pw=$(printf '%s' "$s31_ap" | jq -r '.password')
+s31_ap_user=$(printf '%s' "$s31_ap" | jq -r '.username')
+[[ -n "$s31_ap_pw" && "$s31_ap_pw" != "null" ]] \
+  || die "S31: app-password mint failed: $s31_ap"
+[[ "$(printf '%s' "$s31_ap" | jq -r '.scopes')" == "oxicloud:files:ro" ]] \
+  || die "S31: expected oxicloud:files:ro, got $(printf '%s' "$s31_ap" | jq -r '.scopes')"
+
+# A ticket per connection: tickets are single-use by construction.
+s31_ticket_for() {
+  curl -sS -X POST -u "$s31_ap_user:$s31_ap_pw" \
+    "$base_url/api/rt/ticket" | jq -r '.ticket'
+}
+
+# 31a — REFUSED on `job:*`. Needs `admin:ro`; this credential holds only
+# `files:ro`, and the app-password ceiling would withhold `admin` even if
+# it had asked. `topic_forbidden` is the shape a role denial and an
+# unknown topic also use — the audit line carries `required_area=admin`.
+s31_t1=$(s31_ticket_for)
+[[ -n "$s31_t1" && "$s31_t1" != "null" ]] \
+  || die "S31a: ticket issuance failed for a files:ro credential — the ticket \
+endpoint must be SCOPELESS, or a narrow credential cannot open a socket at all"
+if ! "$HELPER_BIN" expect-denied \
+     --url "$ws_url" \
+     --ticket "$s31_t1" \
+     --subscribe "job:backend_migration" \
+     --reason topic_forbidden \
+     --timeout 3s; then
+  die "S31a: a files:ro credential was NOT refused on job:* (scope axis broken \
+on the bus, or the ticket did not carry the scope set)"
+fi
+log "S31a OK (job:* refused on scope, role satisfied)"
+
+# 31b — ALLOWED on a folder it may read. The control: without it, 31a
+# passes just as well against a socket that refuses EVERY subscribe, and
+# a broken scope axis is indistinguishable from a working one.
+#
+# An ADMIN-owned folder, not `$folder_a`. The first draft of this used
+# user1's folder and failed on `no_read` with `visibility=hidden` — the
+# credential is the ADMIN's, who holds no grant on another user's tree,
+# so the subscribe got PAST the scope axis and died on the grant axis
+# instead. A control has to fail for exactly one reason, and the
+# admin-as-caller choice that makes 31a attributable is what forces an
+# admin-owned resource here.
+s31_admin_folders=$(c_get "$base_url/api/folders" "$admin_token")
+s31_admin_root=$(printf '%s' "$s31_admin_folders" | jq -r '.[0].id')
+[[ -n "$s31_admin_root" && "$s31_admin_root" != "null" ]] \
+  || die "S31b: no root folder for admin: $s31_admin_folders"
+s31_folder=$(c_post "$base_url/api/folders" "$admin_token" \
+  "$(printf '{"name":"rt_bus_scope_%s","parent_id":"%s"}' "$suffix" "$s31_admin_root")" \
+  | jq -r '.id')
+[[ -n "$s31_folder" && "$s31_folder" != "null" ]] \
+  || die "S31b: admin folder creation failed"
+
+s31_t2=$(s31_ticket_for)
+out_s31=$(mktemp)
+if ! "$HELPER_BIN" subscribe-and-collect \
+     --url "$ws_url" \
+     --ticket "$s31_t2" \
+     --subscribe "folder:$s31_folder" \
+     --expect-events 0 \
+     --timeout 3s \
+     --output "$out_s31"; then
+  cat "$out_s31"
+  die "S31b: a files:ro credential could not subscribe to a folder it may read \
+— files:ro must satisfy a files:ro topic (writable ⊆ readable)"
+fi
+rm -f "$out_s31"
+log "S31b OK (folder subscribe allowed on the same credential)"
+
+# Teardown: a leaked app password is a live credential for the next run.
+curl -sS -X DELETE \
+  -H "Authorization: Bearer $admin_token" \
+  "$base_url/api/auth/app-passwords/$s31_ap_id" > /dev/null
+curl -sS -X DELETE \
+  -H "Authorization: Bearer $admin_token" \
+  "$base_url/api/folders/$s31_folder" > /dev/null
+log "S31 OK"
+
+log "All thirty-one message-bus scenarios passed."

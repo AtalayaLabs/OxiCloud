@@ -77,7 +77,6 @@ type AppStateRef = Arc<AppState>;
         (status = 404, description = "Resource not found OR caller lacks Share permission", body = crate::interfaces::errors::ApiErrorBody),
         (status = 405, description = "Drive resource: personal drives have immutable membership", body = crate::interfaces::errors::ApiErrorBody),
     ),
-    security(("bearerAuth" = [])),
     tag = "grants"
 )]
 pub async fn create_grant(
@@ -503,7 +502,6 @@ pub async fn create_grant(
         (status = 204, description = "Grant revoked (or did not exist)"),
         (status = 404, description = "Caller lacks Share permission on the underlying resource", body = crate::interfaces::errors::ApiErrorBody),
     ),
-    security(("bearerAuth" = [])),
     tag = "grants"
 )]
 pub async fn revoke_grant(
@@ -646,7 +644,6 @@ pub async fn revoke_grant(
         (status = 409, description = "Token subject (use the existing /magic/v1/{token}/resend channel)", body = crate::interfaces::errors::ApiErrorBody),
         (status = 429, description = "Per-recipient hard rate limit exceeded", body = crate::interfaces::errors::ApiErrorBody),
     ),
-    security(("bearerAuth" = [])),
     tag = "grants"
 )]
 pub async fn notify_grant_recipient(
@@ -833,7 +830,6 @@ pub async fn notify_grant_recipient(
         (status = 404, description = "Resource not found or caller lacks Share", body = crate::interfaces::errors::ApiErrorBody),
         (status = 405, description = "Drive resource: personal drives have immutable membership", body = crate::interfaces::errors::ApiErrorBody),
     ),
-    security(("bearerAuth" = [])),
     tag = "grants"
 )]
 pub async fn set_role(
@@ -907,7 +903,6 @@ pub async fn set_role(
     responses(
         (status = 200, description = "Direct role grants targeting the caller", body = Vec<GrantDto>),
     ),
-    security(("bearerAuth" = [])),
     tag = "grants"
 )]
 pub async fn list_incoming(
@@ -944,7 +939,6 @@ pub async fn list_incoming(
                         last page.",
          body = crate::application::dtos::cursor::CursorListResponse<crate::application::dtos::grant_dto::SharedWithMeItemDto>),
     ),
-    security(("bearerAuth" = [])),
     tag = "grants"
 )]
 pub async fn list_shared_with_me(
@@ -1146,7 +1140,6 @@ pub async fn list_shared_with_me(
     responses(
         (status = 200, description = "Grants the caller has created", body = Vec<GrantDto>),
     ),
-    security(("bearerAuth" = [])),
     tag = "grants"
 )]
 pub async fn list_outgoing(
@@ -1182,7 +1175,6 @@ pub struct OnResourceQuery {
         (status = 200, description = "Grants on the specified resource", body = Vec<GrantDto>),
         (status = 404, description = "Resource not found or caller lacks Share", body = crate::interfaces::errors::ApiErrorBody),
     ),
-    security(("bearerAuth" = [])),
     tag = "grants"
 )]
 pub async fn list_on_resource(
@@ -1230,7 +1222,6 @@ pub async fn list_on_resource(
                         `next_cursor` is absent on the last page.",
          body = crate::application::dtos::cursor::CursorListResponse<crate::application::dtos::grant_dto::OutgoingResourceItemDto>),
     ),
-    security(("bearerAuth" = [])),
     tag = "grants"
 )]
 pub async fn list_my_shares(

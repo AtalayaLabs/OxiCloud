@@ -118,7 +118,7 @@ oxicloud_login
 APP_PASSWORD_RESPONSE=$(curl -s -X POST \
     -H "Authorization: Bearer $TOKEN" \
     -H "Content-Type: application/json" \
-    -d '{"label":"chunked-cap-test","scopes":"webdav"}' \
+    -d '{"label":"chunked-cap-test","scopes":"oxicloud:files:rw"}' \
     "$base_url/api/auth/app-passwords")
 
 APP_PASSWORD=$(jq -r '.password' <<<"$APP_PASSWORD_RESPONSE")

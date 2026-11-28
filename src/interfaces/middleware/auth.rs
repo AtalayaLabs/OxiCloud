@@ -9,10 +9,11 @@ use uuid::Uuid;
 
 use crate::common::di::AppState;
 
-// Re-export CurrentUser from application layer for use in handlers
-pub use crate::application::dtos::user_dto::CurrentUser;
+// Re-export CurrentCaller from application layer for use in handlers
+pub use crate::application::dtos::user_dto::CurrentCaller;
 use crate::application::ports::auth_ports::TokenServicePort;
 use crate::domain::entities::presented_token::PresentedToken;
+use crate::domain::entities::user::CallerKind;
 use crate::domain::entities::user::UserRole;
 use crate::domain::services::authorization::Subject;
 use crate::infrastructure::services::share_ring;
@@ -24,22 +25,31 @@ use crate::interfaces::middleware::user::{LiveRole, resolve_live_role};
 #[derive(Clone, Copy, Debug)]
 pub struct CookieAuthenticated;
 
-// Newtype over Arc<CurrentUser> for zero-allocation extraction.
-// `Deref<Target = CurrentUser>` lets handlers access `.id`, `.username`,
+// Newtype over Arc<CurrentCaller> for zero-allocation extraction.
+// `Deref<Target = CurrentCaller>` lets handlers access `.id`, `.username`,
 // `.email`, `.role` transparently — no signature changes needed.
 #[derive(Clone, Debug)]
-pub struct AuthUser(pub Arc<CurrentUser>);
+pub struct AuthUser(pub Arc<CurrentCaller>);
 
 impl std::ops::Deref for AuthUser {
-    type Target = CurrentUser;
+    type Target = CurrentCaller;
     #[inline]
-    fn deref(&self) -> &CurrentUser {
+    fn deref(&self) -> &CurrentCaller {
         &self.0
     }
 }
 
 /// Reusable extractor that gets the user_id of the authenticated user.
-/// Automatically extracted from the `CurrentUser` inserted by the auth middleware.
+/// Automatically extracted from the `CurrentCaller` inserted by the auth middleware.
+///
+/// **Not `CallerId`, deliberately.** `caller_id` is this codebase's generic
+/// "whoever is calling" — every service method takes one, and a visitor can
+/// be one. This extractor refuses visitors (`require_role(.., User)` below),
+/// so it guarantees a real `auth.users` row, which `caller_id` does not
+/// imply. The two families are worth keeping apart: `CurrentCaller` is any
+/// caller and may be a visitor, while `AuthUser` and `CurrentUserId` reject
+/// one at extraction. That is what closes the message-bus door for free —
+/// see the comment on the impl.
 ///
 /// Usage in handlers:
 /// ```ignore
@@ -55,16 +65,16 @@ pub struct CurrentUserId(pub Uuid);
 /// `auth.users` row and never will. Recording it as `user_id` would hand
 /// operators an id that looks lookupable and is not, and would make share
 /// traffic indistinguishable from user traffic in every log query.
-fn record_principal_on_span(cu: &CurrentUser) {
+fn record_principal_on_span(cc: &CurrentCaller) {
     let span = tracing::Span::current();
-    if cu.is_anonymous() {
-        span.record("visitor_id", tracing::field::display(cu.id));
+    if cc.is_anonymous() {
+        span.record("visitor_id", tracing::field::display(cc.id));
     } else {
-        span.record("user_id", tracing::field::display(cu.id));
+        span.record("user_id", tracing::field::display(cc.id));
     };
 }
 
-/// Assert that `cu` meets a minimum role, or deny.
+/// Assert that `cc` meets a minimum role, or deny.
 ///
 /// The single place a role requirement is expressed. Returns a `Result`
 /// rather than a bool on purpose: with `?` the outcome cannot be ignored,
@@ -76,16 +86,16 @@ fn record_principal_on_span(cu: &CurrentUser) {
 /// `extract_user`, `POST /api/auth/refresh` (mounted outside
 /// `auth_middleware`), and `GET /api/rt/ws` (self-auths from a raw Bearer).
 /// Each must call this too; see `src/AGENTS.md` § AuthZ enforcement points.
-pub fn require_role(cu: &CurrentUser, min: UserRole) -> Result<(), AuthError> {
-    if cu.role_enum().at_least(min) {
+pub fn require_role(cc: &CurrentCaller, min: UserRole) -> Result<(), AuthError> {
+    if cc.role_enum().at_least(min) {
         return Ok(());
     }
     tracing::info!(
         target: "audit",
         event = "authz.denied",
         reason = "insufficient_role",
-        caller_id = %cu.id,
-        role = %cu.role,
+        caller_id = %cc.id,
+        role = cc.kind.role().as_str(),
         required = min.as_str(),
         "👮🏻‍♂️ principal role is below the minimum this endpoint requires",
     );
@@ -98,7 +108,7 @@ pub fn require_role(cu: &CurrentUser, min: UserRole) -> Result<(), AuthError> {
 /// The unlocked share ring, inserted into request extensions by
 /// `auth_middleware` when the browser presents a valid `oxi_shares` cookie.
 ///
-/// Separate from `CurrentUser` on purpose: the ring says what you have
+/// Separate from `CurrentCaller` on purpose: the ring says what you have
 /// *unlocked*, not who you *are*. A logged-in user carries both.
 #[derive(Clone, Debug)]
 pub struct ShareRing(pub share_ring::Ring);
@@ -131,9 +141,9 @@ where
     type Rejection = AuthError;
 
     async fn from_request_parts(parts: &mut Parts, _state: &S) -> Result<Self, Self::Rejection> {
-        let cu = parts
+        let cc = parts
             .extensions
-            .get::<Arc<CurrentUser>>()
+            .get::<Arc<CurrentCaller>>()
             .ok_or(AuthError::UserNotFound)?;
 
         let mut subjects = Vec::new();
@@ -142,8 +152,8 @@ where
         // become a `Subject::User` — that would match a visitor id against
         // user grants: a valid UUID belonging to nobody, so the query runs
         // and silently returns nothing.
-        if !cu.is_anonymous() {
-            subjects.push(Subject::User(cu.id));
+        if !cc.is_anonymous() {
+            subjects.push(Subject::User(cc.id));
         }
         if let Some(ShareRing(ring)) = parts.extensions.get::<ShareRing>() {
             subjects.extend(ring.shares.iter().copied().map(Subject::Token));
@@ -157,8 +167,8 @@ where
                 target: "audit",
                 event = "authz.denied",
                 reason = "no_credentials",
-                caller_id = %cu.id,
-                role = %cu.role,
+                caller_id = %cc.id,
+                role = %cc.kind.role().as_str(),
                 "👮🏻‍♂️ principal carries no usable credential",
             );
             return Err(AuthError::AccessDenied("No usable credential".to_string()));
@@ -178,13 +188,13 @@ pub fn auth_user_from_extensions(
     ext: &axum::http::Extensions,
 ) -> Result<AuthUser, crate::interfaces::errors::AppError> {
     use crate::interfaces::errors::AppError;
-    let cu = ext
-        .get::<Arc<CurrentUser>>()
+    let cc = ext
+        .get::<Arc<CurrentCaller>>()
         .cloned()
         .ok_or_else(|| AppError::unauthorized("Authentication required"))?;
-    require_role(&cu, UserRole::User)
+    require_role(&cc, UserRole::User)
         .map_err(|_| AppError::forbidden("This surface requires a user account"))?;
-    Ok(AuthUser(cu))
+    Ok(AuthUser(cc))
 }
 
 // Implement FromRequestParts for AuthUser — allows using `auth_user: AuthUser` in handlers.
@@ -202,13 +212,13 @@ where
     type Rejection = AuthError;
 
     async fn from_request_parts(parts: &mut Parts, _state: &S) -> Result<Self, Self::Rejection> {
-        let cu = parts
+        let cc = parts
             .extensions
-            .get::<Arc<CurrentUser>>()
+            .get::<Arc<CurrentCaller>>()
             .cloned()
             .ok_or(AuthError::UserNotFound)?;
-        require_role(&cu, UserRole::User)?;
-        Ok(AuthUser(cu))
+        require_role(&cc, UserRole::User)?;
+        Ok(AuthUser(cc))
     }
 }
 
@@ -220,17 +230,17 @@ where
     type Rejection = AuthError;
 
     async fn from_request_parts(parts: &mut Parts, _state: &S) -> Result<Self, Self::Rejection> {
-        let cu = parts
+        let cc = parts
             .extensions
-            .get::<Arc<CurrentUser>>()
+            .get::<Arc<CurrentCaller>>()
             .ok_or(AuthError::UserNotFound)?;
         // Same contract as `AuthUser` — this yields a `user_id`, and an
         // anonymous principal has no `auth.users` row for that id to mean.
         // It also closes the message-bus door for free: `POST /api/rt/ticket`
         // takes this extractor, so no ticket is minted and the WS upgrade has
         // no credential to present.
-        require_role(cu, UserRole::User)?;
-        Ok(CurrentUserId(cu.id))
+        require_role(cc, UserRole::User)?;
+        Ok(CurrentUserId(cc.id))
     }
 }
 
@@ -413,14 +423,14 @@ pub async fn auth_middleware(
                             // deletion and demotion take effect within the flags-cache
                             // TTL instead of waiting for token expiry. The returned
                             // role is authoritative — never the frozen JWT claim.
-                            // Used here AND carried on the `CurrentUser` built
+                            // Used here AND carried on the `CurrentCaller` built
                             // below, which is the single channel a handler or a
                             // `Gate` reads it from.
                             let presented = PresentedToken {
                                 issued_at: Some(claims.iat),
                                 session_id: claims.sid,
                             };
-                            let role = match resolve_live_role(
+                            let kind = match resolve_live_role(
                                 auth_service.auth_application_service.as_ref(),
                                 user_id,
                                 &claims.role,
@@ -428,7 +438,7 @@ pub async fn auth_middleware(
                             )
                             .await
                             {
-                                LiveRole::Active(role) => role,
+                                LiveRole::Active(kind) => kind,
                                 LiveRole::Revoked => return Err(AuthError::AccountInactive),
                                 // Unknown, not inactive. `AccountInactive`
                                 // is a 401, which would tell a Bearer
@@ -439,15 +449,22 @@ pub async fn auth_middleware(
                                 }
                             };
                             // `username`/`email` are `Arc<str>` refcount
-                            // bumps out of the cached claims; `role` is an
-                            // inline SmolStr — the whole build is 1 alloc
-                            // (the `Arc::new`) instead of 4.
-                            let current_user = Arc::new(CurrentUser {
+                            // bumps out of the cached claims; `caller` is a
+                            // one-byte `Copy` enum — the whole build is 1
+                            // alloc (the `Arc::new`) instead of 4.
+                            let current_user = Arc::new(CurrentCaller {
+                                // The `scope` claim, or EVERY scope when
+                                // absent — see `from_credential`. Absent
+                                // is the normal case for a browser
+                                // session, whose ceiling is everything.
+                                scopes: crate::application::ports::scope_ports::ScopeSet::from_credential(
+                                    claims.scope.as_deref(),
+                                ),
                                 id: user_id,
+                                kind,
                                 token: presented,
                                 username: Arc::clone(&claims.username),
                                 email: Arc::clone(&claims.email),
-                                role,
                                 dpop_jkt: claims.dpop_jkt.clone(),
                             });
                             record_principal_on_span(&current_user);
@@ -498,7 +515,7 @@ pub async fn auth_middleware(
 
                 if let Some(app_pw_service) = state.app_password_service.as_ref() {
                     match app_pw_service.verify_basic_auth(username, password).await {
-                        Ok((user_id, uname, email, role)) => {
+                        Ok((user_id, uname, email, scopes)) => {
                             tracing::debug!(
                                 "App password authentication successful for user: {}",
                                 uname
@@ -572,10 +589,18 @@ pub async fn auth_middleware(
                             let Some(auth_svc) = state.auth_service.as_ref() else {
                                 return Err(AuthError::AuthServiceUnavailable);
                             };
-                            let role = match crate::interfaces::middleware::user::resolve_live_role(
+                            let kind = match crate::interfaces::middleware::user::resolve_live_role(
                                 auth_svc.auth_application_service.as_ref(),
                                 user_id,
-                                &role,
+                                // No claim to pass: an app password carries
+                                // no role of its own. `claim_role` exists
+                                // only for the anonymous short-circuit, and
+                                // `from_session("")` rejects this, so the
+                                // live read is always taken — which is what
+                                // should happen. The previous value came
+                                // from the 300 s Basic-auth cache and said
+                                // nothing this branch could use.
+                                "",
                                 // An app password is not a JWT: no `iat`,
                                 // no `sid`. So neither revocation form
                                 // reaches it — it is revoked by DELETING
@@ -587,7 +612,7 @@ pub async fn auth_middleware(
                             )
                             .await
                             {
-                                crate::interfaces::middleware::user::LiveRole::Active(r) => r,
+                                crate::interfaces::middleware::user::LiveRole::Active(kind) => kind,
                                 crate::interfaces::middleware::user::LiveRole::Revoked => {
                                     tracing::info!(
                                         target: "audit",
@@ -615,15 +640,22 @@ pub async fn auth_middleware(
                             // they belong to NC clients / CLI / mobile
                             // tools without WebCrypto. DPoP middleware
                             // exempts them.
-                            let current_user = Arc::new(CurrentUser {
+                            let current_user = Arc::new(CurrentCaller {
                                 id: user_id,
+                                kind,
                                 // An app password is not a JWT: no `sid`, no
                                 // `iat`. Revoked by deleting it.
                                 token: PresentedToken::default(),
                                 username: uname,
                                 email,
-                                role,
                                 dpop_jkt: None,
+                                // Straight from the `auth.app_passwords`
+                                // row. An app password carries no JWT, so
+                                // there is no claim to read — the row IS
+                                // the credential, and its `scopes` column
+                                // was narrowed to the app-password ceiling
+                                // at mint.
+                                scopes,
                                 // Basic auth is app-password only.
                             });
                             // Basic auth is app-password only — never a share.
@@ -682,7 +714,7 @@ pub async fn auth_middleware(
                         // browser receives the standard 401 and redirects to
                         // /login, exactly like an invalid or expired cookie.
                         // Same as the Bearer branch: used here and carried on the
-                        // `CurrentUser` built below.
+                        // `CurrentCaller` built below.
                         let presented = PresentedToken {
                             issued_at: Some(claims.iat),
                             session_id: claims.sid,
@@ -695,13 +727,18 @@ pub async fn auth_middleware(
                         )
                         .await
                         {
-                            LiveRole::Active(role) => {
-                                let current_user = Arc::new(CurrentUser {
+                            LiveRole::Active(kind) => {
+                                let current_user = Arc::new(CurrentCaller {
+                                    // Same claim as the Bearer branch —
+                                    // a cookie carries the same JWT.
+                                    scopes: crate::application::ports::scope_ports::ScopeSet::from_credential(
+                                        claims.scope.as_deref(),
+                                    ),
                                     id: user_id,
+                                    kind,
                                     token: presented,
                                     username: Arc::clone(&claims.username),
                                     email: Arc::clone(&claims.email),
-                                    role,
                                     dpop_jkt: claims.dpop_jkt.clone(),
                                 });
                                 record_principal_on_span(&current_user);
@@ -776,7 +813,18 @@ pub async fn auth_middleware(
     // The principal is built ONLY from a verified ring, which is what makes
     // "anonymous implies a share credential" structural rather than checked.
     if let Some(ring) = request.extensions().get::<ShareRing>().cloned() {
-        let current_user = Arc::new(CurrentUser {
+        let current_user = Arc::new(CurrentCaller {
+            // `files:ro`, and this is the ONE scope set that is not read
+            // from a credential: a ring is a capability URL, not a
+            // credential with a scope column, so the ceiling is the
+            // constant. `reject_unsatisfiable` enforces the same value at
+            // COMPILE time, so a route a visitor may reach can never
+            // require more than this — the two must stay equal.
+            scopes: crate::application::ports::scope_ports::ScopeSet::ring(),
+            // Named rather than inferred from a bool pair: a visitor has no
+            // `auth.users` row, so "internal" and "external" were both
+            // false of them and the old pair had to assert one.
+            kind: CallerKind::Visitor,
             // A share ring is not a session: no `sid`, no `iat`.
             token: PresentedToken::default(),
             // The ring's visitor id: stable across this visit, matching no
@@ -786,7 +834,6 @@ pub async fn auth_middleware(
             // inventing a name would be indistinguishable from a real one.
             username: Arc::from(""),
             email: Arc::from(""),
-            role: smol_str::SmolStr::new_static(UserRole::Anonymous.as_str()),
             // Unbound: no DPoP keypair, so the middleware exempts it exactly
             // as it does app passwords.
             dpop_jkt: None,
@@ -819,60 +866,21 @@ fn dav_basic_auth_challenge(message: &'static str) -> Response {
         .unwrap()
 }
 
-/// Middleware to verify that the authenticated user has an admin role.
-///
-/// Must be applied AFTER auth_middleware, as it depends on `CurrentUser`
-/// being present in the request extensions. The role carried by
-/// `CurrentUser` is the *live* role resolved by `auth_middleware` (see
-/// [`resolve_live_role`]), not the JWT claim, so a demotion is honoured
-/// here within the flags-cache TTL.
-///
-/// Denial shapes distinguish authn from authz:
-///   - `CurrentUser` present, role below admin → 403 Forbidden.
-///   - `CurrentUser` absent → 401 Unauthorized. Should not happen in
-///     practice (auth_middleware guards against it), but the
-///     defensive fallback returns the honest shape: "we don't know
-///     who you are" is 401, not "we know you and refuse" (403).
-pub async fn require_admin(request: Request, next: Next) -> Response {
-    // Get the CurrentUser inserted by auth_middleware
-    if let Some(current_user) = request.extensions().get::<Arc<CurrentUser>>() {
-        // `at_least`, not `== "admin"`: the owner outranks admin and must
-        // reach every admin route. Comparing the spelling denied them.
-        if current_user.role_enum().at_least(UserRole::Admin) {
-            tracing::debug!("Admin access granted for user: {}", current_user.username);
-            return next.run(request).await;
-        }
-        tracing::info!(
-            target: "audit",
-            event = "authz.admin_denied",
-            reason = "not_admin",
-            caller_id = %current_user.id,
-            role = %current_user.role,
-            "👮🏻‍♂️ admin-only route denied for non-admin caller"
-        );
-        return AuthError::AccessDenied("Admin role required".to_string()).into_response();
-    }
-
-    tracing::info!(
-        target: "audit",
-        event = "authz.admin_denied",
-        reason = "unauthenticated",
-        "👮🏻‍♂️ admin-only route reached with no authenticated user"
-    );
-    AuthError::TokenNotProvided.into_response()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use smol_str::SmolStr;
 
-    fn principal(role: &str) -> CurrentUser {
-        CurrentUser {
+    /// Takes a `CallerKind` rather than a role string: these tests exercise
+    /// the role gate, and a string would reintroduce the parse this change
+    /// removed.
+    fn principal(kind: CallerKind) -> CurrentCaller {
+        CurrentCaller {
+            // Every scope: these fixtures exercise the ROLE axis alone.
+            scopes: crate::application::ports::scope_ports::ScopeSet::full(),
             id: Uuid::new_v4(),
             username: "visitor".into(),
             email: "".into(),
-            role: SmolStr::new(role),
+            kind,
             dpop_jkt: None,
             // These tests assert on role resolution, not on revocation.
             token: PresentedToken::default(),
@@ -885,35 +893,60 @@ mod tests {
     /// reachable by a share-link visitor.
     #[test]
     fn anonymous_is_refused_a_user_role() {
-        let err = require_role(&principal("anonymous"), UserRole::User)
+        let err = require_role(&principal(CallerKind::Visitor), UserRole::User)
             .expect_err("anonymous must not satisfy a user requirement");
         assert!(matches!(err, AuthError::AccessDenied(_)));
 
-        require_role(&principal("user"), UserRole::User).expect("a user satisfies user");
-        require_role(&principal("admin"), UserRole::User).expect("an admin satisfies user");
+        require_role(
+            &principal(CallerKind::Internal(UserRole::User)),
+            UserRole::User,
+        )
+        .expect("a user satisfies user");
+        require_role(
+            &principal(CallerKind::Internal(UserRole::Admin)),
+            UserRole::User,
+        )
+        .expect("an admin satisfies user");
     }
 
     #[test]
     fn only_admin_satisfies_admin() {
-        require_role(&principal("admin"), UserRole::Admin).expect("admin satisfies admin");
-        assert!(require_role(&principal("user"), UserRole::Admin).is_err());
-        assert!(require_role(&principal("anonymous"), UserRole::Admin).is_err());
+        require_role(
+            &principal(CallerKind::Internal(UserRole::Admin)),
+            UserRole::Admin,
+        )
+        .expect("admin satisfies admin");
+        assert!(
+            require_role(
+                &principal(CallerKind::Internal(UserRole::User)),
+                UserRole::Admin
+            )
+            .is_err()
+        );
+        assert!(require_role(&principal(CallerKind::Visitor), UserRole::Admin).is_err());
     }
 
-    /// An unrecognised role resolves to the LEAST privileged answer, not the
-    /// most. Every other parse site in the tree uses `_ => UserRole::User`,
-    /// which is fail-open: a corrupt or future value silently becomes a real
-    /// user. Here a garbage role can reach nothing.
+    /// The fail-closed property this used to test is now UNREPRESENTABLE,
+    /// which is the better outcome and worth recording rather than losing.
+    ///
+    /// It iterated garbage role strings (`""`, `"superuser"`, `"Admin"`,
+    /// `"root"`, `"user "`) and asserted each degraded to anonymous rather
+    /// than to a real user — guarding against the `_ => UserRole::User`
+    /// habit found at every other parse site, which is fail-OPEN. With
+    /// `CallerKind` there is no string to be garbage: the only constructors are
+    /// `from_flags` (whose role comes from `UserRole::from_stored`, which
+    /// returns `None` for anything unrecognised) and the typed variants.
+    ///
+    /// What still CAN regress is the default, so that is what this pins:
+    /// `CallerKind::default()` must stay the least privileged value, because it
+    /// exists only to satisfy `#[serde(skip)]` and a careless
+    /// `CallerKind::default()` must fail closed.
     #[test]
-    fn unknown_roles_fail_closed_not_open() {
-        for role in ["", "superuser", "Admin", "ANONYMOUS", "root", "user "] {
-            let cu = principal(role);
-            assert!(
-                cu.is_anonymous(),
-                "unrecognised role {role:?} must degrade to anonymous, not user",
-            );
-            assert!(require_role(&cu, UserRole::User).is_err());
-        }
+    fn caller_default_is_least_privileged() {
+        let cc = principal(CallerKind::default());
+        assert_eq!(cc.kind, CallerKind::Visitor);
+        assert!(cc.is_anonymous());
+        assert!(require_role(&cc, UserRole::User).is_err());
     }
 
     #[test]
@@ -966,10 +999,10 @@ mod tests {
     /// The extractor reads two extensions and composes them; the composition
     /// is the part worth pinning, so it is exercised directly rather than
     /// through a router that would test axum more than it tests this.
-    fn subjects_for(cu: &CurrentUser, ring: Option<&share_ring::Ring>) -> Vec<Subject> {
+    fn subjects_for(cc: &CurrentCaller, ring: Option<&share_ring::Ring>) -> Vec<Subject> {
         let mut subjects = Vec::new();
-        if !cu.is_anonymous() {
-            subjects.push(Subject::User(cu.id));
+        if !cc.is_anonymous() {
+            subjects.push(Subject::User(cc.id));
         }
         if let Some(ring) = ring {
             subjects.extend(ring.shares.iter().copied().map(Subject::Token));
@@ -984,7 +1017,7 @@ mod tests {
     /// bug behind a plausible 404.
     #[test]
     fn an_anonymous_visitor_contributes_no_user_subject() {
-        let visitor = principal("anonymous");
+        let visitor = principal(CallerKind::Visitor);
         let share = Uuid::new_v4();
         let ring = share_ring::Ring {
             visitor_id: visitor.id,
@@ -1006,7 +1039,7 @@ mod tests {
     /// the first check and never pays for the ring.
     #[test]
     fn a_logged_in_user_carries_their_identity_and_the_ring() {
-        let alice = principal("user");
+        let alice = principal(CallerKind::Internal(UserRole::User));
         let first = Uuid::new_v4();
         let second = Uuid::new_v4();
         let ring = share_ring::Ring {
@@ -1027,7 +1060,7 @@ mod tests {
     /// No ring is the overwhelmingly common case and must cost nothing.
     #[test]
     fn a_user_without_a_ring_is_a_single_subject() {
-        let alice = principal("user");
+        let alice = principal(CallerKind::Internal(UserRole::User));
         assert_eq!(subjects_for(&alice, None), vec![Subject::User(alice.id)]);
     }
 
@@ -1037,7 +1070,7 @@ mod tests {
     /// subject list could read as "nothing objected".
     #[test]
     fn an_anonymous_principal_without_a_ring_yields_nothing() {
-        assert!(subjects_for(&principal("anonymous"), None).is_empty());
+        assert!(subjects_for(&principal(CallerKind::Visitor), None).is_empty());
     }
 
     #[test]

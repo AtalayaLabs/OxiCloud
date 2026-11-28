@@ -206,6 +206,30 @@ pub fn nextcloud_routes_with_state(state: Arc<AppState>) -> Router<Arc<AppState>
         .route("/remote.php/webdav/{*subpath}", any(handle_legacy_webdav))
         .route("/remote.php/webdav/", any(handle_legacy_webdav_root))
         .route("/remote.php/webdav", any(handle_legacy_webdav_root))
+        // The policy gate, so the SCOPE axis runs on the NextCloud
+        // surface. `/remote.php/webdav`, `/dav/files`, `/trashbin` and
+        // `/uploads` resolve to the same `Op::Dav(Files, …)` as native
+        // `/webdav`, and avatars to `Op::Dav(Account, …)` — so this adds
+        // enforcement, not declarations.
+        //
+        // **Applied BEFORE the basic-auth layer, and the order is the
+        // whole point.** Both `layer` and `route_layer` wrap a route's
+        // service, so the LAST one applied is OUTERMOST and runs FIRST.
+        // Applying the gate in `main.rs` — after this router was already
+        // wrapped in `basic_auth_middleware` — put it outside the auth
+        // layer, so it ran before any `CurrentCaller` existed and 401'd
+        // every authenticated NC request. Three Hurl scenarios caught it:
+        // `nc_auth_failures` lost its `WWW-Authenticate: Basic`
+        // challenge, and `nc_assembly_failed_refcount` and
+        // `folder_listing_cursor_clocks` got 401 where they expected 201.
+        //
+        // Applied here, `basic_auth_middleware` is outermost: it
+        // authenticates, inserts `Arc<CurrentCaller>`, and the gate then
+        // has a caller to evaluate.
+        .route_layer(middleware::from_fn_with_state(
+            state.clone(),
+            crate::interfaces::middleware::policy::policy_gate_layer,
+        ))
         .layer(middleware::from_fn_with_state(state, basic_auth_middleware));
 
     Router::new().merge(public).merge(protected)

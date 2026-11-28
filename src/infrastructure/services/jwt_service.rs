@@ -66,6 +66,19 @@ struct JwtClaims {
     /// silently.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sid: Option<String>,
+    /// RFC 6749 §3.3 `scope` claim — the credential's frozen scope set
+    /// in wire form (`oxicloud:files:rw,…`).
+    ///
+    /// Absent means EVERY scope, exactly as `sid` absent means no
+    /// liveness stamp: tokens minted before this claim existed must keep
+    /// authenticating, and reading absence as "no scopes" would 401 every
+    /// session in flight on the deploy that added it.
+    ///
+    /// Absent is also the normal case — an interactive session's ceiling
+    /// is every scope, so a browser token omits this entirely and only a
+    /// genuinely narrowed credential pays for the string.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub scope: Option<String>,
 }
 
 /// RFC 9449 §5 confirmation-key wrapper. Only the `jkt` member is
@@ -105,6 +118,7 @@ impl From<JwtClaims> for TokenClaims {
             role: claims.role,
             dpop_jkt: claims.cnf.map(|c| c.jkt),
             sid,
+            scope: claims.scope,
         }
     }
 }
@@ -221,6 +235,7 @@ impl TokenServicePort for JwtTokenService {
         user: &User,
         session_id: Option<Uuid>,
         dpop_jkt: Option<&str>,
+        scope: Option<&str>,
     ) -> Result<String, DomainError> {
         let now = Utc::now().timestamp();
 
@@ -244,6 +259,10 @@ impl TokenServicePort for JwtTokenService {
                 jkt: jkt.to_string(),
             }),
             sid: session_id.map(|id| id.to_string()),
+            // Only a narrowed credential carries this. A session passes
+            // `None` and the claim is skipped entirely, so the common
+            // token stays the size it was.
+            scope: scope.map(std::string::ToString::to_string),
         };
 
         // Log JWT claims for debugging
@@ -356,7 +375,7 @@ mod tests {
 
         let user = create_test_user();
         let token = service
-            .generate_access_token(&user, Some(Uuid::new_v4()), None)
+            .generate_access_token(&user, Some(Uuid::new_v4()), None, None)
             .expect("Should generate token");
 
         let claims = service
@@ -395,7 +414,7 @@ mod tests {
 
         let user = create_test_user();
         let token = service
-            .generate_access_token(&user, Some(Uuid::new_v4()), None)
+            .generate_access_token(&user, Some(Uuid::new_v4()), None, None)
             .expect("Should generate token");
 
         // First call: cache miss — performs full HMAC verification
@@ -422,7 +441,7 @@ mod tests {
             86400,
         );
         let token = service
-            .generate_access_token(&create_test_user(), Some(Uuid::new_v4()), None)
+            .generate_access_token(&create_test_user(), Some(Uuid::new_v4()), None, None)
             .expect("Should generate token");
 
         // Miss populates the cache; hit must hand back the very same
@@ -466,7 +485,7 @@ mod tests {
         let user = create_test_user();
         let session_id = Uuid::new_v4();
         let token = service
-            .generate_access_token(&user, Some(session_id), None)
+            .generate_access_token(&user, Some(session_id), None, None)
             .expect("Should generate token");
         let claims = service.validate_token(&token).expect("Should validate");
         assert_eq!(claims.sid, Some(session_id));
@@ -487,7 +506,7 @@ mod tests {
         );
         let user = create_test_user();
         let token = service
-            .generate_access_token(&user, None, None)
+            .generate_access_token(&user, None, None, None)
             .expect("Should generate token");
         let claims = service.validate_token(&token).expect("Should validate");
         assert_eq!(claims.sid, None);

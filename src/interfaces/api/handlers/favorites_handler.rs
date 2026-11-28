@@ -50,7 +50,6 @@ pub struct BatchFavoritesRequest {
         (status = 201, body = Object, description = "Item added to favorites"),
         (status = 400, description = "Invalid item type", body = crate::interfaces::errors::ApiErrorBody)
     ),
-    security(("bearerAuth" = [])),
     tag = "favorites"
 )]
 pub async fn add_favorite(
@@ -100,7 +99,6 @@ pub async fn add_favorite(
         (status = 200, body = Object, description = "Item removed from favorites"),
         (status = 404, description = "Item not in favorites", body = crate::interfaces::errors::ApiErrorBody)
     ),
-    security(("bearerAuth" = [])),
     tag = "favorites"
 )]
 pub async fn remove_favorite(
@@ -149,7 +147,6 @@ pub async fn remove_favorite(
          body = crate::application::dtos::cursor::CursorListResponse<crate::application::dtos::favorites_dto::FavoritesResourceItemDto>),
         (status = 400, description = "Invalid cursor or query parameters", body = crate::interfaces::errors::ApiErrorBody),
     ),
-    security(("bearerAuth" = [])),
     tag = "favorites"
 )]
 pub async fn list_favorites_resources(
@@ -313,7 +310,6 @@ pub async fn list_favorites_resources(
         (status = 200, description = "Batch add result", body = crate::application::dtos::favorites_dto::BatchFavoritesResult),
         (status = 400, description = "Invalid request", body = crate::interfaces::errors::ApiErrorBody)
     ),
-    security(("bearerAuth" = [])),
     tag = "favorites"
 )]
 pub async fn batch_add_favorites(

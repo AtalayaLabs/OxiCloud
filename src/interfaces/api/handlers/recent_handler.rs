@@ -36,7 +36,6 @@ use uuid::Uuid;
         (status = 200, body = Object, description = "Access recorded"),
         (status = 400, description = "Invalid item type", body = crate::interfaces::errors::ApiErrorBody)
     ),
-    security(("bearerAuth" = [])),
     tag = "recent"
 )]
 pub async fn record_item_access(
@@ -86,7 +85,6 @@ pub async fn record_item_access(
         (status = 200, body = Object, description = "Item removed from recents"),
         (status = 404, description = "Item not in recents", body = crate::interfaces::errors::ApiErrorBody)
     ),
-    security(("bearerAuth" = [])),
     tag = "recent"
 )]
 pub async fn remove_from_recent(
@@ -130,7 +128,6 @@ pub async fn remove_from_recent(
     responses(
         (status = 200, body = Object, description = "Recent items cleared")
     ),
-    security(("bearerAuth" = [])),
     tag = "recent"
 )]
 pub async fn clear_recent_items(
@@ -169,7 +166,6 @@ pub async fn clear_recent_items(
          body = crate::application::dtos::cursor::CursorListResponse<crate::application::dtos::recent_dto::RecentResourceItemDto>),
         (status = 400, description = "Invalid cursor or query parameters", body = crate::interfaces::errors::ApiErrorBody),
     ),
-    security(("bearerAuth" = [])),
     tag = "recent"
 )]
 pub async fn list_recent_resources(

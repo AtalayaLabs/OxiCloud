@@ -91,10 +91,18 @@ cargo clippy --all-features --all-targets -- -D warnings  # Lint (zero warnings 
 cargo fmt --all --check                            # Format check
 cargo fmt --all                                    # Auto-format
 RUST_LOG=debug cargo run --features dev            # Run with debug logging
-cargo run --features dev --bin generate-openapi    # Regenerate resources/gen/openapi.json
+just gen-openapi                                   # Regenerate the spec AND the committed TS SDK
 ```
 
-A `justfile` is available for common tasks (`just --list` to see all). Key recipes: `just check` (fmt + clippy), `just test`, `just openapi`.
+A `justfile` is available for common tasks (`just --list` to see all). Key recipes: `just check` (fmt + clippy), `just test`, `just gen-openapi`.
+
+**`just gen-openapi`, not `cargo run --bin generate-openapi`.** Two
+artefacts are committed and generated from the same source: the spec
+(`resources/gen/openapi.json`) and the TypeScript SDK
+(`frontend/src/lib/api/generated/openapi/`). The bare cargo command
+regenerates only the first, so the SDK is left stale and a reviewer
+commits the other half by hand. `just check-openapi-gen` is the gate that
+catches it.
 
 **Keep one feature set locally: `--features dev`** (= `plugins` + `dev_tools` +
 `test_utils`). Every feature of this package — even an empty marker — is part
@@ -299,6 +307,130 @@ adding one:
   a gate on one is a hole in the other;
 - pin it in `tests/api/external_users.hurl`: the refusal **and** an allowed
   caller succeeding — a gate that refuses everyone passes the refusal pin.
+
+**So: Gate and Scope on the declaration, Grant in the service.** That is the
+whole rule, and the door problem is why the declaration is keyed by
+OPERATION rather than by route: a router layer can only gate the door it is
+attached to, but `Op::Rest` / `Op::Dav` / `Op::Ws` / `Op::CollabFrame` can
+name every door of one service method. Declaring each is the remedy —
+*not* keeping the gate in the service.
+
+A role check found inside a service is therefore misfiled, not deliberate:
+`transfer_ownership`'s `caller.role != UserRole::Owner`
+(`auth_application_service.rs`) is a gate in the grant layer. Still count
+the doors before moving one — `git grep '<method>(' -- src/ | grep
+interfaces/` — but to be sure you DECLARE them all, not to decide where the
+check lives. Declaring one and deleting the service check is the
+`create_calendar` bug above.
+
+Moving a check also changes its **audit event** — e.g.
+`server_owner.transfer_rejected` / `caller_not_owner` becomes an `authz.*`
+event. `event` must stay stable (below), so either keep emitting the
+original from the new denial path or treat it as a breaking audit change.
+
+**Declare the policy where the route is — a central table is for what has
+no route.** Route, layer and policy belong in one place, so a reader of
+`routes.rs` sees all three without cross-referencing:
+
+```rust
+// per VERB — the default, and the only form that cannot widen
+.route("/{id}", get(get_file).policy([Condition::visitor_allowed()]))
+
+// per SUBTREE — one declaration for a whole nested router
+router.nest("/admin", admin_router.policy([Condition::role(MinRole::Admin)]))
+GatedRouter::new().policy(PUBLIC).route("/locales", get(get_locales))
+```
+
+`get`/`post`/… come from `interfaces/api/policy_router.rs`, NOT
+`axum::routing` — they are call-compatible, so a file switches by changing
+its import. Ours carries the verb, which is what lets `.policy()` declare
+for one METHOD; axum's `MethodRouter` has forgotten it. A chained
+`get(a).post(b)` has no equivalent — write one `.route()` per verb on the
+same path, which axum merges.
+
+**A subtree declaration covers every METHOD on every path beneath it**, so
+a write endpoint added later inherits it silently. Use it where that is
+true by construction (a router of public GETs); prefer per-verb elsewhere.
+
+**On the SCOPE axis a leaf APPENDS, it cannot change.** A route's
+declaration adds to what its prefix declared, so
+`GET /api/drives/{id}/members` under a `files` prefix with a `sharing`
+route declaration requires BOTH. Three consequences:
+
+- the same area twice tightens the ACCESS by `max`;
+- a MIXED subtree must declare per route, never at its prefix — a leaf
+  cannot shed what the prefix imposed. `/api/groups` is the worked case:
+  declaring `admin` on the nest made the share picker's `/search` require
+  admin scope;
+- **where you mount a route decides what it requires**, so check the
+  prefix's area fits before mounting there. Adding a route under an
+  existing prefix inherits silently, which is what stops it being
+  `Undefined` — and also how an operation ends up requiring an area it
+  has nothing to do with.
+
+Visitors carry exactly `files:ro` (`ScopeSet::ring()`), so a
+visitor-admitting operation requiring more is a generation failure. Full
+rule: `docs/architecture/authorization-axes.md` § Scope APPENDS.
+
+`policy_declarations.rs` holds only what cannot be written at a route: the
+DAV operations (one `any` handler each, so no route per operation) and
+per-METHOD gates, since a `MethodRouter` does not expose its methods.
+Anything else there is drift — and NEVER a copy of a list that already
+exists elsewhere. A duplicated list with a test cross-checking the two
+copies defends the duplication instead of removing it; declare from the
+original, or move the original here.
+
+Two traps, both of which produced real holes on `feat/scopes`:
+
+- **A path-level declaration covers every METHOD on that path.** Check
+  what else the path carries before writing one. `ANONYMOUS_ALLOWLIST` is
+  GET-only, so a path-level `visitor_allowed()` on `/api/files/{id}`
+  silently granted a share visitor `DELETE`.
+- **A grep for `.layer(` on a `MethodRouter` does not find per-method
+  gating.** Two sub-routers achieve it by ROUTING — a router holding only
+  the create route, with the layer on it — so the gate is per-method while
+  looking per-path.
+
+**Which routers must be gated: the ones in the OpenAPI spec.** Anything
+nested INTO the API tree must be a `GatedRouter` — `GatedRouter::nest` and
+`.policy()` accept nothing else, so a bare `Router::new()` there does not
+compile. Anything mounted BESIDE it on `main.rs`'s plain router need not
+be, and should not pretend to:
+
+| plain `Router` is correct | why |
+|---|---|
+| `/metrics`, the web pages, `magic/v1/*` | not in the spec; no operation to project a policy onto |
+| WebDAV, CalDAV, CardDAV, WOPI, `/remote.php/*` | mounted beside `/api`; DAV declares by `(area, access)` in `policy_declarations` instead |
+| inner routers merged into an already-gated parent | the parent carries the declaration |
+| tests, benches | throwaway routers |
+
+The test is the spec, not the path: if an operation appears in
+`resources/gen/openapi.json`, a policy can be projected onto it and
+`just gen-openapi` will police it. If it does not, the engine is silent about
+it by construction.
+
+**Do not write `security(...)` in `#[utoipa::path]`.** The engine derives
+the spec's auth markers from the operation's policy — `x-oxicloud-policy`
+and the `security` array itself. A hand-written one can only agree or be
+wrong, and `just gen-openapi` reports every disagreement.
+
+`x-oxicloud-policy` is `Policy` field for field, on EVERY operation, with
+explicit nulls:
+
+```json
+"x-oxicloud-policy": { "role": null, "principal": "user", "scope": null }
+```
+
+Keys are the struct's field names deliberately, so the published contract
+evolves exactly when the Rust type does — `elevation` is already a
+commented field on `Policy` and will appear here when it is uncommented.
+Nothing is omitted when it equals the default: a consumer could not tell
+"a user session is required" from "no requirement", which is what a
+frontend needs in order to decide whether to prompt before issuing a
+call.
+
+The engine is in `docs/architecture/authorization-axes.md` (concepts) and
+`docs/plan/scope-gates.md` (design and rollout).
 
 ### Audit logging for denials and rejections
 

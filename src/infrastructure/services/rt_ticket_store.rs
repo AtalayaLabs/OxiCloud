@@ -33,6 +33,7 @@
 //!   deployments will need a shared backend (Redis, PG); calling it
 //!   out here so the seam is visible when the day comes.
 
+use crate::application::ports::scope_ports::ScopeSet;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -66,6 +67,14 @@ pub const SUBPROTOCOL_PREFIX: &str = "oxi.ticket.";
 
 struct Entry {
     caller_id: Uuid,
+    /// The issuing session's SCOPE set, carried so the redeemed
+    /// connection is bounded exactly as the request that asked for it.
+    ///
+    /// Without this the ticket path would be a scope hole of the same
+    /// shape as the DPoP one noted below: a narrow credential could ask
+    /// for a ticket over REST, where its scopes are checked, and redeem
+    /// it into a WS session where nothing knew what they were.
+    scopes: ScopeSet,
     /// The claims of the session that asked for this ticket, carried so
     /// the WebSocket upgrade can still apply the revocation checks.
     ///
@@ -98,13 +107,14 @@ impl RtTicketStore {
     /// the "unguessable-token" bar even without server-side rate
     /// limiting. A serial or timestamped id would leak issue-order
     /// signal to anyone with a wire tap.
-    pub fn issue(&self, caller_id: Uuid, token: PresentedToken) -> Uuid {
+    pub fn issue(&self, caller_id: Uuid, token: PresentedToken, scopes: ScopeSet) -> Uuid {
         let ticket = Uuid::new_v4();
         self.entries.insert(
             ticket,
             Entry {
                 caller_id,
                 token,
+                scopes,
                 expires_at: Instant::now() + TICKET_TTL,
             },
         );
@@ -116,12 +126,12 @@ impl RtTicketStore {
     /// caller_id, an expired ticket is silently freed and returns
     /// `None`. Single-use invariant holds by construction: only one
     /// caller wins the `remove`, everyone else sees `None`.
-    pub fn redeem(&self, ticket: Uuid) -> Option<(Uuid, PresentedToken)> {
+    pub fn redeem(&self, ticket: Uuid) -> Option<(Uuid, PresentedToken, ScopeSet)> {
         let (_, entry) = self.entries.remove(&ticket)?;
         if entry.expires_at < Instant::now() {
             return None;
         }
-        Some((entry.caller_id, entry.token))
+        Some((entry.caller_id, entry.token, entry.scopes))
     }
 
     /// Background reaper. Walks the map on the configured cadence and
@@ -167,16 +177,22 @@ mod tests {
     fn issue_then_redeem_returns_caller_id() {
         let store = RtTicketStore::new();
         let caller = Uuid::new_v4();
-        let ticket = store.issue(caller, tok());
-        assert_eq!(store.redeem(ticket), Some((caller, tok())));
+        let ticket = store.issue(caller, tok(), ScopeSet::full());
+        assert_eq!(
+            store.redeem(ticket),
+            Some((caller, tok(), ScopeSet::full()))
+        );
     }
 
     #[test]
     fn redeem_is_single_use() {
         let store = RtTicketStore::new();
         let caller = Uuid::new_v4();
-        let ticket = store.issue(caller, tok());
-        assert_eq!(store.redeem(ticket), Some((caller, tok())));
+        let ticket = store.issue(caller, tok(), ScopeSet::full());
+        assert_eq!(
+            store.redeem(ticket),
+            Some((caller, tok(), ScopeSet::full()))
+        );
         // Second redeem finds nothing — replay protection.
         assert_eq!(store.redeem(ticket), None);
     }
@@ -192,7 +208,7 @@ mod tests {
         let store = RtTicketStore::new();
         let caller = Uuid::new_v4();
         assert_eq!(store.len(), 0);
-        let _ticket = store.issue(caller, tok());
+        let _ticket = store.issue(caller, tok(), ScopeSet::full());
         assert_eq!(store.len(), 1);
     }
 
@@ -208,6 +224,7 @@ mod tests {
             Entry {
                 caller_id: caller,
                 token: tok(),
+                scopes: ScopeSet::full(),
                 expires_at: Instant::now() - Duration::from_secs(1),
             },
         );
@@ -225,8 +242,8 @@ mod tests {
         // mean the second issue clobbers the first's expiry map row.
         let store = RtTicketStore::new();
         let caller = Uuid::new_v4();
-        let t1 = store.issue(caller, tok());
-        let t2 = store.issue(caller, tok());
+        let t1 = store.issue(caller, tok(), ScopeSet::full());
+        let t2 = store.issue(caller, tok(), ScopeSet::full());
         assert_ne!(t1, t2);
     }
 
