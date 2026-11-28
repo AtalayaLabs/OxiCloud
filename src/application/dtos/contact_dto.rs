@@ -83,6 +83,16 @@ pub struct ContactDto {
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     pub etag: String,
+    /// The vCard exactly as stored (for CardDAV `PUT`s: the client's
+    /// original body). CardDAV responses serve this verbatim so
+    /// properties the structured fields don't model (PHOTO, URL, BDAY
+    /// variants, CATEGORIES, X-*, grouped `itemN.` lines, PREF, …)
+    /// survive a round-trip. Not part of the REST/JSON shape. `None`
+    /// when the row was loaded without the `vcard` column (REST
+    /// listings) or the stored value is empty — callers then fall back
+    /// to rendering from the structured fields.
+    #[serde(skip)]
+    pub vcard: Option<String>,
 }
 
 impl Default for ContactDto {
@@ -107,6 +117,7 @@ impl Default for ContactDto {
             created_at: Utc::now(),
             updated_at: Utc::now(),
             etag: uuid::Uuid::new_v4().to_string(),
+            vcard: None,
         }
     }
 }
@@ -134,6 +145,7 @@ impl From<Contact> for ContactDto {
             created_at: parts.created_at,
             updated_at: parts.updated_at,
             etag: parts.etag,
+            vcard: Some(parts.vcard).filter(|v| !v.trim().is_empty()),
         }
     }
 }

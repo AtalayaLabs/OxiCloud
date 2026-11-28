@@ -357,6 +357,8 @@ fn make_contacts(n: usize) -> Vec<ContactDto> {
                 created_at: created,
                 updated_at: updated,
                 etag: format!("etag-{i:05}"),
+                // No stored vCard: measure the field-based renderer, as before.
+                vcard: None,
             }
         })
         .collect()

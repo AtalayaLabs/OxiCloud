@@ -941,8 +941,45 @@ impl CardDavAdapter {
     }
 }
 
-/// Convert a ContactDto to vCard 3.0 format
+/// Returns the stored vCard if it is a complete `BEGIN:VCARD … END:VCARD`
+/// object, with a trailing CRLF guaranteed.
+fn stored_vcard(contact: &ContactDto) -> Option<String> {
+    let raw = contact.vcard.as_deref()?;
+    let trimmed = raw.trim();
+    let starts = trimmed
+        .get(..11)
+        .is_some_and(|p| p.eq_ignore_ascii_case("BEGIN:VCARD"));
+    let ends = trimmed.len() >= 9
+        && trimmed
+            .get(trimmed.len() - 9..)
+            .is_some_and(|p| p.eq_ignore_ascii_case("END:VCARD"));
+    if !(starts && ends) {
+        return None;
+    }
+    let mut out = String::with_capacity(trimmed.len() + 2);
+    out.push_str(trimmed);
+    out.push_str("\r\n");
+    Some(out)
+}
+
+/// Convert a ContactDto to vCard format for CardDAV responses.
+///
+/// Serves the stored vCard verbatim when available, so properties that
+/// the structured fields don't model (PHOTO, URL, BDAY variants,
+/// CATEGORIES, IMPP, X-*, grouped `itemN.` lines, PREF, original TYPE
+/// values, …) survive a CardDAV round-trip (RFC 6352 §6.3.2.3 expects
+/// the server to preserve the client's data). Only when no complete
+/// stored vCard exists (e.g. virtual system-book contacts) is the vCard
+/// rendered from the structured fields.
 pub fn contact_to_vcard(contact: &ContactDto) -> String {
+    if let Some(stored) = stored_vcard(contact) {
+        return stored;
+    }
+    render_vcard_from_fields(contact)
+}
+
+/// Render a vCard 3.0 from the structured contact fields.
+fn render_vcard_from_fields(contact: &ContactDto) -> String {
     // `write!` into a String is infallible; `let _ =` discards the Ok(()).
     // Formatting straight into the buffer avoids one temporary String per
     // vCard line compared to `push_str(&format!(…))`.

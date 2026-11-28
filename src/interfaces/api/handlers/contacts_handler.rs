@@ -240,6 +240,8 @@ fn user_to_contact(user: PublicUserDto) -> ContactDto {
         created_at: chrono::Utc::now(),
         updated_at: chrono::Utc::now(),
         etag: user.id,
+        // Virtual projection: no stored vCard, render from fields.
+        vcard: None,
     }
 }
 

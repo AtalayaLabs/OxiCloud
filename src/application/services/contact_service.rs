@@ -1512,3 +1512,23 @@ mod parse_vcard_tests {
         );
     }
 }
+
+// ─────────────────────────────────────────────────────────────
+// Tests — CardDAV PUT → GET round-trip keeps the client's vCard
+// ─────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod lossless_roundtrip_tests {
+    use super::*;
+    use crate::application::adapters::carddav_adapter::contact_to_vcard;
+
+    #[test]
+    fn put_then_get_returns_the_original_vcard() {
+        let original = "BEGIN:VCARD\r\nVERSION:3.0\r\nUID:roundtrip-1\r\nFN:Max Beispiel\r\nN:Beispiel;Max;;;\r\nBDAY:19800229\r\nURL;TYPE=x-homepage;VALUE=URI:https://example.org\r\nNOTE;LANGUAGE=de:Mehrzeilige\\nNotiz\r\nPHOTO;ENCODING=b;TYPE=JPEG:AAAA\r\n BBBB\r\nX-CUSTOM-FIELD:bleibt\r\nEND:VCARD\r\n";
+        // Same path as CardDAV PUT: parse → stored entity → DTO → emit.
+        let contact = ContactService::parse_vcard(original).expect("valid vcard");
+        let dto = ContactDto::from(contact);
+        assert_eq!(dto.uid, "roundtrip-1");
+        assert_eq!(contact_to_vcard(&dto), original);
+    }
+}
