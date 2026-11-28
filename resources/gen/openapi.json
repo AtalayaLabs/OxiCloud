@@ -11076,7 +11076,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": null,
-          "scope": null
+          "scope": [
+            "files:rw"
+          ]
         }
       }
     },
@@ -12090,7 +12092,9 @@
         "x-oxicloud-policy": {
           "principal": "user",
           "role": null,
-          "scope": null
+          "scope": [
+            "files:rw"
+          ]
         }
       }
     },
