@@ -59,6 +59,10 @@ Content-Type: application/json
 HTTP 200
 [Captures]
 ap1_id: jsonpath "$.id"
+# Captured so the credential can actually be USED below — the
+# revocation pin needs a live Basic request, not just the row.
+ap1_password: jsonpath "$.password"
+ap1_username: jsonpath "$.username"
 [Asserts]
 # Identity / lifecycle fields.
 jsonpath "$.id" exists
@@ -154,6 +158,18 @@ jsonpath "$.app_passwords[0].active" == true
 
 
 # ─────────────────────────────────────────────────────────────
+# Step 4b — The credential WORKS, which also warms the Basic-auth
+#           cache. Required for the pin below: a cold cache would
+#           reach the row and refuse correctly even with the bug.
+# ─────────────────────────────────────────────────────────────
+GET {{base_url}}/api/folders
+[BasicAuth]
+{{ap1_username}}: {{ap1_password}}
+
+HTTP 200
+
+
+# ─────────────────────────────────────────────────────────────
 # Step 5 — Revoke #1 → 200 with status/id echo.
 # ─────────────────────────────────────────────────────────────
 DELETE {{base_url}}/api/auth/app-passwords/{{ap1_id}}
@@ -163,6 +179,35 @@ HTTP 200
 [Asserts]
 jsonpath "$.status" == "revoked"
 jsonpath "$.id" == "{{ap1_id}}"
+
+
+# ─────────────────────────────────────────────────────────────
+# Step 5b — REGRESSION PIN: a revoked credential stops working
+#           NOW, not in 300 seconds.
+#
+# `verify_basic_auth` caches successful verifications for
+# `BASIC_AUTH_CACHE_TTL_SECS` (300 s) keyed on
+# `blake3(username:password)`, and a cache HIT never reads the row
+# that now says `active = FALSE`. So before
+# `invalidate_auth_cache()`, this request answered 200 for up to
+# five minutes after the revoke above — and those are precisely
+# the five minutes that matter, because revoking is what a user
+# does when a credential leaks.
+#
+# Step 4b warming the cache is what makes this pin real: on a cold
+# cache the refusal comes from the row and the bug is invisible.
+#
+# Targeted eviction is impossible — the key is derived from the
+# PLAINTEXT, which the server never stores, and revoke holds only
+# a row id — so the fix drops the whole cache. The cost is one
+# Argon2id for each live Basic client; the alternative was serving
+# a revoked credential.
+# ─────────────────────────────────────────────────────────────
+GET {{base_url}}/api/folders
+[BasicAuth]
+{{ap1_username}}: {{ap1_password}}
+
+HTTP 401
 
 
 # ─────────────────────────────────────────────────────────────

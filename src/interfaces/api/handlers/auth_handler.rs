@@ -837,6 +837,24 @@ pub async fn change_password(
         .await
     {
         Ok(()) => {
+            // Drop cached Basic-auth verifications.
+            //
+            // The app passwords themselves SURVIVE a password change —
+            // they are independent credentials with their own secrets, and
+            // the cache key is `blake3(username:app_password)`, so the
+            // account password never enters it. So this is not closing a
+            // hole; it is making a password change mean what a user thinks
+            // it means, and it costs one Argon2id per live Basic client.
+            //
+            // If app passwords should be REVOKED on a password change —
+            // defensible, since a change is often the response to a
+            // compromise — that is a policy decision and belongs in
+            // `change_password` beside the session revocation, not here.
+            // The eviction is then already in place for it.
+            if let Some(ap_svc) = state.app_password_service.as_ref() {
+                ap_svc.invalidate_auth_cache();
+            }
+
             // Fire-and-forget security notification: password changed
             // at [now] from [client_ip]. Reaches the user out-of-band
             // so a compromised-account victim can notice and alert

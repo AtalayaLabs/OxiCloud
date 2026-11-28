@@ -308,6 +308,39 @@ impl AppPasswordService {
     ///
     /// Also invalidates **all** cached Basic Auth entries for the owning user
     /// so that the revocation takes effect immediately (instead of waiting
+    /// Drop every cached Basic-auth verification.
+    ///
+    /// Called whenever a credential stops being valid: an app password
+    /// revoked or deleted, or the account's password changed. Without it
+    /// a revoked app password keeps authenticating for up to
+    /// `BASIC_AUTH_CACHE_TTL_SECS` (300 s), because a cache hit never
+    /// reaches the row that says `active = FALSE`. Revocation is the
+    /// action a user takes when a credential LEAKS, so a five-minute
+    /// grace is the wrong five minutes.
+    ///
+    /// **All of it, not one entry**, and that is forced rather than lazy:
+    /// the key is `blake3(username:password)` over the PLAINTEXT, which
+    /// the server never stores. Holding only a row id, there is no way to
+    /// compute the key to target. The alternative is a side index from
+    /// app-password id to cache key, which buys precision at the cost of
+    /// a second structure to keep consistent — for an operation a human
+    /// performs by hand, once.
+    ///
+    /// The cost is one extra Argon2id verification for each live Basic
+    /// client, on their next request. Revocations are rare; wrongly
+    /// authenticating a revoked credential is not a trade worth making
+    /// for that.
+    pub fn invalidate_auth_cache(&self) {
+        self.auth_cache.invalidate_all();
+        tracing::info!(
+            target: "audit",
+            event = "app_password.auth_cache_invalidated",
+            reason = "credential_changed",
+            "👮🏻‍♂️ Basic-auth cache dropped — a revoked or changed \
+             credential must stop working now, not in 300 s",
+        );
+    }
+
     /// up to `BASIC_AUTH_CACHE_TTL_SECS`).
     pub async fn revoke(
         &self,
@@ -324,6 +357,10 @@ impl AppPasswordService {
             ));
         }
         self.repo.revoke(id, user_id).await?;
+        // The row now says `active = FALSE`, but a cache hit never reads
+        // the row — so without this the credential keeps working for the
+        // rest of its 300 s window.
+        self.invalidate_auth_cache();
 
         // Invalidate all cached auth entries for this user so the
         // revocation is effective immediately.
@@ -569,6 +606,7 @@ impl AppPasswordService {
                 .await
             {
                 self.repo.revoke(ap.id, user_id).await?;
+                self.invalidate_auth_cache();
 
                 // Invalidate cache for this user
                 let uid = user_id;
@@ -590,6 +628,11 @@ impl AppPasswordService {
     /// Delete an app password by ID, scoped to the owning user.
     pub async fn delete_by_user(&self, id: Uuid, user_id: Uuid) -> Result<(), DomainError> {
         let deleted = self.repo.delete_by_user_and_id(id, user_id).await?;
+        if deleted {
+            // A DELETED row cannot be re-read at all, so a surviving
+            // cache entry is strictly worse here than for a revoke.
+            self.invalidate_auth_cache();
+        }
         if !deleted {
             return Err(DomainError::new(
                 ErrorKind::NotFound,
