@@ -225,7 +225,6 @@
 		saveError = null;
 		deleteError = null;
 		cancelForm();
-		if (canEdit) startEdit();
 		if (show) mobileDetail = true;
 	}
 

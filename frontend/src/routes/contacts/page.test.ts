@@ -75,16 +75,17 @@ beforeEach(() => {
 	m(listContacts).mockResolvedValue([contact()]);
 });
 
-it('loads the first address book and opens its first contact for editing', async () => {
+it('loads the first address book and shows its first contact read-only', async () => {
 	render(ContactsPage);
-	await waitFor(() => expect(listContacts).toHaveBeenCalled());
+	await screen.findByTestId('contacts-row-c1');
 	expect(m(listContacts).mock.calls[0][0]).toBe(book.id);
-	await waitFor(() => expect(screen.getByTestId('contacts-form')).toBeTruthy());
-	const value = (id: string) => (screen.getByTestId(id) as HTMLInputElement).value;
-	expect(value('contacts-field-full-name')).toBe('Ada Lovelace');
-	expect(value('contacts-field-first-name')).toBe('Ada');
-	expect(value('contacts-field-last-name')).toBe('Lovelace');
-	expect(value('contacts-email-0')).toBe('ada@example.com');
+
+	// Auto-selecting the first contact in a writable book used to open the edit form.
+	expect(screen.queryByTestId('contacts-form')).toBeNull();
+	expect(
+		within(screen.getByTestId('contacts-detail')).getByRole('heading', { name: 'Ada Lovelace' })
+	).toBeTruthy();
+	expect((screen.getByTestId('contacts-edit') as HTMLButtonElement).disabled).toBe(false);
 });
 
 it('separates the system directory from the real address books', async () => {
@@ -123,6 +124,7 @@ it('separates the system directory from the real address books', async () => {
 	await waitFor(() =>
 		expect(within(screen.getByTestId('contacts-detail')).getByText('Other User')).toBeTruthy()
 	);
+	expect(screen.queryByTestId('contacts-edit')).toBeNull();
 });
 
 it('shows the first and last name in the list when they differ from the display name', async () => {
@@ -162,7 +164,7 @@ it('creates a new contact and selects it', async () => {
 	});
 	m(createContact).mockResolvedValue(created);
 	render(ContactsPage);
-	await waitFor(() => expect(screen.getByTestId('contacts-form')).toBeTruthy());
+	await screen.findByTestId('contacts-detail');
 
 	await fireEvent.click(screen.getByTestId('contacts-new'));
 	await fireEvent.input(screen.getByTestId('contacts-field-full-name'), {
@@ -182,19 +184,23 @@ it('creates a new contact and selects it', async () => {
 		})
 	);
 	await waitFor(() =>
-		expect((screen.getByTestId('contacts-field-full-name') as HTMLInputElement).value).toBe(
-			'Grace Hopper'
-		)
+		expect(
+			within(screen.getByTestId('contacts-detail')).getByRole('heading', { name: 'Grace Hopper' })
+		).toBeTruthy()
 	);
 });
 
 it('edits a contact and swaps the updated row into the list', async () => {
 	m(updateContact).mockResolvedValue(contact({ full_name: 'Ada King' }));
 	render(ContactsPage);
-	await waitFor(() => expect(screen.getByTestId('contacts-form')).toBeTruthy());
+	await fireEvent.click(await screen.findByTestId('contacts-edit'));
 
-	const name = screen.getByTestId('contacts-field-full-name') as HTMLInputElement;
+	const input = (id: string) => screen.getByTestId(id) as HTMLInputElement;
+	const name = input('contacts-field-full-name');
 	expect(name.value).toBe('Ada Lovelace');
+	expect(input('contacts-field-first-name').value).toBe('Ada');
+	expect(input('contacts-field-last-name').value).toBe('Lovelace');
+	expect(input('contacts-email-0').value).toBe('ada@example.com');
 	await fireEvent.input(name, { target: { value: 'Ada King' } });
 	await fireEvent.submit(screen.getByTestId('contacts-form'));
 
@@ -209,32 +215,35 @@ it('edits a contact and swaps the updated row into the list', async () => {
 	);
 });
 
-it('opens the form for a contact as soon as its row is clicked', async () => {
+it('opens a clicked contact read-only until Edit is selected', async () => {
 	m(listContacts).mockResolvedValue([
 		contact(),
 		contact({ id: 'c2', uid: 'c2@oxicloud', full_name: 'Grace Hopper', first_name: 'Grace' })
 	]);
 	render(ContactsPage);
-	await waitFor(() => expect(screen.getByTestId('contacts-form')).toBeTruthy());
 
-	await fireEvent.click(screen.getByTestId('contacts-row-c2'));
-	await waitFor(() =>
-		expect((screen.getByTestId('contacts-field-full-name') as HTMLInputElement).value).toBe(
-			'Grace Hopper'
-		)
+	const row = await screen.findByTestId('contacts-row-c2');
+	await fireEvent.click(row);
+	// Clicking a writable contact used to go straight to the edit form instead of its details.
+	expect(screen.queryByTestId('contacts-form')).toBeNull();
+	expect(within(screen.getByTestId('contacts-detail')).getByText('Grace Hopper')).toBeTruthy();
+
+	await fireEvent.click(screen.getByTestId('contacts-edit'));
+	expect((screen.getByTestId('contacts-field-full-name') as HTMLInputElement).value).toBe(
+		'Grace Hopper'
 	);
 
 	await fireEvent.click(screen.getByTestId('contacts-cancel'));
-	await waitFor(() => expect(screen.queryByTestId('contacts-form')).toBeNull());
+	expect(screen.queryByTestId('contacts-form')).toBeNull();
 	expect(within(screen.getByTestId('contacts-detail')).getByText('Grace Hopper')).toBeTruthy();
 
-	await fireEvent.click(screen.getByTestId('contacts-row-c2'));
-	await waitFor(() => expect(screen.getByTestId('contacts-form')).toBeTruthy());
+	await fireEvent.click(row);
+	expect(screen.queryByTestId('contacts-form')).toBeNull();
 });
 
 it('removes an e-mail row on the trash click without asking', async () => {
 	render(ContactsPage);
-	await waitFor(() => expect(screen.getByTestId('contacts-form')).toBeTruthy());
+	await fireEvent.click(await screen.findByTestId('contacts-edit'));
 
 	await fireEvent.click(screen.getAllByRole('button', { name: 'Remove' })[0]);
 
@@ -243,7 +252,7 @@ it('removes an e-mail row on the trash click without asking', async () => {
 
 it('suggests countries as you type and still accepts free text', async () => {
 	render(ContactsPage);
-	await waitFor(() => expect(screen.getByTestId('contacts-form')).toBeTruthy());
+	await fireEvent.click(await screen.findByTestId('contacts-edit'));
 
 	const country = screen.getByTestId('contacts-address-country-0') as HTMLInputElement;
 	await fireEvent.input(country, { target: { value: 'germ' } });
@@ -279,6 +288,7 @@ it('returns to the list after saving on mobile', async () => {
 	const main = document.querySelector('.contacts');
 	expect(main?.classList.contains('contacts--detail')).toBe(true);
 
+	await fireEvent.click(screen.getByTestId('contacts-edit'));
 	await fireEvent.input(screen.getByTestId('contacts-field-full-name'), {
 		target: { value: 'Ada King' }
 	});
@@ -291,7 +301,7 @@ it('returns to the list after saving on mobile', async () => {
 it('deletes the selected contact only after the confirm click', async () => {
 	m(deleteContact).mockResolvedValue(undefined);
 	render(ContactsPage);
-	await waitFor(() => expect(screen.getByTestId('contacts-form')).toBeTruthy());
+	await fireEvent.click(await screen.findByTestId('contacts-edit'));
 
 	const del = screen.getByTestId('contacts-delete');
 	await fireEvent.click(del);
