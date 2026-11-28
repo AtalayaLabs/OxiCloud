@@ -615,7 +615,36 @@
     "new_text_file_binary_ext_title": "Keine Text-Erweiterung",
     "new_text_file_binary_ext_message": "„{{name}}\" sieht nicht wie eine Textdatei aus. Der Editor öffnet sie als Text — bei Binärformaten geht das meist schief. Trotzdem fortfahren?",
     "confirm_delete_permanent": "„{{name}}\" dauerhaft löschen? Diese Aktion kann nicht rückgängig gemacht werden.",
-    "confirm_batch_delete_permanent": "{{n}} Elemente dauerhaft löschen? Diese Aktion kann nicht rückgängig gemacht werden."
+    "confirm_batch_delete_permanent": "{{n}} Elemente dauerhaft löschen? Diese Aktion kann nicht rückgängig gemacht werden.",
+    "comparing_n": "Vergleiche {{done}}/{{total}} Dateien…",
+    "upload_up_to_date": "Alles ist bereits aktuell — {{n}} unveränderte Datei(en) übersprungen",
+    "uploaded_with_skipped": "{{ok}} hochgeladen · {{skipped}} unverändert übersprungen",
+    "upload_conflict": {
+      "title": "Upload-Konflikte ({{n}})",
+      "intro": "Einige Elemente sind in diesem Ordner bereits mit anderem Inhalt vorhanden.",
+      "summary_new": "{{n}} neu",
+      "summary_identical": "{{n}} unverändert (übersprungen)",
+      "summary_conflicts": "{{n}} Konflikt(e)",
+      "skip_all": "Alle überspringen",
+      "replace_if_newer": "Ersetzen falls neuer",
+      "replace_all": "Alle ersetzen",
+      "keep_both_all": "Beide behalten",
+      "action_skip": "Überspringen",
+      "action_replace": "Ersetzen",
+      "action_keep_both": "Beide behalten",
+      "badge_local_newer": "Lokal neuer",
+      "badge_remote_newer": "Server neuer",
+      "badge_same_mtime": "Gleiche Änderungszeit",
+      "badge_readonly": "Schreibgeschützt",
+      "badge_kind_mismatch": "Ordner/Datei-Konflikt",
+      "local_label": "Dieses Gerät: {{size}} · {{date}}",
+      "local_label_nodate": "Dieses Gerät: {{size}}",
+      "remote_label": "Server: {{size}} · {{date}}",
+      "kind_mismatch_hint": "\"{{path}}\" kann nicht überschrieben werden, da dort bereits ein anderer Objekttyp existiert. Wähle Überspringen oder Beide behalten.",
+      "keep_both_hint": "Wird zusätzlich gespeichert als z. B. {{name}}",
+      "confirm_continue": "Fortfahren ({{n}} zum Hochladen)",
+      "confirm_skip_all": "Alle Konflikte überspringen"
+    }
   },
   "dialogs": {
     "rename_folder": "Ordner umbenennen",
@@ -688,7 +717,8 @@
     "not_found": "Dieses Element existiert nicht mehr.",
     "conflict": "Ein Element mit diesem Namen existiert bereits.",
     "transient_backend": "Speicher ist vorübergehend nicht verfügbar. Erneut versuchen.",
-    "network": "Der Server ist nicht erreichbar. Prüfen Sie Ihre Verbindung und versuchen Sie es erneut."
+    "network": "Der Server ist nicht erreichbar. Prüfen Sie Ihre Verbindung und versuchen Sie es erneut.",
+    "precondition_failed": "Diese Datei wurde von jemand anderem geändert. Bitte aktualisieren und erneut versuchen."
   },
   "breadcrumb": {
     "home": "Startseite",

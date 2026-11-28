@@ -615,7 +615,36 @@
     "new_text_file_binary_ext_title": "非文本扩展名",
     "new_text_file_binary_ext_message": "\"{{name}}\" 看起来不像文本文件。编辑器会按文本方式打开 — 这通常会破坏二进制格式。仍要继续吗?",
     "confirm_delete_permanent": "永久删除「{{name}}」？此操作无法撤销。",
-    "confirm_batch_delete_permanent": "永久删除 {{n}} 个项目？此操作无法撤销。"
+    "confirm_batch_delete_permanent": "永久删除 {{n}} 个项目？此操作无法撤销。",
+    "comparing_n": "正在比较 {{done}}/{{total}} 个文件…",
+    "upload_up_to_date": "所有文件均已是最新 — 已跳过 {{n}} 个未更改文件",
+    "uploaded_with_skipped": "已上传 {{ok}} 个 · 已跳过 {{skipped}} 个未更改文件",
+    "upload_conflict": {
+      "title": "上传冲突 ({{n}})",
+      "intro": "此文件夹中已存在内容不同的同名项目。",
+      "summary_new": "新增 {{n}}",
+      "summary_identical": "未更改 {{n}}（自动跳过）",
+      "summary_conflicts": "冲突 {{n}}",
+      "skip_all": "全部跳过",
+      "replace_if_newer": "仅替换较新的",
+      "replace_all": "全部替换",
+      "keep_both_all": "保留两者",
+      "action_skip": "跳过",
+      "action_replace": "替换",
+      "action_keep_both": "保留两者",
+      "badge_local_newer": "本地较新",
+      "badge_remote_newer": "服务器较新",
+      "badge_same_mtime": "修改时间相同",
+      "badge_readonly": "只读",
+      "badge_kind_mismatch": "文件夹/文件冲突",
+      "local_label": "此设备: {{size}} · {{date}}",
+      "local_label_nodate": "此设备: {{size}}",
+      "remote_label": "服务器: {{size}} · {{date}}",
+      "kind_mismatch_hint": "无法覆盖“{{path}}”，因为服务器上该位置已存在不同类型的项目。请选择“跳过”或“保留两者”。",
+      "keep_both_hint": "将另存为例如 {{name}}",
+      "confirm_continue": "继续（上传 {{n}} 个）",
+      "confirm_skip_all": "跳过全部冲突"
+    }
   },
   "dialogs": {
     "rename_folder": "重命名文件夹",
@@ -688,7 +717,8 @@
     "not_found": "该项目不再存在。",
     "conflict": "已存在同名项目。",
     "transient_backend": "存储暂时不可用,请稍后重试。",
-    "network": "无法连接到服务器。请检查网络连接后重试。"
+    "network": "无法连接到服务器。请检查网络连接后重试。",
+    "precondition_failed": "此文件已被他人修改。请刷新后重试。"
   },
   "breadcrumb": {
     "home": "主页",

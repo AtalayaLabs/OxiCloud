@@ -14,6 +14,7 @@ use sqlx::PgPool;
 use std::sync::Arc;
 use uuid::Uuid;
 
+use super::name_conflict_pg::elect_and_insert_in_tx;
 use super::transaction_utils::retry_on_deadlock;
 use crate::application::dtos::folder_dto::{
     FolderOrderBy, FolderResourceCursor, FolderResourceRow,
@@ -22,6 +23,7 @@ use crate::common::errors::DomainError;
 use crate::domain::entities::folder::Folder;
 use crate::domain::repositories::folder_repository::FolderRepository;
 use crate::domain::services::authorization::ResourceKind;
+use crate::domain::services::name_conflict::{ConflictPolicy, NameKind};
 use crate::domain::services::path_service::{StoragePath, normalize_storage_name_owned};
 
 /// Type alias for folder metadata rows from SQL queries.
@@ -219,6 +221,42 @@ pub struct FolderDbRepository {
     pool: Option<Arc<PgPool>>,
 }
 
+/// Existing folder matched during an upload preflight subtree probe.
+#[derive(Debug, Clone)]
+pub struct PreflightFolderRow {
+    pub id: Uuid,
+    pub path: String,
+}
+
+/// Existing live file matched during an upload preflight subtree probe.
+#[derive(Debug, Clone)]
+pub struct PreflightFileRow {
+    pub id: Uuid,
+    pub folder_id: Uuid,
+    pub name: String,
+    pub size: i64,
+    pub modified_at: i64,
+    pub blob_hash: String,
+}
+
+/// Result of [`FolderDbRepository::preflight_lookup_subtree`].
+#[derive(Debug, Clone)]
+pub struct PreflightSubtreeRows {
+    pub root_path: String,
+    pub folders: Vec<PreflightFolderRow>,
+    pub files: Vec<PreflightFileRow>,
+}
+
+fn join_preflight_storage_path(root: &str, rel: &str) -> String {
+    if rel.is_empty() {
+        root.to_string()
+    } else if root.is_empty() || root == "/" {
+        rel.to_string()
+    } else {
+        format!("{root}/{rel}")
+    }
+}
+
 impl FolderDbRepository {
     pub fn new(pool: Arc<PgPool>) -> Self {
         Self { pool: Some(pool) }
@@ -303,6 +341,156 @@ impl FolderDbRepository {
         rows.into_iter()
             .map(|r| Self::row_to_folder(r.0, r.1, r.2, r.3, r.4, r.5, r.6, r.7, r.8, r.9))
             .collect()
+    }
+
+    /// Resolve existing subfolders and files under `root_folder_id` for a
+    /// batch of normalized relative paths in O(K log N) indexed lookups.
+    ///
+    /// - `relative_dir_paths`: distinct relative folder paths (e.g. `"Photos"`,
+    ///   `"Photos/2026"`).
+    /// - `relative_file_paths`: `(parent_rel_dir, file_name)` pairs (where
+    ///   `parent_rel_dir` is `""` for root-level files).
+    ///
+    /// Also checks cross-table collisions: candidate file paths against
+    /// `storage.folders`, and candidate subfolder names against `storage.files`.
+    pub async fn preflight_lookup_subtree(
+        &self,
+        root_folder_id: Uuid,
+        relative_dir_paths: &[String],
+        relative_file_paths: &[(String, String)],
+    ) -> Result<PreflightSubtreeRows, DomainError> {
+        use std::collections::{HashMap, HashSet};
+
+        let root: Option<(String, String)> = sqlx::query_as(
+            "SELECT lpath::text, path
+               FROM storage.folders
+              WHERE id = $1 AND NOT is_trashed",
+        )
+        .bind(root_folder_id)
+        .fetch_optional(self.pool())
+        .await
+        .map_err(|e| DomainError::internal_error("FolderDb", format!("preflight root: {e}")))?;
+
+        let Some((root_lpath, root_path)) = root else {
+            return Err(DomainError::not_found("Folder", root_folder_id.to_string()));
+        };
+
+        // 1. Collect every full path that could hit `storage.folders`:
+        //    - requested relative directories
+        //    - requested relative file paths (to catch file-vs-folder kind conflicts)
+        let mut candidate_folder_paths_set = HashSet::new();
+        for dir in relative_dir_paths {
+            candidate_folder_paths_set.insert(join_preflight_storage_path(&root_path, dir));
+        }
+        for (parent_rel, file_name) in relative_file_paths {
+            let rel_file = if parent_rel.is_empty() {
+                file_name.clone()
+            } else {
+                format!("{parent_rel}/{file_name}")
+            };
+            candidate_folder_paths_set.insert(join_preflight_storage_path(&root_path, &rel_file));
+        }
+
+        let candidate_folder_paths: Vec<String> = candidate_folder_paths_set.into_iter().collect();
+        let folders: Vec<PreflightFolderRow> = if candidate_folder_paths.is_empty() {
+            Vec::new()
+        } else {
+            sqlx::query_as::<_, (Uuid, String)>(
+                "SELECT id, path
+                   FROM storage.folders
+                  WHERE NOT is_trashed
+                    AND lpath <@ $1::ltree
+                    AND path = ANY($2)",
+            )
+            .bind(&root_lpath)
+            .bind(&candidate_folder_paths)
+            .fetch_all(self.pool())
+            .await
+            .map_err(|e| {
+                DomainError::internal_error("FolderDb", format!("preflight folders: {e}"))
+            })?
+            .into_iter()
+            .map(|(id, path)| PreflightFolderRow { id, path })
+            .collect()
+        };
+
+        // Map full folder path -> id (includes root + all existing matching folders).
+        let mut path_to_id: HashMap<&str, Uuid> = HashMap::with_capacity(folders.len() + 1);
+        path_to_id.insert(root_path.as_str(), root_folder_id);
+        for f in &folders {
+            path_to_id.insert(f.path.as_str(), f.id);
+        }
+
+        // 2. Collect every `(existing_parent_id, child_name)` pair that could
+        //    hit `storage.files`:
+        //    - requested files whose parent folder exists
+        //    - requested directories whose parent folder exists (to catch folder-vs-file kind conflicts)
+        let mut seen_pairs: HashSet<(Uuid, String)> = HashSet::new();
+        let mut parent_ids: Vec<Uuid> = Vec::new();
+        let mut child_names: Vec<String> = Vec::new();
+
+        for (parent_rel, file_name) in relative_file_paths {
+            let parent_full = join_preflight_storage_path(&root_path, parent_rel);
+            if let Some(&pid) = path_to_id.get(parent_full.as_str())
+                && seen_pairs.insert((pid, file_name.clone()))
+            {
+                parent_ids.push(pid);
+                child_names.push(file_name.clone());
+            }
+        }
+        for rel_dir in relative_dir_paths {
+            let (parent_rel, dir_name) = match rel_dir.rsplit_once('/') {
+                Some((p, n)) => (p, n),
+                None => ("", rel_dir.as_str()),
+            };
+            let parent_full = join_preflight_storage_path(&root_path, parent_rel);
+            if let Some(&pid) = path_to_id.get(parent_full.as_str())
+                && seen_pairs.insert((pid, dir_name.to_string()))
+            {
+                parent_ids.push(pid);
+                child_names.push(dir_name.to_string());
+            }
+        }
+
+        let files: Vec<PreflightFileRow> = if parent_ids.is_empty() {
+            Vec::new()
+        } else {
+            sqlx::query_as::<_, (Uuid, Uuid, String, i64, i64, String)>(
+                "SELECT f.id,
+                        f.folder_id,
+                        f.name,
+                        f.size,
+                        EXTRACT(EPOCH FROM f.content_modified_at)::bigint,
+                        f.blob_hash
+                   FROM storage.files f
+                   JOIN unnest($1::uuid[], $2::text[]) AS q(folder_id, name)
+                     ON f.folder_id = q.folder_id AND f.name = q.name
+                  WHERE NOT f.is_trashed",
+            )
+            .bind(&parent_ids)
+            .bind(&child_names)
+            .fetch_all(self.pool())
+            .await
+            .map_err(|e| DomainError::internal_error("FolderDb", format!("preflight files: {e}")))?
+            .into_iter()
+            .map(
+                |(id, folder_id, name, size, modified_at, blob_hash)| PreflightFileRow {
+                    id,
+                    folder_id,
+                    name,
+                    size,
+                    modified_at,
+                    blob_hash,
+                },
+            )
+            .collect()
+        };
+
+        Ok(PreflightSubtreeRows {
+            root_path,
+            folders,
+            files,
+        })
     }
 }
 
@@ -416,6 +604,101 @@ impl FolderRepository for FolderDbRepository {
             // Fresh from RETURNING — caller_id was bound to both columns.
             row.6, row.7,
         )
+    }
+
+    async fn create_folder_on_conflict(
+        &self,
+        name: String,
+        parent_id: Option<String>,
+        caller_id: Uuid,
+        on_conflict: ConflictPolicy,
+    ) -> Result<Folder, DomainError> {
+        match on_conflict {
+            ConflictPolicy::Fail => self.create_folder(name, parent_id, caller_id).await,
+            ConflictPolicy::Rename => {
+                let name = normalize_storage_name_owned(name);
+                let Some(ref pid) = parent_id else {
+                    return Err(DomainError::internal_error(
+                        "FolderDb",
+                        "Cannot create root folder — root folders are reserved for the \
+                         atomic drive-creation transaction",
+                    ));
+                };
+                let parent_uuid = Uuid::parse_str(pid)
+                    .map_err(|_| DomainError::not_found("Folder", pid.as_str()))?;
+                let drive_id: Uuid = sqlx::query_scalar::<_, Uuid>(
+                    "SELECT drive_id FROM storage.folders WHERE id = $1 AND NOT is_trashed",
+                )
+                .bind(parent_uuid)
+                .fetch_optional(self.pool())
+                .await
+                .map_err(|e| {
+                    DomainError::internal_error("FolderDb", format!("parent lookup: {e}"))
+                })?
+                .ok_or_else(|| DomainError::not_found("Folder", pid.as_str()))?;
+
+                let (row, actual_name) = elect_and_insert_in_tx(
+                    self.pool(),
+                    "folders.insert_on_conflict",
+                    "Folder",
+                    parent_uuid,
+                    &name,
+                    NameKind::Folder,
+                    |conn, candidate| {
+                        Box::pin(async move {
+                            let row = sqlx::query_as::<
+                                _,
+                                (
+                                    Uuid,
+                                    Option<Uuid>,
+                                    String,
+                                    i64,
+                                    i64,
+                                    i64,
+                                    Option<Uuid>,
+                                    Option<Uuid>,
+                                ),
+                            >(
+                                r#"
+                                INSERT INTO storage.folders
+                                    (name, parent_id, drive_id, created_by, updated_by)
+                                VALUES ($1, $2, $3, $4, $4)
+                                RETURNING id,
+                                          parent_id,
+                                          path,
+                                          EXTRACT(EPOCH FROM created_at)::bigint,
+                                          EXTRACT(EPOCH FROM content_modified_at)::bigint,
+                                          EXTRACT(EPOCH FROM tree_modified_at)::bigint,
+                                          created_by,
+                                          updated_by
+                                "#,
+                            )
+                            .bind(&candidate)
+                            .bind(parent_uuid)
+                            .bind(drive_id)
+                            .bind(caller_id)
+                            .fetch_one(conn)
+                            .await?;
+                            Ok((row, candidate))
+                        })
+                    },
+                )
+                .await?;
+
+                Self::row_to_folder(
+                    row.0,
+                    actual_name,
+                    row.2,
+                    row.1,
+                    drive_id,
+                    row.3,
+                    row.4,
+                    row.5,
+                    row.6,
+                    row.7,
+                )
+            }
+        }
     }
 
     async fn get_folder(&self, id: &str) -> Result<Folder, DomainError> {
@@ -2157,6 +2440,8 @@ impl FolderDbRepository {
 // immediate in-statement bump can move `tree_modified_at`.
 #[cfg(all(test, feature = "integration_tests"))]
 mod tree_etag_immediate_bump_tests {
+    use super::FolderDbRepository;
+    use crate::domain::repositories::folder_repository::FolderRepository;
     use crate::integration_test_support::{ensure_clean_test_db, test_db_url};
     use chrono::{DateTime, Utc};
     use sqlx::PgPool;
@@ -2294,6 +2579,118 @@ mod tree_etag_immediate_bump_tests {
         );
 
         holder.rollback().await.expect("release lock");
+        sqlx::query("DELETE FROM storage.folders WHERE id = $1")
+            .bind(top)
+            .execute(&pool)
+            .await
+            .expect("cleanup");
+    }
+
+    #[tokio::test]
+    async fn create_folder_on_conflict_rename_skips_existing_folders_and_files() {
+        let pool = test_pool().await;
+        let repo = FolderDbRepository::new(std::sync::Arc::new(pool.clone()));
+        let (user, drive, root) = seed_user(&pool).await;
+        let scope = format!("rust-test-f-rename-{}", &Uuid::new_v4().to_string()[..8]);
+        let top = create(&pool, &scope, root, drive, user).await;
+
+        let first = repo
+            .create_folder_on_conflict(
+                "Docs".to_string(),
+                Some(top.to_string()),
+                user,
+                crate::domain::services::name_conflict::ConflictPolicy::Rename,
+            )
+            .await
+            .expect("first folder");
+        assert_eq!(first.name(), "Docs");
+
+        // Seed a file occupying `Docs (2)` so folder disambiguation skips over it to `Docs (3)`.
+        sqlx::query(
+            "INSERT INTO storage.files (name, folder_id, drive_id, blob_hash, size, mime_type, created_by, updated_by, content_modified_by)
+             VALUES ('Docs (2)', $1, $2, 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 1, 'text/plain', $3, $3, $3)",
+        )
+        .bind(top)
+        .bind(drive)
+        .bind(user)
+        .execute(&pool)
+        .await
+        .expect("seed file clash");
+
+        let second = repo
+            .create_folder_on_conflict(
+                "Docs".to_string(),
+                Some(top.to_string()),
+                user,
+                crate::domain::services::name_conflict::ConflictPolicy::Rename,
+            )
+            .await
+            .expect("second folder");
+        assert_eq!(second.name(), "Docs (3)");
+
+        sqlx::query("DELETE FROM storage.folders WHERE id = $1")
+            .bind(top)
+            .execute(&pool)
+            .await
+            .expect("cleanup");
+    }
+
+    #[tokio::test]
+    async fn preflight_lookup_subtree_resolves_nested_folders_files_and_ignores_trash() {
+        let pool = test_pool().await;
+        let repo = FolderDbRepository::new(std::sync::Arc::new(pool.clone()));
+        let (user, drive, root) = seed_user(&pool).await;
+        let scope = format!("rust-test-preflight-{}", &Uuid::new_v4().to_string()[..8]);
+        let top = create(&pool, &scope, root, drive, user).await;
+        let sub = create(&pool, "Sub", top, drive, user).await;
+        let trashed_dir = create(&pool, "TrashedDir", top, drive, user).await;
+        sqlx::query("UPDATE storage.folders SET is_trashed = true WHERE id = $1")
+            .bind(trashed_dir)
+            .execute(&pool)
+            .await
+            .expect("trash dir");
+
+        sqlx::query(
+            "INSERT INTO storage.files (name, folder_id, drive_id, blob_hash, size, mime_type, created_by, updated_by, content_modified_by)
+             VALUES ('a.txt', $1, $2, 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 42, 'text/plain', $3, $3, $3),
+                    ('deleted.txt', $4, $2, 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', 10, 'text/plain', $3, $3, $3)",
+        )
+        .bind(sub)
+        .bind(drive)
+        .bind(user)
+        .bind(top)
+        .execute(&pool)
+        .await
+        .expect("seed files");
+
+        sqlx::query("UPDATE storage.files SET is_trashed = true WHERE folder_id = $1 AND name = 'deleted.txt'")
+            .bind(top)
+            .execute(&pool)
+            .await
+            .expect("trash file");
+
+        let rows = repo
+            .preflight_lookup_subtree(
+                top,
+                &[
+                    "Sub".to_string(),
+                    "TrashedDir".to_string(),
+                    "Missing".to_string(),
+                ],
+                &[
+                    ("Sub".to_string(), "a.txt".to_string()),
+                    ("".to_string(), "deleted.txt".to_string()),
+                ],
+            )
+            .await
+            .expect("preflight");
+
+        assert_eq!(rows.folders.len(), 1);
+        assert_eq!(rows.folders[0].id, sub);
+        assert_eq!(rows.files.len(), 1);
+        assert_eq!(rows.files[0].name, "a.txt");
+        assert_eq!(rows.files[0].size, 42);
+
         sqlx::query("DELETE FROM storage.folders WHERE id = $1")
             .bind(top)
             .execute(&pool)

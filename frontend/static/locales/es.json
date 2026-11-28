@@ -615,7 +615,36 @@
     "new_text_file_binary_ext_title": "Extensión no textual",
     "new_text_file_binary_ext_message": "«{{name}}» no parece un archivo de texto. El editor lo abrirá como texto — normalmente eso rompe los formatos binarios. ¿Continuar de todos modos?",
     "confirm_delete_permanent": "¿Eliminar permanentemente «{{name}}»? Esta acción no se puede deshacer.",
-    "confirm_batch_delete_permanent": "¿Eliminar permanentemente {{n}} elementos? Esta acción no se puede deshacer."
+    "confirm_batch_delete_permanent": "¿Eliminar permanentemente {{n}} elementos? Esta acción no se puede deshacer.",
+    "comparing_n": "Comparando {{done}}/{{total}} archivos…",
+    "upload_up_to_date": "Todo está actualizado — {{n}} archivo(s) sin cambios omitido(s)",
+    "uploaded_with_skipped": "{{ok}} subido(s) · {{skipped}} sin cambios omitido(s)",
+    "upload_conflict": {
+      "title": "Conflictos de subida ({{n}})",
+      "intro": "Algunos elementos ya existen en esta carpeta con contenido diferente.",
+      "summary_new": "{{n}} nuevo(s)",
+      "summary_identical": "{{n}} sin cambios (omitidos)",
+      "summary_conflicts": "{{n}} conflicto(s)",
+      "skip_all": "Omitir todo",
+      "replace_if_newer": "Reemplazar si es más reciente",
+      "replace_all": "Reemplazar todo",
+      "keep_both_all": "Conservar ambos",
+      "action_skip": "Omitir",
+      "action_replace": "Reemplazar",
+      "action_keep_both": "Conservar ambos",
+      "badge_local_newer": "Local más reciente",
+      "badge_remote_newer": "Servidor más reciente",
+      "badge_same_mtime": "Misma fecha de modificación",
+      "badge_readonly": "Solo lectura",
+      "badge_kind_mismatch": "Conflicto carpeta/archivo",
+      "local_label": "Este dispositivo: {{size}} · {{date}}",
+      "local_label_nodate": "Este dispositivo: {{size}}",
+      "remote_label": "Servidor: {{size}} · {{date}}",
+      "kind_mismatch_hint": "No se puede sobrescribir \"{{path}}\" porque el servidor ya tiene otro tipo de elemento allí. Elige Omitir o Conservar ambos.",
+      "keep_both_hint": "Se guardará como p. ej. {{name}}",
+      "confirm_continue": "Continuar ({{n}} por subir)",
+      "confirm_skip_all": "Omitir todos los conflictos"
+    }
   },
   "dialogs": {
     "rename_folder": "Renombrar carpeta",
@@ -688,7 +717,8 @@
     "not_found": "Ese elemento ya no existe.",
     "conflict": "Ya hay un elemento con ese nombre.",
     "transient_backend": "El almacenamiento no está disponible temporalmente. Inténtalo de nuevo.",
-    "network": "No se pudo conectar con el servidor. Comprueba tu conexión e inténtalo de nuevo."
+    "network": "No se pudo conectar con el servidor. Comprueba tu conexión e inténtalo de nuevo.",
+    "precondition_failed": "Este archivo fue modificado por otra persona. Actualiza e inténtalo de nuevo."
   },
   "breadcrumb": {
     "home": "Inicio",

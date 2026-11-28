@@ -7,6 +7,7 @@ use uuid::Uuid;
 use crate::application::dtos::search_dto::SearchCriteriaDto;
 use crate::common::errors::DomainError;
 use crate::domain::entities::file::File;
+use crate::domain::services::name_conflict::ConflictPolicy;
 use crate::domain::services::path_service::StoragePath;
 
 // Re-export domain repository traits for backward compatibility.
@@ -285,6 +286,37 @@ pub trait FileWritePort: Send + Sync + 'static {
         caller_id: Uuid,
         content_modified_at: Option<i64>,
     ) -> Result<File, DomainError>;
+
+    /// Variant of [`Self::save_file_with_blob`] that honours [`ConflictPolicy`].
+    ///
+    /// - [`ConflictPolicy::Fail`] preserves the default idempotent-or-409
+    ///   behaviour.
+    /// - [`ConflictPolicy::Rename`] atomically picks the first free
+    ///   `name (2)` / `stem (2).ext` sibling via savepoint retries.
+    #[allow(clippy::too_many_arguments)]
+    async fn save_file_with_blob_on_conflict(
+        &self,
+        name: String,
+        folder_id: Option<String>,
+        content_type: String,
+        blob_hash: &str,
+        size: u64,
+        caller_id: Uuid,
+        content_modified_at: Option<i64>,
+        on_conflict: ConflictPolicy,
+    ) -> Result<File, DomainError> {
+        let _ = on_conflict;
+        self.save_file_with_blob(
+            name,
+            folder_id,
+            content_type,
+            blob_hash,
+            size,
+            caller_id,
+            content_modified_at,
+        )
+        .await
+    }
 
     /// Moves a file to another folder. `caller_id` is stamped into
     /// `updated_by` alongside the `updated_at = NOW()` bump

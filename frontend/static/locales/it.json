@@ -615,7 +615,36 @@
     "new_text_file_binary_ext_title": "Estensione non testuale",
     "new_text_file_binary_ext_message": "«{{name}}» non sembra un file di testo. L'editor lo aprirà come testo — di solito questo danneggia i formati binari. Continuare comunque?",
     "confirm_delete_permanent": "Eliminare definitivamente «{{name}}»? Questa azione non può essere annullata.",
-    "confirm_batch_delete_permanent": "Eliminare definitivamente {{n}} elementi? Questa azione non può essere annullata."
+    "confirm_batch_delete_permanent": "Eliminare definitivamente {{n}} elementi? Questa azione non può essere annullata.",
+    "comparing_n": "Confronto {{done}}/{{total}} file…",
+    "upload_up_to_date": "Tutto è già aggiornato — {{n}} file identico/i ignorato/i",
+    "uploaded_with_skipped": "{{ok}} caricato/i · {{skipped}} invariato/i ignorato/i",
+    "upload_conflict": {
+      "title": "Conflitti di caricamento ({{n}})",
+      "intro": "Alcuni elementi esistono già in questa cartella con contenuto diverso.",
+      "summary_new": "{{n}} nuovo/i",
+      "summary_identical": "{{n}} invariato/i (ignorati)",
+      "summary_conflicts": "{{n}} conflitto/i",
+      "skip_all": "Ignora tutto",
+      "replace_if_newer": "Sostituisci se più recente",
+      "replace_all": "Sostituisci tutto",
+      "keep_both_all": "Mantieni entrambi",
+      "action_skip": "Ignora",
+      "action_replace": "Sostituisci",
+      "action_keep_both": "Mantieni entrambi",
+      "badge_local_newer": "Locale più recente",
+      "badge_remote_newer": "Server più recente",
+      "badge_same_mtime": "Stessa data di modifica",
+      "badge_readonly": "Sola lettura",
+      "badge_kind_mismatch": "Conflitto cartella/file",
+      "local_label": "Questo dispositivo: {{size}} · {{date}}",
+      "local_label_nodate": "Questo dispositivo: {{size}}",
+      "remote_label": "Server: {{size}} · {{date}}",
+      "kind_mismatch_hint": "Impossibile sovrascrivere \"{{path}}\" perché sul server è presente un tipo di elemento diverso. Scegli Ignora o Mantieni entrambi.",
+      "keep_both_hint": "Salvato come es. {{name}}",
+      "confirm_continue": "Continua ({{n}} da caricare)",
+      "confirm_skip_all": "Ignora tutti i conflitti"
+    }
   },
   "dialogs": {
     "rename_folder": "Rinomina cartella",
@@ -688,7 +717,8 @@
     "not_found": "Questo elemento non esiste più.",
     "conflict": "Esiste già un elemento con quel nome.",
     "transient_backend": "Lo storage è temporaneamente non disponibile. Riprova.",
-    "network": "Impossibile raggiungere il server. Controlla la connessione e riprova."
+    "network": "Impossibile raggiungere il server. Controlla la connessione e riprova.",
+    "precondition_failed": "Questo file è stato modificato da qualcun altro. Aggiorna e riprova."
   },
   "breadcrumb": {
     "home": "Home",

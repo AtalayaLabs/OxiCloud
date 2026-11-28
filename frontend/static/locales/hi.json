@@ -615,7 +615,36 @@
     "new_text_file_binary_ext_title": "गैर-पाठ एक्सटेंशन",
     "new_text_file_binary_ext_message": "\"{{name}}\" एक पाठ फ़ाइल नहीं लगती। संपादक इसे पाठ के रूप में खोलेगा — यह आमतौर पर बाइनरी फ़ॉर्मेट को खराब कर देता है। फिर भी जारी रखें?",
     "confirm_delete_permanent": "«{{name}}» को स्थायी रूप से हटाएँ? यह क्रिया पूर्ववत नहीं की जा सकती।",
-    "confirm_batch_delete_permanent": "{{n}} आइटम स्थायी रूप से हटाएँ? यह क्रिया पूर्ववत नहीं की जा सकती।"
+    "confirm_batch_delete_permanent": "{{n}} आइटम स्थायी रूप से हटाएँ? यह क्रिया पूर्ववत नहीं की जा सकती।",
+    "comparing_n": "{{done}}/{{total}} फ़ाइलों की तुलना हो रही है…",
+    "upload_up_to_date": "सब कुछ पहले से अप-टू-डेट है — {{n}} अपरिवर्तित फ़ाइल(ें) छोड़ी गईं",
+    "uploaded_with_skipped": "{{ok}} अपलोड हुईं · {{skipped}} अपरिवर्तित छोड़ी गईं",
+    "upload_conflict": {
+      "title": "अपलोड टकराव ({{n}})",
+      "intro": "इस फ़ोल्डर में अलग सामग्री के साथ कुछ आइटम पहले से मौजूद हैं।",
+      "summary_new": "{{n}} नई",
+      "summary_identical": "{{n}} अपरिवर्तित (अपने-आप छोड़ी गईं)",
+      "summary_conflicts": "{{n}} टकराव",
+      "skip_all": "सभी छोड़ें",
+      "replace_if_newer": "नया होने पर बदलें",
+      "replace_all": "सभी बदलें",
+      "keep_both_all": "दोनों रखें",
+      "action_skip": "छोड़ें",
+      "action_replace": "बदलें",
+      "action_keep_both": "दोनों रखें",
+      "badge_local_newer": "स्थानीय नया",
+      "badge_remote_newer": "सर्वर नया",
+      "badge_same_mtime": "समान संशोधन समय",
+      "badge_readonly": "केवल-पठनीय",
+      "badge_kind_mismatch": "फ़ोल्डर/फ़ाइल टकराव",
+      "local_label": "यह डिवाइस: {{size}} · {{date}}",
+      "local_label_nodate": "यह डिवाइस: {{size}}",
+      "remote_label": "सर्वर: {{size}} · {{date}}",
+      "kind_mismatch_hint": "\"{{path}}\" को ओवरराइट नहीं किया जा सकता क्योंकि सर्वर पर वहाँ पहले से अलग प्रकार का आइटम है। छोड़ें या दोनों रखें चुनें।",
+      "keep_both_hint": "उदा. {{name}} के रूप में साथ सहेजा जाएगा",
+      "confirm_continue": "जारी रखें ({{n}} अपलोड करें)",
+      "confirm_skip_all": "सभी टकराव छोड़ें"
+    }
   },
   "dialogs": {
     "rename_folder": "फ़ोल्डर का नाम बदलें",
@@ -688,7 +717,8 @@
     "not_found": "वह आइटम अब मौजूद नहीं है।",
     "conflict": "उस नाम का आइटम पहले से मौजूद है।",
     "transient_backend": "स्टोरेज अस्थायी रूप से अनुपलब्ध है। पुनः प्रयास करें।",
-    "network": "सर्वर तक नहीं पहुँच सके। अपना कनेक्शन जाँचें और फिर से कोशिश करें।"
+    "network": "सर्वर तक नहीं पहुँच सके। अपना कनेक्शन जाँचें और फिर से कोशिश करें।",
+    "precondition_failed": "यह फ़ाइल किसी और ने बदल दी है। रीफ़्रेश करें और फिर से प्रयास करें।"
   },
   "breadcrumb": {
     "home": "होम",

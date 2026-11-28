@@ -7,12 +7,22 @@
  */
 import { base } from '$app/paths';
 
+interface StreamingBlake3Hasher {
+	update: (data: Uint8Array) => void;
+	finalizeHex: () => string;
+	free: () => void;
+}
+
 interface HashWasmModule {
 	/** wasm-bindgen init; resolves once the `.wasm` is instantiated. */
 	default: () => Promise<unknown>;
 	/** One-shot BLAKE3 of a buffer → 64-char lowercase hex. */
 	blake3Hex: (data: Uint8Array) => string;
+	/** Streaming BLAKE3 hasher for >8 MiB files without buffering whole file. */
+	Blake3Hasher: new () => StreamingBlake3Hasher;
 }
+
+const HASH_STREAM_CHUNK_BYTES = 8 * 1024 * 1024;
 
 const WASM_GLUE_URL = `${base}/vendors/hash-wasm/oxicloud_hash_wasm.js`;
 
@@ -37,11 +47,24 @@ function load(): Promise<HashWasmModule> {
 /**
  * Whole-file BLAKE3 (64-char lowercase hex) of `file`. Matches the server's
  * `file_hash` (BLAKE3 over the whole content), so it can be handed to
- * `/api/files/by-hash`. Reads the file fully into memory — intended for small
- * files only.
+ * `/api/files/by-hash` or preflight comparison. Streams 8 MiB slices for large
+ * files so RAM stays bounded.
  */
 export async function blake3HexOfFile(file: File): Promise<string> {
 	const mod = await load();
-	const bytes = new Uint8Array(await file.arrayBuffer());
-	return mod.blake3Hex(bytes);
+	if (file.size <= HASH_STREAM_CHUNK_BYTES) {
+		const bytes = new Uint8Array(await file.arrayBuffer());
+		return mod.blake3Hex(bytes);
+	}
+	const hasher = new mod.Blake3Hasher();
+	try {
+		for (let offset = 0; offset < file.size; offset += HASH_STREAM_CHUNK_BYTES) {
+			const slice = file.slice(offset, Math.min(file.size, offset + HASH_STREAM_CHUNK_BYTES));
+			const bytes = new Uint8Array(await slice.arrayBuffer());
+			hasher.update(bytes);
+		}
+		return hasher.finalizeHex();
+	} finally {
+		hasher.free();
+	}
 }

@@ -615,7 +615,36 @@
     "new_text_file_binary_ext_title": "Extensão não textual",
     "new_text_file_binary_ext_message": "«{{name}}» não parece ser um ficheiro de texto. O editor abri-lo-á como texto — isso costuma danificar formatos binários. Continuar mesmo assim?",
     "confirm_delete_permanent": "Excluir permanentemente «{{name}}»? Esta ação não pode ser desfeita.",
-    "confirm_batch_delete_permanent": "Excluir permanentemente {{n}} itens? Esta ação não pode ser desfeita."
+    "confirm_batch_delete_permanent": "Excluir permanentemente {{n}} itens? Esta ação não pode ser desfeita.",
+    "comparing_n": "A comparar {{done}}/{{total}} ficheiros…",
+    "upload_up_to_date": "Tudo já está atualizado — {{n}} ficheiro(s) idêntico(s) ignorado(s)",
+    "uploaded_with_skipped": "{{ok}} carregado(s) · {{skipped}} inalterado(s) ignorado(s)",
+    "upload_conflict": {
+      "title": "Conflitos de envio ({{n}})",
+      "intro": "Alguns itens já existem nesta pasta com conteúdo diferente.",
+      "summary_new": "{{n}} novo(s)",
+      "summary_identical": "{{n}} inalterado(s) (ignorados)",
+      "summary_conflicts": "{{n}} conflito(s)",
+      "skip_all": "Ignorar tudo",
+      "replace_if_newer": "Substituir se mais recente",
+      "replace_all": "Substituir tudo",
+      "keep_both_all": "Manter ambos",
+      "action_skip": "Ignorar",
+      "action_replace": "Substituir",
+      "action_keep_both": "Manter ambos",
+      "badge_local_newer": "Local mais recente",
+      "badge_remote_newer": "Servidor mais recente",
+      "badge_same_mtime": "Mesma data de modificação",
+      "badge_readonly": "Só de leitura",
+      "badge_kind_mismatch": "Conflito pasta/ficheiro",
+      "local_label": "Este dispositivo: {{size}} · {{date}}",
+      "local_label_nodate": "Este dispositivo: {{size}}",
+      "remote_label": "Servidor: {{size}} · {{date}}",
+      "kind_mismatch_hint": "Não é possível substituir \"{{path}}\" porque o servidor já tem um tipo de item diferente nesse caminho. Escolha Ignorar ou Manter ambos.",
+      "keep_both_hint": "Guardado ao lado como ex. {{name}}",
+      "confirm_continue": "Continuar ({{n}} para enviar)",
+      "confirm_skip_all": "Ignorar todos os conflitos"
+    }
   },
   "dialogs": {
     "rename_folder": "Renomear pasta",
@@ -688,7 +717,8 @@
     "not_found": "Esse item já não existe.",
     "conflict": "Já existe um item com esse nome.",
     "transient_backend": "O armazenamento está temporariamente indisponível. Tente novamente.",
-    "network": "Não foi possível conectar ao servidor. Verifique sua conexão e tente novamente."
+    "network": "Não foi possível conectar ao servidor. Verifique sua conexão e tente novamente.",
+    "precondition_failed": "Este ficheiro foi modificado por outra pessoa. Atualize e tente novamente."
   },
   "breadcrumb": {
     "home": "Início",

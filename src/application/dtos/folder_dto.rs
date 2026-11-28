@@ -8,6 +8,7 @@ use crate::application::dtos::timestamp_helpers::{
 };
 use crate::domain::entities::folder::Folder;
 use crate::domain::services::authorization::ResourceKind;
+use crate::domain::services::name_conflict::ConflictPolicy;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use utoipa::{IntoParams, ToSchema};
@@ -21,6 +22,11 @@ pub struct CreateFolderDto {
 
     /// Parent folder ID (None for root level)
     pub parent_id: Option<String>,
+
+    /// Conflict handling policy when a sibling already exists (`fail` by default,
+    /// `rename` to atomically elect `name (2)`, `name (3)`, …).
+    #[serde(default)]
+    pub on_conflict: ConflictPolicy,
 }
 
 /// DTO for folder rename requests

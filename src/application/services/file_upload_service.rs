@@ -10,6 +10,7 @@ use crate::application::ports::storage_ports::{FileReadPort, FileWritePort, Stor
 use crate::application::services::storage_usage_service::StorageUsageService;
 use crate::common::errors::DomainError;
 use crate::domain::services::authorization::{Permission, Resource, Subject};
+use crate::domain::services::name_conflict::ConflictPolicy;
 use crate::infrastructure::repositories::pg::FileBlobReadRepository;
 use crate::infrastructure::repositories::pg::FileBlobWriteRepository;
 use crate::infrastructure::services::blob_handler::BlobHandler;
@@ -206,6 +207,7 @@ impl FileUploadService {
         folder_id: String,
         hash: &str,
         source_modified_at: Option<i64>,
+        on_conflict: ConflictPolicy,
     ) -> Result<FileDto, DomainError> {
         let Some(InstantUploadDeps {
             authz,
@@ -289,7 +291,7 @@ impl FileUploadService {
         dedup.add_reference(hash).await?;
 
         let dto = self
-            .upload_file_streaming(
+            .upload_file_streaming_on_conflict(
                 name,
                 Some(folder_id),
                 content_type,
@@ -305,6 +307,7 @@ impl FileUploadService {
                 // slot a re-upload of already-owned content lost the mtime
                 // even for a small file.
                 source_modified_at,
+                on_conflict,
             )
             .await?;
 
@@ -315,27 +318,23 @@ impl FileUploadService {
         Ok(dto)
     }
 
-    /// Swap an existing file's content to an already-ingested blob — the
-    /// update mode of the delta-upload commit. The caller needs `Write`
-    /// permission on the file; the blob reference is consumed (released on
-    /// failure by the write port, like every other registration path).
-    pub async fn update_file_content_by_id_with_perms(
+    /// Replace an existing file's content from a blob the caller **already owns**
+    /// (`POST /api/files/by-hash` with `file_id`) — zero content bytes cross
+    /// the wire. Enforces `Permission::Update`, ownership of `hash`,
+    /// differential quota (`new_size - old_size`), and optional CAS
+    /// `expected_hash`.
+    pub async fn update_file_from_owned_blob_with_perms(
         &self,
         caller_id: Uuid,
         file_id: &str,
-        blob: StoredBlob,
+        hash: &str,
         source_modified_at: Option<i64>,
+        expected_hash: Option<&str>,
     ) -> Result<FileDto, DomainError> {
-        let Some(InstantUploadDeps { authz, .. }) = &self.instant_upload else {
+        let Some(InstantUploadDeps { authz, dedup, .. }) = &self.instant_upload else {
             return Err(DomainError::internal_error(
                 "FileUpload",
                 "instant upload is not wired (authz/dedup/quota missing)",
-            ));
-        };
-        let Some(file_read) = &self.file_read else {
-            return Err(DomainError::internal_error(
-                "FileUpload",
-                "read port is not wired",
             ));
         };
 
@@ -349,19 +348,132 @@ impl FileUploadService {
             )
             .await?;
 
-        let file = file_read.get_file(file_id).await?;
+        if !dedup
+            .user_owns_blob_reference(hash, &caller_id.to_string())
+            .await
+        {
+            tracing::info!(
+                target: "audit",
+                event = "instant_upload.rejected",
+                reason = "hash_not_owned",
+                caller_id = %caller_id,
+                blob_hash = %hash,
+                "👮🏻‍♂️ Instant replace rejected: caller owns no file referencing the claimed hash",
+            );
+            return Err(DomainError::not_found("Blob", hash));
+        }
+
+        let Some(metadata) = dedup.get_blob_metadata(hash).await else {
+            return Err(DomainError::not_found("Blob", hash));
+        };
+
+        dedup.add_reference(hash).await?;
+
+        let dto = self
+            .update_file_content_by_id_with_perms(
+                caller_id,
+                file_id,
+                StoredBlob {
+                    hash: hash.to_string(),
+                    size: metadata.size,
+                    is_new_blob: false,
+                },
+                source_modified_at,
+                expected_hash,
+            )
+            .await?;
+
+        info!(
+            "⚡ INSTANT REPLACE: {} ({} bytes, 0 transferred, ID: {})",
+            dto.name, metadata.size, dto.id
+        );
+        Ok(dto)
+    }
+
+    /// Swap an existing file's content to an already-ingested blob — used by
+    /// delta-upload commit (`Update`), `PUT /api/files/{id}/content`, and
+    /// instant replace.
+    ///
+    /// Enforces `Permission::Update` on the file, differential quota on any
+    /// size growth, and optional CAS `expected_hash` (`PreconditionFailed`).
+    /// Takes ownership of `blob`'s reference and releases it on any failure
+    /// before reaching `update_file_content_with_blob`.
+    pub async fn update_file_content_by_id_with_perms(
+        &self,
+        caller_id: Uuid,
+        file_id: &str,
+        blob: StoredBlob,
+        source_modified_at: Option<i64>,
+        expected_hash: Option<&str>,
+    ) -> Result<FileDto, DomainError> {
+        let Some(authz) = &self.authorization else {
+            self.file_write.release_uncommitted_blob(&blob.hash).await;
+            return Err(DomainError::internal_error(
+                "FileUpload",
+                "update_file_content_by_id_with_perms called without authorization engine wired",
+            ));
+        };
+        let Some(file_read) = &self.file_read else {
+            self.file_write.release_uncommitted_blob(&blob.hash).await;
+            return Err(DomainError::internal_error(
+                "FileUpload",
+                "read port is not wired",
+            ));
+        };
+
+        let Ok(file_uuid) = Uuid::parse_str(file_id) else {
+            self.file_write.release_uncommitted_blob(&blob.hash).await;
+            return Err(DomainError::not_found("File", file_id.to_string()));
+        };
+        if let Err(e) = authz
+            .require(
+                Subject::User(caller_id),
+                Permission::Update,
+                Resource::File(file_uuid),
+            )
+            .await
+        {
+            self.file_write.release_uncommitted_blob(&blob.hash).await;
+            return Err(e);
+        }
+
+        let file = match file_read.get_file(file_id).await {
+            Ok(f) => f,
+            Err(e) => {
+                self.file_write.release_uncommitted_blob(&blob.hash).await;
+                return Err(e);
+            }
+        };
+        let old_size = file.size();
+        let growth = blob.size.saturating_sub(old_size);
+        if growth > 0
+            && let Some(quota) = self
+                .storage_usage_service
+                .as_ref()
+                .or_else(|| self.instant_upload.as_ref().map(|d| &d.quota))
+        {
+            if let Err(e) = quota.check_storage_quota(caller_id, growth).await {
+                self.file_write.release_uncommitted_blob(&blob.hash).await;
+                return Err(e);
+            }
+            if let Some(folder_uuid) = file.folder_id().and_then(|s| Uuid::parse_str(s).ok())
+                && let Err(e) = quota.check_drive_quota_by_folder(folder_uuid, growth).await
+            {
+                self.file_write.release_uncommitted_blob(&blob.hash).await;
+                return Err(e);
+            }
+        }
+
         let (new_hash, updated_at) = self
             .file_write
             .update_file_content_with_blob(
                 file_id,
                 &blob.hash,
                 blob.size,
-                // §9 — the client's asserted source mtime. Delta UPDATE is a
-                // content replacement, so the mtime the client reports for
-                // those bytes is exactly what belongs in the content clock.
+                // §9 — the client's asserted source mtime.
                 source_modified_at,
                 caller_id,
-                None,
+                expected_hash,
             )
             .await?;
         // The file maps to a different blob now — stale cached content must
@@ -384,6 +496,11 @@ impl FileUploadService {
         )
         .map_err(|e| DomainError::internal_error("FileUpload", format!("rebuild entity: {e}")))?;
         let dto = FileDto::from(updated);
+        self.apply_storage_usage_delta(
+            blob.size as i64 - old_size as i64,
+            &dto.folder_id,
+            caller_id,
+        );
         if let Some(hook) = &self.file_lifecycle_hook {
             hook.on_file_updated(
                 file_id,
@@ -392,8 +509,7 @@ impl FileUploadService {
                 WriteSource::External,
             );
         }
-        // Delta-upload commit path — record the swap so Recent reflects
-        // "this is the file I just delta-updated".
+        // Record the swap so Recent reflects the updated file.
         self.notify_file_accessed(caller_id, file_id);
         Ok(dto)
     }
@@ -589,9 +705,9 @@ impl FileUploadService {
     }
 }
 
-impl FileUploadUseCase for FileUploadService {
-    /// Register a new file row pointing at an already-ingested blob.
-    async fn upload_file_streaming(
+impl FileUploadService {
+    #[allow(clippy::too_many_arguments)]
+    async fn upload_file_streaming_inner(
         &self,
         name: String,
         folder_id: Option<String>,
@@ -599,40 +715,32 @@ impl FileUploadUseCase for FileUploadService {
         blob: StoredBlob,
         caller_id: Uuid,
         source_modified_at: Option<i64>,
+        on_conflict: ConflictPolicy,
     ) -> Result<FileDto, DomainError> {
         let file = self
             .file_write
-            .save_file_with_blob(
+            .save_file_with_blob_on_conflict(
                 name.clone(),
                 folder_id,
                 content_type,
                 &blob.hash,
                 blob.size,
                 caller_id,
-                // §9 — the client's asserted source mtime, already rounded
-                // from milliseconds and validated against the trust bounds
-                // by the caller. `None` stamps NOW(), which is every caller
-                // that has nothing to assert.
                 source_modified_at,
+                on_conflict,
             )
             .await?;
         let dto = FileDto::from(file);
         info!(
             "📡 STREAMING UPLOAD: {} ({} bytes, ID: {})",
-            name, blob.size, dto.id
+            dto.name, blob.size, dto.id
         );
         self.maybe_update_storage_usage(&dto, caller_id);
         if let Some(hook) = &self.file_lifecycle_hook {
             hook.on_file_created(&dto.id, &dto.content_hash, &dto.mime_type, blob.is_new_blob);
         }
-        // The caller just created this file — surface it in Recent so the
-        // "I just uploaded X" UX matches the pre-SvelteKit behaviour.
         self.notify_file_accessed(caller_id, &dto.id);
 
-        // Bus fan-out AFTER commit — subscribers to the parent
-        // folder's topic see the new file appear live. Silent no-op if
-        // the bus isn't wired (stubs / tests) or the file landed at
-        // drive-root (no folder id → nothing to publish on).
         if let (Some(bus), Some(parent_folder_id)) = (&self.bus, dto.folder_id.as_deref())
             && let (Ok(parent_uuid), Ok(file_uuid)) =
                 (Uuid::parse_str(parent_folder_id), Uuid::parse_str(&dto.id))
@@ -650,6 +758,52 @@ impl FileUploadUseCase for FileUploadService {
         }
 
         Ok(dto)
+    }
+}
+
+impl FileUploadUseCase for FileUploadService {
+    /// Register a new file row pointing at an already-ingested blob.
+    async fn upload_file_streaming(
+        &self,
+        name: String,
+        folder_id: Option<String>,
+        content_type: String,
+        blob: StoredBlob,
+        caller_id: Uuid,
+        source_modified_at: Option<i64>,
+    ) -> Result<FileDto, DomainError> {
+        self.upload_file_streaming_inner(
+            name,
+            folder_id,
+            content_type,
+            blob,
+            caller_id,
+            source_modified_at,
+            ConflictPolicy::Fail,
+        )
+        .await
+    }
+
+    async fn upload_file_streaming_on_conflict(
+        &self,
+        name: String,
+        folder_id: Option<String>,
+        content_type: String,
+        blob: StoredBlob,
+        caller_id: Uuid,
+        source_modified_at: Option<i64>,
+        on_conflict: ConflictPolicy,
+    ) -> Result<FileDto, DomainError> {
+        self.upload_file_streaming_inner(
+            name,
+            folder_id,
+            content_type,
+            blob,
+            caller_id,
+            source_modified_at,
+            on_conflict,
+        )
+        .await
     }
 
     /// AuthZ audit #17 — `Create` on target folder is re-verified here

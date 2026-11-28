@@ -42,6 +42,7 @@ use crate::application::services::storage_usage_service::StorageUsageService;
 use crate::common::errors::DomainError;
 use crate::common::mime_detect::{MAGIC_BYTES_LEN, refine_content_type};
 use crate::domain::services::authorization::{Permission, Resource, Subject};
+use crate::domain::services::name_conflict::ConflictPolicy;
 use crate::infrastructure::repositories::pg::FileBlobReadRepository;
 use crate::infrastructure::services::blob_handler::{BlobHandler, CDC_MAX_CHUNK};
 use crate::infrastructure::services::pg_acl_engine::PgAclEngine;
@@ -109,6 +110,13 @@ pub struct DeltaCommitRequest {
     /// large ones silently lost it.
     #[serde(default)]
     pub source_modified_at: Option<i64>,
+    /// Create mode conflict policy (`fail` by default; `rename` to elect `stem (2).ext`).
+    #[serde(default)]
+    pub on_conflict: ConflictPolicy,
+    /// Update mode optional compare-and-swap guard: current expected whole-file
+    /// BLAKE3 hash (64 hex chars). Mismatch returns `412 PreconditionFailed`.
+    #[serde(default)]
+    pub expected_hash: Option<String>,
 }
 
 /// Response of `GET /api/files/{id}/manifest` — the recipe to rebuild the
@@ -330,23 +338,7 @@ impl DeltaUploadService {
             }
         };
 
-        let mode = match (&request.name, &request.folder_id, &request.file_id) {
-            (Some(name), Some(folder_id), None) => {
-                let name = sanitize_file_name(name)?;
-                CommitMode::Create {
-                    name,
-                    folder_id: folder_id.clone(),
-                }
-            }
-            (None, None, Some(file_id)) => CommitMode::Update {
-                file_id: file_id.clone(),
-            },
-            _ => {
-                return Err(DomainError::validation_error(
-                    "Provide either name + folder_id (create) or file_id (update)",
-                ));
-            }
-        };
+        let mode = resolve_commit_mode(&request)?;
 
         // ── AuthZ first: nothing is pinned for callers who may not write ──
         match &mode {
@@ -374,24 +366,40 @@ impl DeltaUploadService {
             }
         }
 
-        // ── Quota on the logical size (same semantics as a byte upload) ──
-        self.quota
-            .check_storage_quota(caller_id, total_size)
-            .await?;
-
-        // ── Per-drive quota (D4) ─────────────────────────────────
-        // Mirrors the per-user check above on the same `total_size`.
-        // Only on CREATE — Update replaces an existing row's content;
-        // tight size-delta accounting on update is a follow-up (today
-        // the periodic sweep reconciles drift either way). The
-        // single-statement `check_drive_quota_by_folder` lookup is a
-        // PK probe; cost matches the existing per-user check.
-        if let CommitMode::Create { folder_id, .. } = &mode {
-            let folder_uuid = Uuid::parse_str(folder_id)
-                .map_err(|_| DomainError::not_found("Folder", folder_id.clone()))?;
-            self.quota
-                .check_drive_quota_by_folder(folder_uuid, total_size)
-                .await?;
+        // ── Quota check: full size on Create, net growth on Update ──
+        match &mode {
+            CommitMode::Create { folder_id, .. } => {
+                self.quota
+                    .check_storage_quota(caller_id, total_size)
+                    .await?;
+                let folder_uuid = Uuid::parse_str(folder_id)
+                    .map_err(|_| DomainError::not_found("Folder", folder_id.clone()))?;
+                self.quota
+                    .check_drive_quota_by_folder(folder_uuid, total_size)
+                    .await?;
+            }
+            CommitMode::Update { file_id } => {
+                let existing = self.file_read.get_file(file_id).await?;
+                if let Some(ref expected) = request.expected_hash
+                    && !expected.eq_ignore_ascii_case(existing.content_hash())
+                {
+                    return Err(DomainError::precondition_failed(
+                        "File",
+                        "content was modified concurrently",
+                    ));
+                }
+                let growth = total_size.saturating_sub(existing.size());
+                if growth > 0 {
+                    self.quota.check_storage_quota(caller_id, growth).await?;
+                    if let Some(folder_uuid) =
+                        existing.folder_id().and_then(|s| Uuid::parse_str(s).ok())
+                    {
+                        self.quota
+                            .check_drive_quota_by_folder(folder_uuid, growth)
+                            .await?;
+                    }
+                }
+            }
         }
 
         // ── Whole-file fast path: caller already owns this exact content ──
@@ -417,6 +425,8 @@ impl DeltaUploadService {
                     metadata.content_type,
                     blob,
                     source_modified_at,
+                    request.on_conflict,
+                    request.expected_hash.as_deref(),
                 )
                 .await?;
             return Ok(DeltaCommitOutcome::Done {
@@ -530,6 +540,8 @@ impl DeltaUploadService {
                 Some(content_type),
                 blob,
                 source_modified_at,
+                request.on_conflict,
+                request.expected_hash.as_deref(),
             )
             .await?;
         Ok(DeltaCommitOutcome::Done {
@@ -697,6 +709,7 @@ impl DeltaUploadService {
 
     /// Create or update the file row against a blob reference the commit
     /// already holds (the registration paths release it on failure).
+    #[allow(clippy::too_many_arguments)]
     async fn register_row(
         &self,
         caller_id: Uuid,
@@ -704,19 +717,22 @@ impl DeltaUploadService {
         content_type: Option<String>,
         blob: StoredBlob,
         source_modified_at: Option<i64>,
+        on_conflict: ConflictPolicy,
+        expected_hash: Option<&str>,
     ) -> Result<FileDto, DomainError> {
         match mode {
             CommitMode::Create { name, folder_id } => {
                 let content_type =
                     content_type.unwrap_or_else(|| "application/octet-stream".to_string());
                 self.uploads
-                    .upload_file_streaming(
+                    .upload_file_streaming_on_conflict(
                         name.clone(),
                         Some(folder_id.clone()),
                         content_type,
                         blob,
                         caller_id,
                         source_modified_at,
+                        on_conflict,
                     )
                     .await
             }
@@ -727,10 +743,50 @@ impl DeltaUploadService {
                         file_id,
                         blob,
                         source_modified_at,
+                        expected_hash,
                     )
                     .await
             }
         }
+    }
+}
+
+/// Validate `DeltaCommitRequest` mode selection (`name + folder_id` vs
+/// `file_id`) and ensure create-only / update-only conflict options do not cross.
+fn resolve_commit_mode(request: &DeltaCommitRequest) -> Result<CommitMode, DomainError> {
+    match (&request.name, &request.folder_id, &request.file_id) {
+        (Some(name), Some(folder_id), None) => {
+            if request.expected_hash.is_some() {
+                return Err(DomainError::validation_error(
+                    "expected_hash is only valid when updating an existing file by file_id",
+                ));
+            }
+            let name = sanitize_file_name(name)?;
+            Ok(CommitMode::Create {
+                name,
+                folder_id: folder_id.clone(),
+            })
+        }
+        (None, None, Some(file_id)) => {
+            if request.on_conflict == ConflictPolicy::Rename {
+                return Err(DomainError::validation_error(
+                    "on_conflict=rename is only valid when creating a new file",
+                ));
+            }
+            if let Some(ref exp) = request.expected_hash
+                && !is_valid_hash(exp)
+            {
+                return Err(DomainError::validation_error(
+                    "Invalid expected_hash format. Expected BLAKE3 (64 hex characters)",
+                ));
+            }
+            Ok(CommitMode::Update {
+                file_id: file_id.clone(),
+            })
+        }
+        _ => Err(DomainError::validation_error(
+            "Provide either name + folder_id (create) or file_id (update)",
+        )),
     }
 }
 
@@ -765,4 +821,101 @@ fn distinct_hashes(chunks: &[DeltaChunkRef]) -> Vec<String> {
         .filter(|c| seen.insert(c.h.as_str()))
         .map(|c| c.h.clone())
         .collect()
+}
+
+#[cfg(test)]
+mod delta_commit_validation_tests {
+    use super::*;
+
+    fn valid_hash() -> String {
+        "a".repeat(64)
+    }
+
+    #[test]
+    fn delta_commit_deserialization_defaults_conflict_policy_and_expected_hash() {
+        let json = serde_json::json!({
+            "file_hash": valid_hash(),
+            "chunks": [],
+            "name": "doc.pdf",
+            "folder_id": "00000000-0000-0000-0000-000000000001"
+        });
+        let req: DeltaCommitRequest = serde_json::from_value(json).expect("deserialize");
+        assert_eq!(req.on_conflict, ConflictPolicy::Fail);
+        assert!(req.expected_hash.is_none());
+    }
+
+    #[test]
+    fn resolve_commit_mode_rejects_cross_mode_flags_and_malformed_expected_hash() {
+        let create_with_expected = DeltaCommitRequest {
+            file_hash: valid_hash(),
+            chunks: vec![],
+            name: Some("a.bin".into()),
+            folder_id: Some("f1".into()),
+            file_id: None,
+            source_modified_at: None,
+            on_conflict: ConflictPolicy::Fail,
+            expected_hash: Some(valid_hash()),
+        };
+        assert!(resolve_commit_mode(&create_with_expected).is_err());
+
+        let update_with_rename = DeltaCommitRequest {
+            file_hash: valid_hash(),
+            chunks: vec![],
+            name: None,
+            folder_id: None,
+            file_id: Some("file-1".into()),
+            source_modified_at: None,
+            on_conflict: ConflictPolicy::Rename,
+            expected_hash: None,
+        };
+        assert!(resolve_commit_mode(&update_with_rename).is_err());
+
+        let update_with_bad_hash = DeltaCommitRequest {
+            file_hash: valid_hash(),
+            chunks: vec![],
+            name: None,
+            folder_id: None,
+            file_id: Some("file-1".into()),
+            source_modified_at: None,
+            on_conflict: ConflictPolicy::Fail,
+            expected_hash: Some("not-blake3".into()),
+        };
+        assert!(resolve_commit_mode(&update_with_bad_hash).is_err());
+    }
+
+    #[test]
+    fn resolve_commit_mode_accepts_create_rename_and_update_cas() {
+        let create_rename = DeltaCommitRequest {
+            file_hash: valid_hash(),
+            chunks: vec![],
+            name: Some("sub/report.pdf".into()),
+            folder_id: Some("f1".into()),
+            file_id: None,
+            source_modified_at: None,
+            on_conflict: ConflictPolicy::Rename,
+            expected_hash: None,
+        };
+        match resolve_commit_mode(&create_rename).expect("valid create rename") {
+            CommitMode::Create { name, folder_id } => {
+                assert_eq!(name, "report.pdf");
+                assert_eq!(folder_id, "f1");
+            }
+            CommitMode::Update { .. } => panic!("expected create"),
+        }
+
+        let update_cas = DeltaCommitRequest {
+            file_hash: valid_hash(),
+            chunks: vec![],
+            name: None,
+            folder_id: None,
+            file_id: Some("file-1".into()),
+            source_modified_at: None,
+            on_conflict: ConflictPolicy::Fail,
+            expected_hash: Some("b".repeat(64)),
+        };
+        match resolve_commit_mode(&update_cas).expect("valid update cas") {
+            CommitMode::Update { file_id } => assert_eq!(file_id, "file-1"),
+            CommitMode::Create { .. } => panic!("expected update"),
+        }
+    }
 }

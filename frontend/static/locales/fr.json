@@ -615,7 +615,36 @@
     "new_text_file_binary_ext_title": "Extension non textuelle",
     "new_text_file_binary_ext_message": "« {{name}} » ne ressemble pas à un fichier texte. L'éditeur l'ouvrira comme du texte — cela endommage généralement les formats binaires. Continuer quand même ?",
     "confirm_delete_permanent": "Supprimer définitivement « {{name}} » ? Cette action est irréversible.",
-    "confirm_batch_delete_permanent": "Supprimer définitivement {{n}} éléments ? Cette action est irréversible."
+    "confirm_batch_delete_permanent": "Supprimer définitivement {{n}} éléments ? Cette action est irréversible.",
+    "comparing_n": "Comparaison {{done}}/{{total}} fichiers…",
+    "upload_up_to_date": "Tout est déjà à jour — {{n}} fichier(s) identique(s) ignoré(s)",
+    "uploaded_with_skipped": "{{ok}} téléversé(s) · {{skipped}} inchangé(s) ignoré(s)",
+    "upload_conflict": {
+      "title": "Conflits de téléversement ({{n}})",
+      "intro": "Certains éléments existent déjà dans ce dossier avec un contenu différent.",
+      "summary_new": "{{n}} nouveau(x)",
+      "summary_identical": "{{n}} identique(s) (ignoré(s))",
+      "summary_conflicts": "{{n}} conflit(s)",
+      "skip_all": "Tout ignorer",
+      "replace_if_newer": "Remplacer si plus récent",
+      "replace_all": "Tout remplacer",
+      "keep_both_all": "Conserver les deux",
+      "action_skip": "Ignorer",
+      "action_replace": "Remplacer",
+      "action_keep_both": "Conserver les deux",
+      "badge_local_newer": "Local plus récent",
+      "badge_remote_newer": "Serveur plus récent",
+      "badge_same_mtime": "Même date de modification",
+      "badge_readonly": "Lecture seule",
+      "badge_kind_mismatch": "Conflit dossier/fichier",
+      "local_label": "Cet appareil : {{size}} · {{date}}",
+      "local_label_nodate": "Cet appareil : {{size}}",
+      "remote_label": "Serveur : {{size}} · {{date}}",
+      "kind_mismatch_hint": "Impossible d'écraser « {{path}} » car le serveur contient déjà un type différent à cet emplacement. Choisissez Ignorer ou Conserver les deux.",
+      "keep_both_hint": "Enregistré à côté, ex. {{name}}",
+      "confirm_continue": "Continuer ({{n}} à téléverser)",
+      "confirm_skip_all": "Ignorer tous les conflits"
+    }
   },
   "dialogs": {
     "rename_folder": "Renommer le dossier",
@@ -688,7 +717,8 @@
     "not_found": "Cet élément n'existe plus.",
     "conflict": "Un élément portant ce nom existe déjà.",
     "transient_backend": "Le stockage est momentanément indisponible. Réessayez.",
-    "network": "Impossible de joindre le serveur. Vérifiez votre connexion et réessayez."
+    "network": "Impossible de joindre le serveur. Vérifiez votre connexion et réessayez.",
+    "precondition_failed": "Ce fichier a été modifié par quelqu'un d'autre. Actualisez et réessayez."
   },
   "breadcrumb": {
     "home": "Accueil",

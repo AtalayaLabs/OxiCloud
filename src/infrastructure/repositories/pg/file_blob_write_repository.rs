@@ -17,8 +17,10 @@ use crate::application::dtos::display_helpers::category_order_for;
 use crate::application::ports::storage_ports::{CopyFolderTreeResult, FileWritePort};
 use crate::common::errors::DomainError;
 use crate::domain::entities::file::File;
+use crate::domain::services::name_conflict::{ConflictPolicy, NameKind};
 use crate::domain::services::path_service::{normalize_storage_name, normalize_storage_name_owned};
 
+use super::name_conflict_pg::{CandidateInsertError, elect_and_insert_in_tx};
 use super::transaction_utils::retry_on_deadlock;
 use crate::infrastructure::services::blob_handler::BlobHandler;
 
@@ -31,6 +33,97 @@ pub struct FileBlobWriteRepository {
     /// so the read side can never serve a stale blob after a PUT update.
     hash_cache: Cache<String, String>,
 }
+
+/// Shared single-round-trip CTE that inserts into `storage.files` and
+/// records the initial touch in `storage.file_content_touches`.
+///
+/// Bind parameters:
+/// - `$1`: file name (`&str`)
+/// - `$2`: parent folder id (`&str`, cast to `uuid`)
+/// - `$3`: blob hash (`&str`)
+/// - `$4`: size in bytes (`i64`)
+/// - `$5`: mime type (`&str`)
+/// - `$6`: `category_order` (`i16`)
+/// - `$7`: caller id (`Uuid`)
+/// - `$8`: optional client-asserted `content_modified_at` epoch seconds (`Option<f64>`)
+const INSERT_FILE_CTE_SQL: &str = concat!(
+    r#"
+    WITH parent AS (
+        SELECT id, drive_id, path FROM storage.folders WHERE id = $2::uuid
+    ),
+    new_file AS (
+    INSERT INTO storage.files
+        (name, folder_id, drive_id, blob_hash, size,
+         mime_type, category_order, created_by, updated_by,
+         content_modified_by,
+         content_modified_at, media_sort_date)
+    SELECT $1, parent.id, parent.drive_id, $3, $4,
+           $5, $6, $7, $7,
+           $7,
+           COALESCE(to_timestamp($8), NOW()),
+           -- Same value as content_modified_at, and it must be
+           -- set HERE rather than left to the column default.
+           --
+           -- `media_sort_date` is COALESCE(captured_at,
+           -- content_modified_at). At INSERT no `file_metadata`
+           -- row can exist yet (its FK points at this row), so
+           -- the chain reduces to `content_modified_at` — and
+           -- the column's own DEFAULT is CURRENT_TIMESTAMP,
+           -- which is a DIFFERENT value whenever the caller
+           -- asserted an X-OC-Mtime. That left a fresh upload
+           -- sorted by its arrival time while reporting a 2023
+           -- mtime, caught by
+           -- `photos_sort_date_content_clock.hurl`.
+           --
+           -- Deliberately not a BEFORE INSERT trigger: that
+           -- would also fire for `copy_folder_tree`, which
+           -- passes an explicit `media_sort_date` copied from
+           -- the source so a copied photo keeps its place in
+           -- the timeline. A trigger cannot tell an explicit
+           -- value from a defaulted one and would clobber it.
+           --
+           -- A later EXIF extraction fires
+           -- `trg_sync_media_sort_date` on the `file_metadata`
+           -- insert, which recomputes the full COALESCE — so
+           -- the `captured_at` arm still wins once it exists.
+           COALESCE(to_timestamp($8), NOW())
+      FROM parent
+    RETURNING id, created_at, content_modified_at,
+              created_by, updated_by
+    ),
+"#,
+    // In the SAME statement as the row it describes: a content
+    // change that commits without its touch is a change
+    // `/api/files/recent-changes` can never recover, because there
+    // is no second source to reconcile against.
+    //
+    // `touched_at` is `NOW()`, the moment the SERVER observed the
+    // upload — NOT the row's `content_modified_at`, which is the
+    // POSIX content clock and is client-assertable via
+    // `X-OC-Mtime`. Every sync client and most photo uploads
+    // assert one, so taking it here meant a holiday photo with a
+    // 2019 mtime wrote a 2019 touch and never appeared in the feed
+    // at all: outside a 90-day window the moment it was uploaded.
+    // An event log needs event time. The `ON CONFLICT` cannot fire
+    // for a brand-new file; it is here so every touch write in
+    // this module reads identically.
+    r#"
+    touch AS (
+        INSERT INTO storage.file_content_touches (file_id, user_id, touched_at)
+        SELECT id, $7, NOW() FROM new_file
+        ON CONFLICT (file_id, user_id)
+            DO UPDATE SET touched_at = GREATEST(
+                storage.file_content_touches.touched_at, EXCLUDED.touched_at)
+    )
+    SELECT id::text,
+           (SELECT path FROM parent),
+           EXTRACT(EPOCH FROM created_at)::bigint,
+           EXTRACT(EPOCH FROM content_modified_at)::bigint,
+           created_by,
+           updated_by
+      FROM new_file
+    "#
+);
 
 impl FileBlobWriteRepository {
     pub fn new(
@@ -444,84 +537,9 @@ impl FileBlobWriteRepository {
         // with the server's `NOW()` rather than the file's content clock —
         // see the comment on that arm for why the two must not be conflated.
         let result = retry_on_deadlock("files.insert", || {
-            sqlx::query_as::<_, (String, String, i64, i64, Option<Uuid>, Option<Uuid>)>(concat!(
-                r#"
-                WITH parent AS (
-                    SELECT id, drive_id, path FROM storage.folders WHERE id = $2::uuid
-                ),
-                new_file AS (
-                INSERT INTO storage.files
-                    (name, folder_id, drive_id, blob_hash, size,
-                     mime_type, category_order, created_by, updated_by,
-                     content_modified_by,
-                     content_modified_at, media_sort_date)
-                SELECT $1, parent.id, parent.drive_id, $3, $4,
-                       $5, $6, $7, $7,
-                       $7,
-                       COALESCE(to_timestamp($8), NOW()),
-                       -- Same value as content_modified_at, and it must be
-                       -- set HERE rather than left to the column default.
-                       --
-                       -- `media_sort_date` is COALESCE(captured_at,
-                       -- content_modified_at). At INSERT no `file_metadata`
-                       -- row can exist yet (its FK points at this row), so
-                       -- the chain reduces to `content_modified_at` — and
-                       -- the column's own DEFAULT is CURRENT_TIMESTAMP,
-                       -- which is a DIFFERENT value whenever the caller
-                       -- asserted an X-OC-Mtime. That left a fresh upload
-                       -- sorted by its arrival time while reporting a 2023
-                       -- mtime, caught by
-                       -- `photos_sort_date_content_clock.hurl`.
-                       --
-                       -- Deliberately not a BEFORE INSERT trigger: that
-                       -- would also fire for `copy_folder_tree`, which
-                       -- passes an explicit `media_sort_date` copied from
-                       -- the source so a copied photo keeps its place in
-                       -- the timeline. A trigger cannot tell an explicit
-                       -- value from a defaulted one and would clobber it.
-                       --
-                       -- A later EXIF extraction fires
-                       -- `trg_sync_media_sort_date` on the `file_metadata`
-                       -- insert, which recomputes the full COALESCE — so
-                       -- the `captured_at` arm still wins once it exists.
-                       COALESCE(to_timestamp($8), NOW())
-                  FROM parent
-                RETURNING id, created_at, content_modified_at,
-                          created_by, updated_by
-                ),
-"#,
-                // In the SAME statement as the row it describes: a content
-                // change that commits without its touch is a change
-                // `/api/files/recent-changes` can never recover, because there
-                // is no second source to reconcile against.
-                //
-                // `touched_at` is `NOW()`, the moment the SERVER observed the
-                // upload — NOT the row's `content_modified_at`, which is the
-                // POSIX content clock and is client-assertable via
-                // `X-OC-Mtime`. Every sync client and most photo uploads
-                // assert one, so taking it here meant a holiday photo with a
-                // 2019 mtime wrote a 2019 touch and never appeared in the feed
-                // at all: outside a 90-day window the moment it was uploaded.
-                // An event log needs event time. The `ON CONFLICT` cannot fire
-                // for a brand-new file; it is here so every touch write in
-                // this module reads identically.
-                r#"
-                touch AS (
-                    INSERT INTO storage.file_content_touches (file_id, user_id, touched_at)
-                    SELECT id, $7, NOW() FROM new_file
-                    ON CONFLICT (file_id, user_id)
-                        DO UPDATE SET touched_at = GREATEST(
-                            storage.file_content_touches.touched_at, EXCLUDED.touched_at)
-                )
-                SELECT id::text,
-                       (SELECT path FROM parent),
-                       EXTRACT(EPOCH FROM created_at)::bigint,
-                       EXTRACT(EPOCH FROM content_modified_at)::bigint,
-                       created_by,
-                       updated_by
-                  FROM new_file
-                "#
-            ))
+            sqlx::query_as::<_, (String, String, i64, i64, Option<Uuid>, Option<Uuid>)>(
+                INSERT_FILE_CTE_SQL,
+            )
             .bind(&name)
             .bind(fid)
             .bind(blob_hash)
@@ -611,6 +629,134 @@ impl FileBlobWriteRepository {
         Self::row_to_file(
             id,
             name,
+            folder_id,
+            Some(folder_path),
+            size as i64,
+            content_type,
+            created_at,
+            updated_at,
+            blob_hash.to_string(),
+            created_by,
+            updated_by,
+        )
+    }
+
+    /// Variant of [`Self::save_file_with_blob_impl`] that atomically elects the
+    /// first free disambiguated sibling name (`stem (2).ext`, `stem (3).ext`, …)
+    /// when `on_conflict == ConflictPolicy::Rename`.
+    ///
+    /// Consumes the caller's blob reference: released ONLY if every candidate
+    /// fails definitively, never between `SAVEPOINT` retries.
+    #[allow(clippy::too_many_arguments)]
+    async fn save_file_with_blob_rename_impl(
+        &self,
+        name: String,
+        folder_id: Option<String>,
+        content_type: String,
+        blob_hash: &str,
+        size: u64,
+        caller_id: Uuid,
+        content_modified_at: Option<i64>,
+    ) -> Result<File, DomainError> {
+        let name = normalize_storage_name_owned(name);
+
+        let Some(fid) = folder_id.as_deref() else {
+            if let Err(rollback_err) = self.dedup.remove_reference(blob_hash).await {
+                tracing::error!(
+                    "Blob orphaned after missing folder_id — hash: {}, err: {}",
+                    &blob_hash[..12],
+                    rollback_err
+                );
+            }
+            return Err(DomainError::validation_error(
+                "folder_id is required: the destination folder determines the \
+                 file's owner and drive",
+            ));
+        };
+
+        let Ok(fid_uuid) = Uuid::parse_str(fid) else {
+            if let Err(rollback_err) = self.dedup.remove_reference(blob_hash).await {
+                tracing::error!(
+                    "Blob orphaned after invalid folder_id — hash: {}, err: {}",
+                    &blob_hash[..12],
+                    rollback_err
+                );
+            }
+            return Err(DomainError::not_found("Folder", fid));
+        };
+
+        let elected = elect_and_insert_in_tx(
+            self.pool.as_ref(),
+            "files.insert_on_conflict",
+            "File",
+            fid_uuid,
+            &name,
+            NameKind::File,
+            |conn, candidate| {
+                let fid_str = fid.to_string();
+                let blob_hash_owned = blob_hash.to_string();
+                let content_type_owned = content_type.clone();
+                Box::pin(async move {
+                    let cat_order = category_order_for(&candidate, &content_type_owned);
+                    let row = sqlx::query_as::<
+                        _,
+                        (String, String, i64, i64, Option<Uuid>, Option<Uuid>),
+                    >(INSERT_FILE_CTE_SQL)
+                    .bind(&candidate)
+                    .bind(&fid_str)
+                    .bind(&blob_hash_owned)
+                    .bind(size as i64)
+                    .bind(&content_type_owned)
+                    .bind(cat_order)
+                    .bind(caller_id)
+                    .bind(content_modified_at.map(|s| s as f64))
+                    .fetch_optional(conn)
+                    .await?;
+
+                    match row {
+                        Some((id, folder_path, created_at, updated_at, created_by, updated_by)) => {
+                            Ok((
+                                id,
+                                candidate,
+                                folder_path,
+                                created_at,
+                                updated_at,
+                                created_by,
+                                updated_by,
+                            ))
+                        }
+                        None => Err(CandidateInsertError::ParentNotFound),
+                    }
+                })
+            },
+        )
+        .await;
+
+        let (id, actual_name, folder_path, created_at, updated_at, created_by, updated_by) =
+            match elected {
+                Ok(row) => row,
+                Err(err) => {
+                    if let Err(rollback_err) = self.dedup.remove_reference(blob_hash).await {
+                        tracing::error!(
+                            "Blob orphaned after failed rename-on-conflict INSERT — hash: {}, err: {}",
+                            &blob_hash[..12],
+                            rollback_err
+                        );
+                    }
+                    return Err(err);
+                }
+            };
+
+        tracing::info!(
+            "📡 STREAMING WRITE (rename on conflict): {} ({} bytes, hash: {})",
+            actual_name,
+            size,
+            &blob_hash[..12]
+        );
+
+        Self::row_to_file(
+            id,
+            actual_name,
             folder_id,
             Some(folder_path),
             size as i64,
@@ -723,6 +869,45 @@ impl FileWritePort for FileBlobWriteRepository {
             content_modified_at,
         )
         .await
+    }
+
+    async fn save_file_with_blob_on_conflict(
+        &self,
+        name: String,
+        folder_id: Option<String>,
+        content_type: String,
+        blob_hash: &str,
+        size: u64,
+        caller_id: Uuid,
+        content_modified_at: Option<i64>,
+        on_conflict: ConflictPolicy,
+    ) -> Result<File, DomainError> {
+        match on_conflict {
+            ConflictPolicy::Fail => {
+                self.save_file_with_blob_impl(
+                    name,
+                    folder_id,
+                    content_type,
+                    blob_hash,
+                    size,
+                    caller_id,
+                    content_modified_at,
+                )
+                .await
+            }
+            ConflictPolicy::Rename => {
+                self.save_file_with_blob_rename_impl(
+                    name,
+                    folder_id,
+                    content_type,
+                    blob_hash,
+                    size,
+                    caller_id,
+                    content_modified_at,
+                )
+                .await
+            }
+        }
     }
 
     async fn move_file(
@@ -1943,5 +2128,66 @@ mod content_provenance_tests {
              window cannot be moved by a camera's clock (got {})",
             lanes[0].1
         );
+    }
+
+    #[tokio::test]
+    async fn save_file_on_conflict_rename_picks_next_free_candidate_and_skips_folders() {
+        let (pool, scope) = test_pool("rename").await;
+        let (folder, drive) = seeded_root(&pool).await;
+        let alice = user(&pool, &scope, "alice").await;
+        let r = repo(pool.clone());
+
+        let base_name = format!("{scope}report.pdf");
+        let first = r
+            .save_file_with_blob_on_conflict(
+                base_name.clone(),
+                Some(folder.to_string()),
+                "application/pdf".to_string(),
+                HASH_A,
+                10,
+                alice,
+                None,
+                ConflictPolicy::Rename,
+            )
+            .await
+            .expect("first save");
+        assert_eq!(first.name(), base_name);
+
+        // Create a folder occupying `report (2).pdf` to verify cross-table
+        // collision avoidance steps over to `report (3).pdf`.
+        let folder_clash = format!("{scope}report (2).pdf");
+        sqlx::query(
+            "INSERT INTO storage.folders (name, parent_id, drive_id, created_by, updated_by)
+             VALUES ($1, $2, $3, $4, $4)",
+        )
+        .bind(&folder_clash)
+        .bind(folder)
+        .bind(drive)
+        .bind(alice)
+        .execute(pool.as_ref())
+        .await
+        .expect("seed folder clash");
+
+        let second = r
+            .save_file_with_blob_on_conflict(
+                base_name.clone(),
+                Some(folder.to_string()),
+                "application/pdf".to_string(),
+                HASH_B,
+                20,
+                alice,
+                None,
+                ConflictPolicy::Rename,
+            )
+            .await
+            .expect("second save must step over both file and folder");
+        assert_eq!(second.name(), format!("{scope}report (3).pdf"));
+
+        sqlx::query("DELETE FROM storage.folders WHERE parent_id = $1 AND name = $2")
+            .bind(folder)
+            .bind(&folder_clash)
+            .execute(pool.as_ref())
+            .await
+            .expect("cleanup folder clash");
     }
 }

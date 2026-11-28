@@ -615,7 +615,36 @@
     "new_text_file_binary_ext_title": "امتداد غير نصي",
     "new_text_file_binary_ext_message": "لا يبدو \"{{name}}\" ملفًا نصيًا. سيفتحه المحرّر كنص — وهذا عادةً ما يُفسد التنسيقات الثنائية. المتابعة على أي حال؟",
     "confirm_delete_permanent": "حذف «{{name}}» نهائيًا؟ لا يمكن التراجع عن هذا الإجراء.",
-    "confirm_batch_delete_permanent": "حذف {{n}} عناصر نهائيًا؟ لا يمكن التراجع عن هذا الإجراء."
+    "confirm_batch_delete_permanent": "حذف {{n}} عناصر نهائيًا؟ لا يمكن التراجع عن هذا الإجراء.",
+    "comparing_n": "جاري مقارنة {{done}}/{{total}} ملفات…",
+    "upload_up_to_date": "كل شيء محدث بالفعل — تم تخطي {{n}} ملف(ات) دون تغيير",
+    "uploaded_with_skipped": "تم رفع {{ok}} · تم تخطي {{skipped}} دون تغيير",
+    "upload_conflict": {
+      "title": "تعارضات الرفع ({{n}})",
+      "intro": "توجد بعض العناصر بالفعل في هذا المجلد بمحتوى مختلف.",
+      "summary_new": "{{n}} جديد",
+      "summary_identical": "{{n}} دون تغيير (تخطي تلقائي)",
+      "summary_conflicts": "{{n}} تعارض(ات)",
+      "skip_all": "تخطي الكل",
+      "replace_if_newer": "استبدال الأحدث فقط",
+      "replace_all": "استبدال الكل",
+      "keep_both_all": "الاحتفاظ بكليهما",
+      "action_skip": "تخطي",
+      "action_replace": "استبدال",
+      "action_keep_both": "الاحتفاظ بكليهما",
+      "badge_local_newer": "المحلي أحدث",
+      "badge_remote_newer": "الخادم أحدث",
+      "badge_same_mtime": "نفس وقت التعديل",
+      "badge_readonly": "للقراءة فقط",
+      "badge_kind_mismatch": "تعارض مجلد/ملف",
+      "local_label": "هذا الجهاز: {{size}} · {{date}}",
+      "local_label_nodate": "هذا الجهاز: {{size}}",
+      "remote_label": "الخادم: {{size}} · {{date}}",
+      "kind_mismatch_hint": "لا يمكن الكتابة فوق \"{{path}}\" لأن الخادم يحتوي بالفعل على نوع عنصر مختلف هناك. اختر تخطي أو الاحتفاظ بكليهما.",
+      "keep_both_hint": "سيُحفظ بجانب الأصلي مثل {{name}}",
+      "confirm_continue": "متابعة ({{n}} للرفع)",
+      "confirm_skip_all": "تخطي جميع التعارضات"
+    }
   },
   "dialogs": {
     "rename_folder": "إعادة تسمية المجلد",
@@ -688,7 +717,8 @@
     "not_found": "لم يعد هذا العنصر موجودًا.",
     "conflict": "يوجد عنصر بهذا الاسم بالفعل.",
     "transient_backend": "التخزين غير متاح مؤقتًا. حاول مرة أخرى.",
-    "network": "تعذّر الوصول إلى الخادم. تحقّق من اتصالك وحاول مرة أخرى."
+    "network": "تعذّر الوصول إلى الخادم. تحقّق من اتصالك وحاول مرة أخرى.",
+    "precondition_failed": "تم تعديل هذا الملف بواسطة شخص آخر. حدّث الصفحة وحاول مرة أخرى."
   },
   "breadcrumb": {
     "home": "الرئيسية",

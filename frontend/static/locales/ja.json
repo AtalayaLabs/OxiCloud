@@ -615,7 +615,36 @@
     "new_text_file_binary_ext_title": "非テキスト拡張子",
     "new_text_file_binary_ext_message": "「{{name}}」はテキストファイルではないようです。エディターはテキストとして開きます — 通常、バイナリ形式はこれで壊れます。それでも続行しますか?",
     "confirm_delete_permanent": "「{{name}}」を完全に削除しますか?この操作は取り消せません。",
-    "confirm_batch_delete_permanent": "{{n}} 件のアイテムを完全に削除しますか?この操作は取り消せません。"
+    "confirm_batch_delete_permanent": "{{n}} 件のアイテムを完全に削除しますか?この操作は取り消せません。",
+    "comparing_n": "{{done}}/{{total}} ファイルを比較中…",
+    "upload_up_to_date": "すべて最新です — 同一の {{n}} ファイルはスキップされました",
+    "uploaded_with_skipped": "{{ok}} 件アップロード · {{skipped}} 件の変更なしをスキップ",
+    "upload_conflict": {
+      "title": "アップロードの競合 ({{n}})",
+      "intro": "このフォルダーには異なる内容の同名項目がすでに存在します。",
+      "summary_new": "新規 {{n}}",
+      "summary_identical": "変更なし {{n}}（自動スキップ）",
+      "summary_conflicts": "競合 {{n}}",
+      "skip_all": "すべてスキップ",
+      "replace_if_newer": "新しい場合のみ置換",
+      "replace_all": "すべて置換",
+      "keep_both_all": "両方保持",
+      "action_skip": "スキップ",
+      "action_replace": "置換",
+      "action_keep_both": "両方保持",
+      "badge_local_newer": "ローカルが新しい",
+      "badge_remote_newer": "サーバーが新しい",
+      "badge_same_mtime": "同じ更新日時",
+      "badge_readonly": "読み取り専用",
+      "badge_kind_mismatch": "フォルダー/ファイルの競合",
+      "local_label": "この端末: {{size}} · {{date}}",
+      "local_label_nodate": "この端末: {{size}}",
+      "remote_label": "サーバー: {{size}} · {{date}}",
+      "kind_mismatch_hint": "サーバー上に異なる種別の項目が存在するため「{{path}}」を上書きできません。スキップまたは両方保持を選択してください。",
+      "keep_both_hint": "別名で保存（例: {{name}}）",
+      "confirm_continue": "続行（{{n}} 件アップロード）",
+      "confirm_skip_all": "すべての競合をスキップ"
+    }
   },
   "dialogs": {
     "rename_folder": "フォルダ名を変更",
@@ -688,7 +717,8 @@
     "not_found": "このアイテムは存在しません。",
     "conflict": "その名前のアイテムは既に存在します。",
     "transient_backend": "ストレージが一時的に利用できません。再試行してください。",
-    "network": "サーバーに接続できませんでした。接続を確認して、もう一度お試しください。"
+    "network": "サーバーに接続できませんでした。接続を確認して、もう一度お試しください。",
+    "precondition_failed": "このファイルは他のユーザーによって変更されました。更新してからもう一度お試しください。"
   },
   "breadcrumb": {
     "home": "ホーム",
