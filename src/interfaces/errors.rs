@@ -128,6 +128,10 @@ pub struct OAuthErrorResponse {
     pub error_description: String,
 }
 
+/// `error_type` of [`AppError::invalid_sync_token`]; `into_response`
+/// renders it as a DAV precondition body instead of JSON.
+pub const INVALID_SYNC_TOKEN: &str = "InvalidSyncToken";
+
 impl AppError {
     /// Create a new AppError with custom status code, message and error type.
     pub fn new(
@@ -210,6 +214,26 @@ impl AppError {
         Self::new(StatusCode::NOT_IMPLEMENTED, message, "NotImplemented")
     }
 
+    /// The one response for every sync-token the server will not answer:
+    /// malformed, issued for another collection, expired, or ahead of the
+    /// change log. RFC 6578 §3.2's `DAV:valid-sync-token` precondition,
+    /// rendered as 403 with that `DAV:error` body (see `into_response`).
+    ///
+    /// Deliberately uniform: the body and message never say WHICH check
+    /// failed, so a client cannot probe whether a token's collection
+    /// exists or how far the log reaches. The cause goes to the audit log
+    /// (`event = "sync.token_rejected"`). Every client checked (Thunderbird
+    /// CalDAV and CardDAV, Evolution, python-caldav) treats this response
+    /// as "discard state and resync" — unlike the 507 it replaced, which
+    /// left Thunderbird retrying the dead token forever.
+    pub fn invalid_sync_token() -> Self {
+        Self::new(
+            StatusCode::FORBIDDEN,
+            "Invalid sync-token",
+            INVALID_SYNC_TOKEN,
+        )
+    }
+
     /// Create a 503 Service Unavailable error.
     pub fn service_unavailable(message: impl Into<String>) -> Self {
         Self::new(
@@ -251,11 +275,19 @@ pub fn status_for_kind(kind: ErrorKind) -> StatusCode {
         // ordering that makes this distinguishable only AFTER a
         // successful credential check.
         ErrorKind::AccountDeactivated => StatusCode::FORBIDDEN,
+        // `DAV:valid-sync-token` precondition — see
+        // `AppError::invalid_sync_token`.
+        ErrorKind::SyncTokenExpired => StatusCode::FORBIDDEN,
     }
 }
 
 impl From<DomainError> for AppError {
     fn from(err: DomainError) -> Self {
+        // Drop the domain message: it names the rejection reason, which
+        // is for the audit log only.
+        if err.kind == ErrorKind::SyncTokenExpired {
+            return Self::invalid_sync_token();
+        }
         let status_code = status_for_kind(err.kind);
 
         Self {
@@ -272,6 +304,20 @@ impl From<DomainError> for AppError {
 impl IntoResponse for AppError {
     fn into_response(self) -> Response {
         let status = self.status_code;
+
+        if self.error_type == INVALID_SYNC_TOKEN {
+            return (
+                status,
+                [(
+                    axum::http::header::CONTENT_TYPE,
+                    "application/xml; charset=utf-8",
+                )],
+                r#"<?xml version="1.0" encoding="utf-8"?>
+<D:error xmlns:D="DAV:"><D:valid-sync-token/></D:error>
+"#,
+            )
+                .into_response();
+        }
 
         // Sanitize 500 Internal Server Error to prevent information leakage.
         // Log the full error server-side for debugging, return a generic

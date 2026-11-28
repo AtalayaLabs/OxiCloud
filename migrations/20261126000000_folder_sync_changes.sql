@@ -1,0 +1,335 @@
+-- RFC 6578 incremental sync-collection: durable change log for WebDAV
+-- files/folders.
+--
+-- Prior state: `sync-collection` REPORT (see webdav_handler.rs::handle_report
+-- and nextcloud/report_handler.rs::handle_sync_collection) parses the
+-- client's sync-token but never acts on it — every call re-lists the
+-- entire collection and mints a fresh timestamp-shaped token. There is no
+-- persisted record of what changed since a prior sync, and deletions are
+-- never reported (RFC 6578 §3.7 requires a 404 sub-response per removed
+-- member).
+--
+-- This migration adds a per-collection append-only log, populated by
+-- statement-level triggers on `storage.files`/`storage.folders`, mirroring
+-- the trigger shape already proven by the `tree_etag_dirty` queue
+-- (`20260627000000_async_tree_etag_queue.sql`) — same
+-- `pg_trigger_depth() > 1` reentrancy guard, same DAV-observable-columns
+-- value filter for UPDATE.
+--
+-- Footgun to watch for: the `pg_trigger_depth() > 1` guard on every
+-- function below silently skips logging when `storage.files`/`folders`
+-- are mutated from WITHIN another trigger (depth > 1) — correct for the
+-- bulk-cascade case this guard exists for (see the no-FK note below), but
+-- it means any FUTURE migration or backfill that mutates these tables
+-- from inside a trigger will silently produce no change-log rows for
+-- that mutation. If you're writing such code and it needs to be visible
+-- to sync-collection clients, call `storage.folder_sync_changes` INSERT
+-- logic directly instead of relying on these triggers firing.
+--
+-- Unlike that queue, rows here are NOT drained on
+-- flush: they persist until the retention sweep (`SyncLogRetentionService`,
+-- application-layer) deletes rows past the configured retention window and
+-- advances `folder_sync_watermark.low_water_seq` accordingly.
+--
+-- Scope: only rows with a NOT NULL collection target are logged — i.e.
+-- ordinary folder membership (a file's `folder_id`, a folder's
+-- `parent_id`). This mirrors the pre-existing scope limit in
+-- `bump_tree_from_folders_stmt` (`nlevel(lpath) > 1`, folders' own
+-- creation never bumps its own ancestor-ETag): root-level files
+-- (`folder_id IS NULL`) and root folders themselves (`parent_id IS NULL`)
+-- have no real "collection" row to log against under the current schema,
+-- and `sync-collection` REPORT against that exact synthetic path
+-- (`webdav_handler.rs::handle_report`, `path.is_empty()` branch) is out of
+-- scope for this phase — it keeps returning a full listing every call
+-- (rare churn: creating/deleting a whole drive's root, not everyday
+-- file activity).
+--
+-- Tombstones are written at the instant `is_trashed` flips either
+-- direction, not at hard-delete/purge time — a trashed member vanishes
+-- from its parent's listing immediately, which IS a deletion from a sync
+-- client's point of view, regardless of whether the row still physically
+-- exists in `storage.trash_items`. Restoring is correctly logged as a
+-- fresh `created`. The retention-window hard purge
+-- (`trash_db_repository.rs`) needs no additional log-writing: the member
+-- was already tombstoned at trash-time.
+--
+-- `collection_folder_id` is a plain UUID, deliberately WITHOUT a FK to
+-- `storage.folders(id)`: a bulk hard-delete (e.g. "empty trash") can
+-- delete a parent folder and its child in the SAME statement — the
+-- child's `deleted` row targets its parent as `collection_folder_id`,
+-- and by the time the AFTER STATEMENT trigger fires, that parent row is
+-- already gone from `storage.folders`. A real FK would reject that
+-- insert outright (reproduced live: "insert or update on table
+-- storage.folder_sync_changes violates foreign key constraint" during
+-- a bulk trash-empty). The orphaned row is harmless: a sync client can
+-- never present a token for a since-deleted collection anyway (path
+-- resolution 404s before the change-log query ever runs), so there's
+-- nothing to cascade-clean — the retention sweep ages the row out like
+-- any other. Same reasoning `storage.tree_etag_dirty` already applies
+-- to its own `folder_id` column (also FK-free, for the identical
+-- "target row may already be gone" reason).
+CREATE TABLE IF NOT EXISTS storage.folder_sync_changes (
+    seq                  BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    collection_folder_id UUID NOT NULL,
+    member_type          TEXT NOT NULL CHECK (member_type IN ('file', 'folder')),
+    member_id            UUID NOT NULL,
+    member_href_name     TEXT NOT NULL,
+    change_kind          TEXT NOT NULL CHECK (change_kind IN ('created', 'updated', 'deleted')),
+    changed_at           TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- Query shape is always "changes for collection X since seq Y" — the
+-- composite index serves that directly (seq is already unique/ordered so
+-- a plain (collection_folder_id) index would still require a sort; this
+-- avoids it).
+CREATE INDEX IF NOT EXISTS idx_folder_sync_changes_collection_seq
+    ON storage.folder_sync_changes (collection_folder_id, seq);
+
+-- Retention sweep's cutoff scan.
+CREATE INDEX IF NOT EXISTS idx_folder_sync_changes_changed_at
+    ON storage.folder_sync_changes (changed_at);
+
+-- Per-collection low-water-mark: durable record of "rows below this seq
+-- have been purged by retention for THIS collection," needed because an
+-- empty/sparse table alone can't distinguish "nothing has ever happened"
+-- from "so much happened your token's rows are long gone."
+--
+-- Keyed by `collection_folder_id`, NOT a singleton: `seq` is one IDENTITY
+-- sequence shared by every folder in the instance, so a single global
+-- watermark would let a high-churn folder's purged rows falsely expire a
+-- quiet sibling folder's still-valid token (the quiet folder's own rows
+-- were never touched by retention, but a global watermark can't tell the
+-- two apart). No FK to `storage.folders(id)`, same reasoning as
+-- `folder_sync_changes.collection_folder_id` above — the collection may
+-- already be gone by the time the sweep advances its watermark. Absence
+-- of a row for a given collection means "never purged" (never expired),
+-- not "expired" — the repository layer treats a missing row as seq 0.
+-- Monotonically advanced (never decreased) per collection by
+-- `SyncLogRetentionService`.
+CREATE TABLE IF NOT EXISTS storage.folder_sync_watermark (
+    collection_folder_id UUID PRIMARY KEY,
+    low_water_seq         BIGINT NOT NULL DEFAULT 0
+);
+
+-- ── File side: INSERT ────────────────────────────────────────────────
+CREATE OR REPLACE FUNCTION storage.log_file_sync_changes_ins()
+RETURNS TRIGGER LANGUAGE plpgsql AS $$
+BEGIN
+    IF pg_trigger_depth() > 1 THEN
+        RETURN NULL;
+    END IF;
+
+    INSERT INTO storage.folder_sync_changes
+        (collection_folder_id, member_type, member_id, member_href_name, change_kind)
+    SELECT folder_id, 'file', id, name, 'created'
+      FROM changed_rows
+     WHERE folder_id IS NOT NULL;
+
+    RETURN NULL;
+END;
+$$;
+
+-- ── File side: DELETE (hard delete bypassing trash) ─────────────────
+CREATE OR REPLACE FUNCTION storage.log_file_sync_changes_del()
+RETURNS TRIGGER LANGUAGE plpgsql AS $$
+BEGIN
+    IF pg_trigger_depth() > 1 THEN
+        RETURN NULL;
+    END IF;
+
+    INSERT INTO storage.folder_sync_changes
+        (collection_folder_id, member_type, member_id, member_href_name, change_kind)
+    SELECT folder_id, 'file', id, name, 'deleted'
+      FROM changed_rows
+     WHERE folder_id IS NOT NULL;
+
+    RETURN NULL;
+END;
+$$;
+
+-- ── File side: UPDATE ────────────────────────────────────────────────
+-- Same value filter as `bump_tree_from_files_stmt_upd` (DAV-observable
+-- columns only — the EXIF media_sort_date sync never logs a change).
+-- Branches mutually-exclusively on what actually changed:
+--   * folder_id changed              → deleted (old parent) + created (new parent)
+--   * is_trashed false→true          → deleted (member vanishes from listing)
+--   * is_trashed true→false          → created (member reappears)
+--   * anything else observable       → updated
+CREATE OR REPLACE FUNCTION storage.log_file_sync_changes_upd()
+RETURNS TRIGGER LANGUAGE plpgsql AS $$
+BEGIN
+    IF pg_trigger_depth() > 1 THEN
+        RETURN NULL;
+    END IF;
+
+    WITH changed AS (
+        SELECT o.id,
+               o.folder_id AS old_folder_id, n.folder_id AS new_folder_id,
+               o.name AS old_name, n.name AS new_name,
+               o.is_trashed AS old_trashed, n.is_trashed AS new_trashed
+          FROM old_rows o
+          JOIN new_rows n USING (id)
+         WHERE (o.name, o.folder_id, o.blob_hash, o.size,
+                o.mime_type, o.is_trashed, o.updated_at)
+               IS DISTINCT FROM
+               (n.name, n.folder_id, n.blob_hash, n.size,
+                n.mime_type, n.is_trashed, n.updated_at)
+    )
+    INSERT INTO storage.folder_sync_changes
+        (collection_folder_id, member_type, member_id, member_href_name, change_kind)
+    SELECT old_folder_id, 'file', id, old_name, 'deleted'
+      FROM changed
+     WHERE old_folder_id IS NOT NULL
+       AND old_folder_id IS DISTINCT FROM new_folder_id
+    UNION ALL
+    SELECT new_folder_id, 'file', id, new_name, 'created'
+      FROM changed
+     WHERE new_folder_id IS NOT NULL
+       AND old_folder_id IS DISTINCT FROM new_folder_id
+    UNION ALL
+    SELECT new_folder_id, 'file', id, new_name, 'deleted'
+      FROM changed
+     WHERE new_folder_id IS NOT NULL
+       AND old_folder_id IS NOT DISTINCT FROM new_folder_id
+       AND old_trashed = FALSE AND new_trashed = TRUE
+    UNION ALL
+    SELECT new_folder_id, 'file', id, new_name, 'created'
+      FROM changed
+     WHERE new_folder_id IS NOT NULL
+       AND old_folder_id IS NOT DISTINCT FROM new_folder_id
+       AND old_trashed = TRUE AND new_trashed = FALSE
+    UNION ALL
+    SELECT new_folder_id, 'file', id, new_name, 'updated'
+      FROM changed
+     WHERE new_folder_id IS NOT NULL
+       AND old_folder_id IS NOT DISTINCT FROM new_folder_id
+       AND old_trashed = new_trashed;
+
+    RETURN NULL;
+END;
+$$;
+
+-- ── Folder side: INSERT ──────────────────────────────────────────────
+-- Member is the folder itself; collection is its PARENT. Root folders
+-- (parent_id IS NULL) are out of scope (see header).
+CREATE OR REPLACE FUNCTION storage.log_folder_sync_changes_ins()
+RETURNS TRIGGER LANGUAGE plpgsql AS $$
+BEGIN
+    IF pg_trigger_depth() > 1 THEN
+        RETURN NULL;
+    END IF;
+
+    INSERT INTO storage.folder_sync_changes
+        (collection_folder_id, member_type, member_id, member_href_name, change_kind)
+    SELECT parent_id, 'folder', id, name, 'created'
+      FROM changed_rows
+     WHERE parent_id IS NOT NULL;
+
+    RETURN NULL;
+END;
+$$;
+
+-- ── Folder side: DELETE ──────────────────────────────────────────────
+CREATE OR REPLACE FUNCTION storage.log_folder_sync_changes_del()
+RETURNS TRIGGER LANGUAGE plpgsql AS $$
+BEGIN
+    IF pg_trigger_depth() > 1 THEN
+        RETURN NULL;
+    END IF;
+
+    INSERT INTO storage.folder_sync_changes
+        (collection_folder_id, member_type, member_id, member_href_name, change_kind)
+    SELECT parent_id, 'folder', id, name, 'deleted'
+      FROM changed_rows
+     WHERE parent_id IS NOT NULL;
+
+    RETURN NULL;
+END;
+$$;
+
+-- ── Folder side: UPDATE ──────────────────────────────────────────────
+-- Same value filter as `bump_tree_from_folders_stmt_upd`; same
+-- move/trash/restore/rename branching as the file side, keyed on
+-- parent_id instead of folder_id.
+CREATE OR REPLACE FUNCTION storage.log_folder_sync_changes_upd()
+RETURNS TRIGGER LANGUAGE plpgsql AS $$
+BEGIN
+    IF pg_trigger_depth() > 1 THEN
+        RETURN NULL;
+    END IF;
+
+    WITH changed AS (
+        SELECT o.id,
+               o.parent_id AS old_parent_id, n.parent_id AS new_parent_id,
+               o.name AS old_name, n.name AS new_name,
+               o.is_trashed AS old_trashed, n.is_trashed AS new_trashed
+          FROM old_rows o
+          JOIN new_rows n USING (id)
+         WHERE (o.name, o.parent_id, o.is_trashed, o.updated_at)
+               IS DISTINCT FROM
+               (n.name, n.parent_id, n.is_trashed, n.updated_at)
+    )
+    INSERT INTO storage.folder_sync_changes
+        (collection_folder_id, member_type, member_id, member_href_name, change_kind)
+    SELECT old_parent_id, 'folder', id, old_name, 'deleted'
+      FROM changed
+     WHERE old_parent_id IS NOT NULL
+       AND old_parent_id IS DISTINCT FROM new_parent_id
+    UNION ALL
+    SELECT new_parent_id, 'folder', id, new_name, 'created'
+      FROM changed
+     WHERE new_parent_id IS NOT NULL
+       AND old_parent_id IS DISTINCT FROM new_parent_id
+    UNION ALL
+    SELECT new_parent_id, 'folder', id, new_name, 'deleted'
+      FROM changed
+     WHERE new_parent_id IS NOT NULL
+       AND old_parent_id IS NOT DISTINCT FROM new_parent_id
+       AND old_trashed = FALSE AND new_trashed = TRUE
+    UNION ALL
+    SELECT new_parent_id, 'folder', id, new_name, 'created'
+      FROM changed
+     WHERE new_parent_id IS NOT NULL
+       AND old_parent_id IS NOT DISTINCT FROM new_parent_id
+       AND old_trashed = TRUE AND new_trashed = FALSE
+    UNION ALL
+    SELECT new_parent_id, 'folder', id, new_name, 'updated'
+      FROM changed
+     WHERE new_parent_id IS NOT NULL
+       AND old_parent_id IS NOT DISTINCT FROM new_parent_id
+       AND old_trashed = new_trashed;
+
+    RETURN NULL;
+END;
+$$;
+
+-- ── Wire the triggers ────────────────────────────────────────────────
+CREATE TRIGGER files_log_sync_changes_ins
+    AFTER INSERT ON storage.files
+    REFERENCING NEW TABLE AS changed_rows
+    FOR EACH STATEMENT EXECUTE FUNCTION storage.log_file_sync_changes_ins();
+
+CREATE TRIGGER files_log_sync_changes_del
+    AFTER DELETE ON storage.files
+    REFERENCING OLD TABLE AS changed_rows
+    FOR EACH STATEMENT EXECUTE FUNCTION storage.log_file_sync_changes_del();
+
+CREATE TRIGGER files_log_sync_changes_upd
+    AFTER UPDATE ON storage.files
+    REFERENCING OLD TABLE AS old_rows NEW TABLE AS new_rows
+    FOR EACH STATEMENT EXECUTE FUNCTION storage.log_file_sync_changes_upd();
+
+CREATE TRIGGER folders_log_sync_changes_ins
+    AFTER INSERT ON storage.folders
+    REFERENCING NEW TABLE AS changed_rows
+    FOR EACH STATEMENT EXECUTE FUNCTION storage.log_folder_sync_changes_ins();
+
+CREATE TRIGGER folders_log_sync_changes_del
+    AFTER DELETE ON storage.folders
+    REFERENCING OLD TABLE AS changed_rows
+    FOR EACH STATEMENT EXECUTE FUNCTION storage.log_folder_sync_changes_del();
+
+CREATE TRIGGER folders_log_sync_changes_upd
+    AFTER UPDATE ON storage.folders
+    REFERENCING OLD TABLE AS old_rows NEW TABLE AS new_rows
+    FOR EACH STATEMENT EXECUTE FUNCTION storage.log_folder_sync_changes_upd();

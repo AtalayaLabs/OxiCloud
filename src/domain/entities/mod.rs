@@ -17,6 +17,7 @@ pub mod presented_token;
 pub mod session;
 pub mod share;
 pub mod subject_group;
+pub mod sync_token;
 pub mod trashed_item;
 pub mod user;
 

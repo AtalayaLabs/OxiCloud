@@ -84,6 +84,7 @@ jsonpath "$[*].name" contains "usage_reconcile"
 jsonpath "$[*].name" contains "dedup_gc"
 jsonpath "$[*].name" contains "grant_cleanup"
 jsonpath "$[*].name" contains "session_cleanup"
+jsonpath "$[*].name" contains "sync_log_retention"
 
 # Schema asserts — the response shape itself. Every scheduled
 # tenant carries an `interval_ms` value; recursive-descent
@@ -92,20 +93,22 @@ jsonpath "$[*].name" contains "session_cleanup"
 # total number of scheduled tenants.
 #   TrashCleanup / GrantCleanup / SessionCleanup → 24 h = 86_400_000 ms
 #   StorageReconcile                             → 600 s = 600_000 ms
+#   SyncLogRetention                             → 1 h   = 3_600_000 ms
 jsonpath "$..interval_ms" contains 86400000
 jsonpath "$..interval_ms" contains 600000
+jsonpath "$..interval_ms" contains 3600000
 
 # Floor asserts — catastrophic-regression guard, not a fragile
 # total. Bump the floors in lockstep with the `contains "..."`
-# presence checks above: 5 named tenants total (trash_cleanup,
-# usage_reconcile, dedup_gc, grant_cleanup, session_cleanup) →
-# ≥ 5 `running` entries; 4 of those are scheduled (dedup_gc is
-# on-demand and carries no `interval_ms`) → ≥ 4 `interval_ms`
-# values. New unrelated tenants only PUSH the actual counts UP,
-# never below these floors, so they don't break on drive-by
-# additions.
-jsonpath "$..running" count >= 5
-jsonpath "$..interval_ms" count >= 4
+# presence checks above: 6 named tenants total (trash_cleanup,
+# usage_reconcile, dedup_gc, grant_cleanup, session_cleanup,
+# sync_log_retention) → ≥ 6 `running` entries; 5 of those are
+# scheduled (dedup_gc is on-demand and carries no `interval_ms`) →
+# ≥ 5 `interval_ms` values. New unrelated tenants only PUSH the
+# actual counts UP, never below these floors, so they don't break
+# on drive-by additions.
+jsonpath "$..running" count >= 6
+jsonpath "$..interval_ms" count >= 5
 jsonpath "$[*].name" contains "drives_consistency"
 jsonpath "$[*].name" contains "folders_consistency"
 jsonpath "$[*].name" contains "files_consistency"

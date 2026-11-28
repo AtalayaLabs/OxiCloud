@@ -493,27 +493,28 @@ pub trait AuthorizationEngine: Send + Sync + 'static {
     async fn clear_role(&self, subject: Subject, resource: Resource) -> Result<(), DomainError>;
 }
 
+/// Test doubles for the authorization port, shared by every unit test
+/// that needs an engine without a database.
 #[cfg(test)]
-mod require_any_tests {
+pub(crate) mod test_support {
     use super::*;
-    use crate::domain::errors::ErrorKind;
     use std::sync::Mutex;
 
     /// Engine stub that grants a fixed set of subjects and records the order
     /// `check` was called in, so short-circuiting is observable.
-    struct FakeEngine {
+    pub(crate) struct FakeEngine {
         allowed: Vec<Subject>,
         seen: Mutex<Vec<Subject>>,
     }
 
     impl FakeEngine {
-        fn granting(allowed: Vec<Subject>) -> Self {
+        pub(crate) fn granting(allowed: Vec<Subject>) -> Self {
             Self {
                 allowed,
                 seen: Mutex::new(Vec::new()),
             }
         }
-        fn checked(&self) -> Vec<Subject> {
+        pub(crate) fn checked(&self) -> Vec<Subject> {
             self.seen.lock().unwrap().clone()
         }
     }
@@ -593,6 +594,13 @@ mod require_any_tests {
             unimplemented!()
         }
     }
+}
+
+#[cfg(test)]
+mod require_any_tests {
+    use super::test_support::FakeEngine;
+    use super::*;
+    use crate::domain::errors::ErrorKind;
 
     fn file() -> Resource {
         Resource::File(Uuid::new_v4())
