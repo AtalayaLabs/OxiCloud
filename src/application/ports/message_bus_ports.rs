@@ -33,6 +33,7 @@
 //! CRDT (binary frames). This module owns the JSON-RPC error-code
 //! vocabulary; see [`error_code`].
 
+use crate::application::ports::scope_ports::{Access, Scope, ScopeReq, ScopeSet};
 use std::pin::Pin;
 use std::sync::Arc;
 
@@ -179,6 +180,89 @@ impl Topic {
             return Err(ParseTopicErr::Unknown);
         }
         Err(ParseTopicErr::Unknown)
+    }
+
+    /// What the SCOPE axis requires to subscribe to this topic class.
+    ///
+    /// Keyed on the topic CLASS, never the instance — `job:{name}` and
+    /// `folder:{id}` are parameterised, and a per-instance question is
+    /// the grant axis's ([`Self::required_perm`]), not this one.
+    ///
+    /// The rule: **`:ro` is subscribe, `:rw` is subscribe + publish.**
+    /// Every topic
+    /// here is `:ro` by construction, because only `Collab` is
+    /// client-publishable — the rest are server-published, so a client
+    /// can do nothing but subscribe. Collab's publish is a separate op
+    /// (`Op::CollabFrame(0x01)`), not this one, so subscribing to a
+    /// document a credential may only READ succeeds and only the update
+    /// frame is refused.
+    ///
+    /// Scopeless is not an oversight on the `user:` topics. Both are
+    /// AUTO-SUBSCRIBED by the server at session open, so an area the
+    /// credential lacked would break the whole session rather than narrow
+    /// it — and both payloads are thin facts ("your permissions changed",
+    /// "notification N arrived") whose details require a REST read that
+    /// IS scope-gated at `account`. The gate belongs where the data is,
+    /// not on the poke. Identity stays absolute on the other axis:
+    /// [`AuthzCheck::IdentityMatch`] has no admin bypass, so a caller
+    /// reaches only its own `user:{self}` topics.
+    #[must_use]
+    pub fn required_scope(&self) -> ScopeReq {
+        /// One area, one access — the shape every topic needs.
+        fn one(scope: Scope, access: Access) -> ScopeReq {
+            ScopeReq::Areas(ScopeSet::empty().with(scope, access))
+        }
+
+        match self {
+            // A folder's mutation stream is a read of file metadata.
+            Self::Folder(_) => one(Scope::Files, Access::ReadOnly),
+
+            // Subscribing to a document is a read; the `0x01` update
+            // frame is where `:rw` lands.
+            Self::Collab(_) => one(Scope::Files, Access::ReadOnly),
+
+            // Scopeless by design; see the note above.
+            Self::UserAuthz(_) | Self::UserNotifications(_) => ScopeReq::None,
+
+            // Watching a job run is an administrative read. Note the
+            // consequence: an admin's APP PASSWORD cannot tail job
+            // progress, because the app-password ceiling withholds
+            // `admin` — consistent with it being unable to administer at
+            // all, and precisely what a role check alone would miss.
+            Self::Job(_) => one(Scope::Admin, Access::ReadOnly),
+
+            // Matches `/api/config`, which is scopeless: this carries a
+            // version number the client compares, nothing more.
+            Self::ServerStatus => ScopeReq::None,
+        }
+    }
+
+    /// What a collab BINARY frame requires, by frame kind.
+    ///
+    /// This is where Ed's rule bites: `:ro` subscribes, `:rw` publishes.
+    /// Kind `0x01` is a Yjs update — the only frame a client sends that
+    /// MUTATES the document — so it needs `files:rw`. Awareness (`0x02`)
+    /// and sync-step (`0x03`) carry presence and handshake state, which
+    /// change no bytes in the file.
+    ///
+    /// The grant axis already splits exactly here ("the subscribe gate is
+    /// `Read`; write-side (`0x01`) frames get a separate `Edit` check"),
+    /// so the scope axis mirrors a split that exists rather than
+    /// inventing one.
+    ///
+    /// The practical result: a `files:ro` credential opens a document in
+    /// the editor, sees every change arrive and publishes presence, and
+    /// is refused only when it tries to type.
+    ///
+    /// An UNKNOWN kind requires `:rw` — the safe end. A frame we cannot
+    /// classify must not be cheaper than one we can.
+    #[must_use]
+    pub fn collab_frame_scope(kind: u8) -> ScopeReq {
+        let access = match kind {
+            0x02 | 0x03 => Access::ReadOnly,
+            _ => Access::ReadWrite,
+        };
+        ScopeReq::Areas(ScopeSet::empty().with(Scope::Files, access))
     }
 
     /// Which permission check the WS handler must run before allowing a
@@ -655,6 +739,89 @@ mod tests {
         assert_eq!(Topic::parse("job:UPPER"), Err(ParseTopicErr::Unknown));
         assert_eq!(Topic::parse("job:with.dot"), Err(ParseTopicErr::Unknown));
         assert_eq!(Topic::parse("job:with space"), Err(ParseTopicErr::Unknown));
+    }
+
+    /// The SCOPE axis, topic class by topic class.
+    ///
+    /// Written as an exhaustive table rather than one assertion per
+    /// topic, so adding a `Topic` variant without deciding its area
+    /// fails here instead of silently inheriting someone else's.
+    #[test]
+    fn every_topic_class_declares_its_area() {
+        use crate::application::ports::scope_ports::{Access, Scope, ScopeReq, ScopeSet};
+
+        let id = Uuid::new_v4();
+        let expected: &[(Topic, ScopeReq)] = &[
+            // Server-published streams: subscribing is a READ.
+            (
+                Topic::Folder(id),
+                ScopeReq::Areas(ScopeSet::empty().with(Scope::Files, Access::ReadOnly)),
+            ),
+            (
+                Topic::Collab(id),
+                ScopeReq::Areas(ScopeSet::empty().with(Scope::Files, Access::ReadOnly)),
+            ),
+            (
+                Topic::Job("backend_migration".to_string()),
+                ScopeReq::Areas(ScopeSet::empty().with(Scope::Admin, Access::ReadOnly)),
+            ),
+            // Scopeless: auto-subscribed at session open, thin facts,
+            // identity absolute on the grant axis.
+            (Topic::UserAuthz(id), ScopeReq::None),
+            (Topic::UserNotifications(id), ScopeReq::None),
+            (Topic::ServerStatus, ScopeReq::None),
+        ];
+
+        for (topic, want) in expected {
+            assert_eq!(
+                topic.required_scope(),
+                *want,
+                "{} declared the wrong area",
+                topic.to_wire_key()
+            );
+        }
+
+        // No topic may be `Undefined` — that is the unsatisfiable
+        // default, and a topic holding it would refuse every caller.
+        for (topic, _) in expected {
+            assert_ne!(
+                topic.required_scope(),
+                ScopeReq::Undefined,
+                "{} is undefined on the scope axis",
+                topic.to_wire_key()
+            );
+        }
+    }
+
+    /// `:ro` subscribes, `:rw` publishes — the rule applied per FRAME.
+    ///
+    /// Kind `0x01` is the Yjs update, the only client frame that mutates
+    /// the document. Awareness (`0x02`) and sync-step (`0x03`) carry
+    /// presence and handshake state, so a read-only credential keeps
+    /// working: it opens the document, sees every change and publishes
+    /// presence, and is refused only when it tries to type.
+    #[test]
+    fn only_the_update_frame_demands_write() {
+        use crate::application::ports::scope_ports::{Access, Scope, ScopeReq, ScopeSet};
+
+        let rw = ScopeReq::Areas(ScopeSet::empty().with(Scope::Files, Access::ReadWrite));
+        let ro = ScopeReq::Areas(ScopeSet::empty().with(Scope::Files, Access::ReadOnly));
+
+        assert_eq!(Topic::collab_frame_scope(0x01), rw, "update is a write");
+        assert_eq!(Topic::collab_frame_scope(0x02), ro, "awareness is presence");
+        assert_eq!(
+            Topic::collab_frame_scope(0x03),
+            ro,
+            "sync-step is a handshake"
+        );
+
+        // An unclassified kind takes the SAFE end. A frame we cannot
+        // name must not be cheaper than one we can.
+        assert_eq!(
+            Topic::collab_frame_scope(0xFF),
+            rw,
+            "an unknown frame kind must require write, not read"
+        );
     }
 
     #[test]

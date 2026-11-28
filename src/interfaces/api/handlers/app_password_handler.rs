@@ -4,21 +4,41 @@
 //! create/list/revoke their app passwords).
 
 use crate::application::dtos::app_password_dto::CreateAppPasswordRequestDto;
+use crate::application::ports::scope_ports::{Condition, Scope};
 use crate::common::di::AppState;
+use crate::interfaces::api::policy_router::{GatedRouter, delete, get, post};
 use crate::interfaces::errors::AppError;
 use crate::interfaces::middleware::auth::AuthUser;
+use axum::Json;
 use axum::extract::State;
-use axum::routing::{delete, get, post};
-use axum::{Json, Router};
 use std::sync::Arc;
 use uuid::Uuid;
 
+/// The caller's OWN credentials. The app-password and device ceilings
+/// grant no `security`, which is the whole mechanism by which a
+/// non-interactive credential cannot mint or alter another one — not
+/// anything noticing what kind it is.
+const SECURITY: [Condition; 1] = [Condition::scope_by_verb(Scope::Security)];
+
 /// Protected routes — require JWT auth middleware.
-pub fn app_password_routes() -> Router<Arc<AppState>> {
-    Router::new()
-        .route("/app-passwords", post(create_app_password))
-        .route("/app-passwords", get(list_app_passwords))
-        .route("/app-passwords/{id}", delete(revoke_app_password))
+/// Returns the `GatedRouter`: everything under `/api` is nested into one,
+/// so a bare `Router` here would not compose.
+pub fn app_password_routes() -> GatedRouter<Arc<AppState>> {
+    GatedRouter::new()
+        // Per ROUTE, not on the router. This router is nested at
+        // `/auth`, so a router-level `.policy()` would declare the
+        // `/api/auth` PREFIX and impose `security` on every sibling
+        // mounted there — login, logout, `me`, the OIDC flows. It did,
+        // and 19 operations failed to compile until this moved.
+        //
+        // The router-level form is only safe when the router owns its
+        // whole mount prefix, as `/api/i18n` does.
+        .route("/app-passwords", post(create_app_password).policy(SECURITY))
+        .route("/app-passwords", get(list_app_passwords).policy(SECURITY))
+        .route(
+            "/app-passwords/{id}",
+            delete(revoke_app_password).policy(SECURITY),
+        )
 }
 
 /// POST /api/auth/app-passwords — Create a new app password.
@@ -44,7 +64,6 @@ pub fn app_password_routes() -> Router<Arc<AppState>> {
         (status = 403, description = "External users cannot mint app passwords", body = crate::interfaces::errors::ApiErrorBody),
         (status = 409, description = "Caller has no claimed username — app password is unusable without one", body = crate::interfaces::errors::ApiErrorBody),
     ),
-    security(("bearerAuth" = [])),
     tag = "app-passwords"
 )]
 pub async fn create_app_password(
@@ -145,7 +164,6 @@ pub async fn create_app_password(
         (status = 200, description = "The caller's app passwords (metadata only, no plain text)", body = crate::application::dtos::app_password_dto::AppPasswordListResponseDto),
         (status = 401, description = "Caller is not signed in", body = crate::interfaces::errors::ApiErrorBody),
     ),
-    security(("bearerAuth" = [])),
     tag = "app-passwords"
 )]
 pub async fn list_app_passwords(
@@ -176,7 +194,6 @@ pub async fn list_app_passwords(
         (status = 401, description = "Caller is not signed in", body = crate::interfaces::errors::ApiErrorBody),
         (status = 404, description = "No app password with this id for the caller", body = crate::interfaces::errors::ApiErrorBody),
     ),
-    security(("bearerAuth" = [])),
     tag = "app-passwords"
 )]
 pub async fn revoke_app_password(

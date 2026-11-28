@@ -28,6 +28,7 @@ pub mod outbound;
 pub mod plugin_ports;
 pub mod recent_ports;
 pub mod resource_access_hook;
+pub mod scope_ports;
 pub mod share_ports;
 pub mod storage_ports;
 pub mod thumbnail_ports;

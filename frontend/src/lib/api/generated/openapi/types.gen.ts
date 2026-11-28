@@ -860,7 +860,9 @@ export type CreateAppPasswordRequestDto = {
      */
     label: string;
     /**
-     * Comma-separated scopes (defaults to all DAV protocols)
+     * Scopes, space- or comma-separated (e.g. `oxicloud:files:rw`).
+     * Omitted means the default set: files, calendar and contacts at
+     * `:rw`, plus `sharing:ro`.
      */
     scopes?: string;
 };
@@ -1848,7 +1850,7 @@ export type DeviceAuthorizeRequestDto = {
      */
     client_name?: string;
     /**
-     * Comma-separated scopes (e.g. "webdav,caldav,carddav")
+     * Scopes, space- or comma-separated (e.g. `oxicloud:files:rw`)
      */
     scope?: string;
 };
@@ -2238,6 +2240,26 @@ export type DrivePolicies = {
      * state is `storage.shares.password_hash IS NOT NULL`.
      */
     require_public_link_password?: boolean;
+};
+
+/**
+ * Response from the editor URL API endpoint.
+ */
+export type EditorUrlResponse = {
+    /**
+     * A WOPI access token scoped to this file and this caller's ACTUAL
+     * rights — `resolve_mint_target` derives `can_write` from the
+     * caller's Update permission, not from the requested action.
+     */
+    access_token: string;
+    /**
+     * Seconds until `access_token` expires.
+     */
+    access_token_ttl: number;
+    /**
+     * The host page to load in an iframe, on OUR origin.
+     */
+    editor_url: string;
 };
 
 /**
@@ -15654,3 +15676,45 @@ export type GetUserProfileResponses = {
 };
 
 export type GetUserProfileResponse = GetUserProfileResponses[keyof GetUserProfileResponses];
+
+export type GetEditorUrlData = {
+    body?: never;
+    path?: never;
+    query: {
+        /**
+         * The file to open (UUID)
+         */
+        file_id: string;
+        /**
+         * `edit` (default) or `view`. It is a REQUEST, not a grant: the minted token's write capability comes from the caller's real Update permission.
+         */
+        action?: string;
+    };
+    url: '/api/wopi/editor-url';
+};
+
+export type GetEditorUrlErrors = {
+    /**
+     * Not signed in, or a share visitor — `AuthUser` requires role >= User and `CallerKind::Visitor` reports `Anonymous`, so a ring cannot open an editor. A visitor downloads the file instead.
+     */
+    401: ApiErrorBody;
+    /**
+     * No Read permission on the file
+     */
+    403: ApiErrorBody;
+    /**
+     * No WOPI client is configured for this file's extension
+     */
+    404: ApiErrorBody;
+};
+
+export type GetEditorUrlError = GetEditorUrlErrors[keyof GetEditorUrlErrors];
+
+export type GetEditorUrlResponses = {
+    /**
+     * A host-page URL and a freshly minted WOPI token
+     */
+    200: EditorUrlResponse;
+};
+
+export type GetEditorUrlResponse = GetEditorUrlResponses[keyof GetEditorUrlResponses];

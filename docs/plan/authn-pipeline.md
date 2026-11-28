@@ -23,9 +23,9 @@ has shipped is worse than no status at all.
 | Session IP pair — `created_ip` / `last_seen_ip` | **done** | `b299f184f` `5a31e1f29` |
 | Connected-device list + revoke reading `auth.sessions` | **done** | `5c3da3ac7` |
 | WebSocket revocation — both upgrade paths + open-socket re-check | **done** | `75c806b5a` `57a506a85` |
-| `CurrentUser` carries the presented token (`sid` + `iat`) | **done** | `9a42e4299` |
+| `CurrentCaller` carries the presented token (`sid` + `iat`) | **done** | `9a42e4299` |
 | OIDC backchannel logout applies immediately | **done** | `0228c1433` |
-| Scope narrowing, obligations (part B) | **not started** | needs `scope-gates.md` |
+| Scope narrowing, obligations (part B) | **not started** | needs `scope-gates.md` PR 2 (`Scope` + enforcement) — and nothing from PR 1 |
 
 Verified at the wire, not only in unit tests: the deactivated-account
 refusal on every door (`e3ead258c` `52b2179a9`, OPAQUE's in
@@ -110,7 +110,7 @@ Four account-state fields exist, enforced in four different places:
 | `active` | `ensure_user_is_active` (3 callers), `verify_credentials`, `refresh_token`, app-password verify, and per-call `LiveRole::Revoked` |
 | `email_verified_at` | **one site** — `login()` ~1700, admins exempt |
 | `is_external` | `require_internal_user`, per call, live |
-| `force_password_change_at_next_login` | `require_no_password_change_pending_layer`, **5** mount points |
+| `force_password_change_at_next_login` | `require_no_password_change_pending_layer`, **8** mount points |
 
 Which path applies which:
 
@@ -343,8 +343,10 @@ Narrowing rather than rejecting is what makes the restricted states
 usable: the session is real, the discharge endpoint is an ordinary
 authenticated route, and the client gets a session it can act within.
 
-**`require_no_password_change_pending_layer` is deleted** — five mount
-points, and with them the "nine layers, tenth nest" fragility. The
+**`require_no_password_change_pending_layer` is deleted HERE**, not by the
+gates fold — eight mount points, and with them the "nine layers, tenth
+nest" fragility. It is a scope narrowing, so it never was a gate:
+`scope-gates.md` builds no facet for it and leaves the layer alone. The
 narrowing plus the existing session revocation covers it completely, and
 `force_password_change` leaves the per-call path entirely.
 

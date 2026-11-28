@@ -60,6 +60,17 @@ zero alloc), and `CachedBasicAuthResult` carries the same types so a
 Basic hit is bumps + a 24-byte memcpy. JSON wire shape is unchanged
 (byte-identity gated); OpenAPI keeps `String` via `value_type`.
 
+> **Superseded since Round 10, in the same direction.** The numbers above
+> stand as measured, but both role carriers are gone:
+> the then-`CurrentUser.role: SmolStr` + `is_external: bool` became one
+> `Copy` `CallerKind` on what is now `CurrentCaller` (no string, so no
+> 23-byte buffer and no reparse), and
+> `CachedBasicAuthResult` lost its role field entirely — both callers
+> dropped it as stale, since that cache has a 300 s TTL against the live
+> flags cache's 30 s. So the AFTER side of sections 1 and 2 is now smaller
+> than when it was measured, and `UserRole::as_str()` survives only for
+> rendering (logs, the wire), not for comparison.
+
 ```
 cargo run --release --features bench --example bench_round10_micro
 # [1] identity build  BEFORE 77.2 ns / 4.00 allocs → AFTER 59.0 / 1.00

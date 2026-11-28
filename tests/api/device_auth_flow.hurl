@@ -50,7 +50,7 @@ POST {{base_url}}/api/auth/device/authorize
 Content-Type: application/json
 {
   "client_name": "hurl-device-flow-A",
-  "scope":       "webdav,caldav,carddav"
+  "scope":       "oxicloud:files:rw,oxicloud:calendar:rw,oxicloud:contacts:rw"
 }
 
 HTTP 200
@@ -125,7 +125,42 @@ jsonpath "$.access_token" exists
 jsonpath "$.refresh_token" exists
 jsonpath "$.token_type" exists
 jsonpath "$.expires_in" > 0
-jsonpath "$.scope" == "webdav,caldav,carddav"
+# The AREA vocabulary, and the value is the EFFECTIVE set rather than
+# an echo of the request: the device-flow ceiling is intersected at
+# mint, so a request for more than it allows comes back narrowed.
+# RFC 6749 §5.1 requires the response to say so when it differs from
+# what was asked. This read `webdav,caldav,carddav` before the rename.
+jsonpath "$.scope" == "oxicloud:files:rw,oxicloud:calendar:rw,oxicloud:contacts:rw"
+
+
+# ─────────────────────────────────────────────────────────────
+# A6 — COMPATIBILITY: the pre-area vocabulary still authorizes.
+#
+# A device-flow client is the genuinely third-party caller on this
+# axis — it sends whatever scope string it was coded with, and a
+# client written against the pre-area API sends `webdav`. It is
+# aliased to `files:rw` rather than refused, and the consent screen
+# shows the AREA it resolved to, so the human approves what will
+# actually be granted rather than the word the client happened to
+# send.
+# ─────────────────────────────────────────────────────────────
+POST {{base_url}}/api/auth/device/authorize
+Content-Type: application/json
+{
+  "client_name": "hurl-device-flow-legacy",
+  "scope":       "webdav,caldav"
+}
+
+HTTP 200
+[Captures]
+legacy_user_code: jsonpath "$.user_code"
+
+
+GET {{base_url}}/api/auth/device/verify?code={{legacy_user_code}}
+
+HTTP 200
+[Asserts]
+jsonpath "$.scopes" == "oxicloud:files:rw,oxicloud:calendar:rw"
 
 
 # ═════════════════════════════════════════════════════════════
@@ -142,7 +177,7 @@ POST {{base_url}}/api/auth/device/authorize
 Content-Type: application/json
 {
   "client_name": "hurl-device-flow-B",
-  "scope":       "webdav"
+  "scope":       "oxicloud:files:rw"
 }
 
 HTTP 200

@@ -23,7 +23,9 @@ pub struct AppPassword {
     /// First 8 characters of the plain text token, stored for display purposes
     /// so the user can identify which token is which.
     pub prefix: String,
-    /// Comma-separated scopes (e.g. "webdav,caldav,carddav").
+    /// Scopes, space- or comma-separated (e.g. `oxicloud:files:rw`).
+    /// AREA vocabulary since `20261126000000_credential_scopes_to_areas`;
+    /// the protocol names it replaced named the same permission twice..
     pub scopes: String,
     /// When this app password was created.
     pub created_at: DateTime<Utc>,

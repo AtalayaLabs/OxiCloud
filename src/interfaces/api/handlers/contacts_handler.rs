@@ -254,7 +254,6 @@ fn user_to_contact(user: PublicUserDto) -> ContactDto {
         (status = 200, body = Vec<AddressBookResponse>, description = "List of address books"),
         (status = 500, description = "Internal server error", body = crate::interfaces::errors::ApiErrorBody),
     ),
-    security(("bearerAuth" = [])),
     tag = "contacts"
 )]
 pub async fn list_address_books(
@@ -345,7 +344,6 @@ pub async fn list_address_books(
         (status = 201, description = "Address book created", body = AddressBookResponse),
         (status = 400, description = "Invalid input", body = crate::interfaces::errors::ApiErrorBody),
     ),
-    security(("bearerAuth" = [])),
     tag = "contacts"
 )]
 pub async fn create_address_book(
@@ -391,7 +389,6 @@ pub async fn create_address_book(
         (status = 403, description = "Only the owner can update", body = crate::interfaces::errors::ApiErrorBody),
         (status = 404, description = "Address book not found", body = crate::interfaces::errors::ApiErrorBody),
     ),
-    security(("bearerAuth" = [])),
     tag = "contacts"
 )]
 pub async fn update_address_book(
@@ -445,7 +442,6 @@ pub async fn update_address_book(
         (status = 403, description = "Only the owner can delete", body = crate::interfaces::errors::ApiErrorBody),
         (status = 404, description = "Address book not found", body = crate::interfaces::errors::ApiErrorBody),
     ),
-    security(("bearerAuth" = [])),
     tag = "contacts"
 )]
 pub async fn delete_address_book(
@@ -488,7 +484,6 @@ pub async fn delete_address_book(
         (status = 403, description = "Access denied", body = crate::interfaces::errors::ApiErrorBody),
         (status = 404, description = "Address book not found", body = crate::interfaces::errors::ApiErrorBody),
     ),
-    security(("bearerAuth" = [])),
     tag = "contacts"
 )]
 pub async fn list_contacts(
@@ -593,7 +588,6 @@ pub async fn list_contacts(
         (status = 403, description = "Access denied or read-only book", body = crate::interfaces::errors::ApiErrorBody),
         (status = 404, description = "Address book not found", body = crate::interfaces::errors::ApiErrorBody),
     ),
-    security(("bearerAuth" = [])),
     tag = "contacts"
 )]
 pub async fn create_contact(
@@ -648,7 +642,6 @@ pub async fn create_contact(
         (status = 403, description = "Access denied", body = crate::interfaces::errors::ApiErrorBody),
         (status = 404, description = "Contact not found", body = crate::interfaces::errors::ApiErrorBody),
     ),
-    security(("bearerAuth" = [])),
     tag = "contacts"
 )]
 pub async fn get_contact(
@@ -717,7 +710,6 @@ pub async fn get_contact(
         (status = 404, description = "Contact not found", body = crate::interfaces::errors::ApiErrorBody),
         (status = 412, description = "ETag mismatch — contact was modified", body = crate::interfaces::errors::ApiErrorBody),
     ),
-    security(("bearerAuth" = [])),
     tag = "contacts"
 )]
 pub async fn update_contact(
@@ -795,7 +787,6 @@ pub async fn update_contact(
         (status = 404, description = "Contact not found", body = crate::interfaces::errors::ApiErrorBody),
         (status = 412, description = "ETag mismatch", body = crate::interfaces::errors::ApiErrorBody),
     ),
-    security(("bearerAuth" = [])),
     tag = "contacts"
 )]
 pub async fn delete_contact(
@@ -853,7 +844,6 @@ pub async fn delete_contact(
         (status = 403, description = "Access denied", body = crate::interfaces::errors::ApiErrorBody),
         (status = 404, description = "Address book not found", body = crate::interfaces::errors::ApiErrorBody),
     ),
-    security(("bearerAuth" = [])),
     tag = "contacts"
 )]
 pub async fn list_groups(
@@ -887,7 +877,6 @@ pub async fn list_groups(
         (status = 403, description = "Access denied or read-only book", body = crate::interfaces::errors::ApiErrorBody),
         (status = 404, description = "Address book not found", body = crate::interfaces::errors::ApiErrorBody),
     ),
-    security(("bearerAuth" = [])),
     tag = "contacts"
 )]
 pub async fn create_group(
@@ -926,7 +915,6 @@ pub async fn create_group(
         (status = 403, description = "Access denied", body = crate::interfaces::errors::ApiErrorBody),
         (status = 404, description = "Group not found", body = crate::interfaces::errors::ApiErrorBody),
     ),
-    security(("bearerAuth" = [])),
     tag = "contacts"
 )]
 pub async fn get_group(
@@ -963,7 +951,6 @@ pub async fn get_group(
         (status = 403, description = "Access denied or read-only book", body = crate::interfaces::errors::ApiErrorBody),
         (status = 404, description = "Group not found", body = crate::interfaces::errors::ApiErrorBody),
     ),
-    security(("bearerAuth" = [])),
     tag = "contacts"
 )]
 pub async fn update_group(
@@ -1001,7 +988,6 @@ pub async fn update_group(
         (status = 403, description = "Access denied or read-only book", body = crate::interfaces::errors::ApiErrorBody),
         (status = 404, description = "Group not found", body = crate::interfaces::errors::ApiErrorBody),
     ),
-    security(("bearerAuth" = [])),
     tag = "contacts"
 )]
 pub async fn delete_group(
@@ -1040,7 +1026,6 @@ pub async fn delete_group(
         (status = 403, description = "Access denied", body = crate::interfaces::errors::ApiErrorBody),
         (status = 404, description = "Group not found", body = crate::interfaces::errors::ApiErrorBody),
     ),
-    security(("bearerAuth" = [])),
     tag = "contacts"
 )]
 pub async fn list_contacts_in_group(
@@ -1078,7 +1063,6 @@ pub async fn list_contacts_in_group(
         (status = 403, description = "Access denied or read-only book", body = crate::interfaces::errors::ApiErrorBody),
         (status = 404, description = "Group or contact not found", body = crate::interfaces::errors::ApiErrorBody),
     ),
-    security(("bearerAuth" = [])),
     tag = "contacts"
 )]
 pub async fn add_contact_to_group(
@@ -1121,7 +1105,6 @@ pub async fn add_contact_to_group(
         (status = 403, description = "Access denied or read-only book", body = crate::interfaces::errors::ApiErrorBody),
         (status = 404, description = "Group or contact not found", body = crate::interfaces::errors::ApiErrorBody),
     ),
-    security(("bearerAuth" = [])),
     tag = "contacts"
 )]
 pub async fn remove_contact_from_group(

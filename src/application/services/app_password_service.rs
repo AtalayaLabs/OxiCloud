@@ -7,6 +7,7 @@ use crate::application::dtos::app_password_dto::*;
 use crate::application::ports::auth_ports::{
     AppPasswordStoragePort, PasswordHasherPort, UserStoragePort,
 };
+use crate::application::ports::scope_ports::{CredentialKind, ScopeSet};
 use crate::common::errors::{DomainError, ErrorKind};
 use crate::domain::entities::app_password::AppPassword;
 use crate::infrastructure::repositories::pg::AppPasswordPgRepository;
@@ -15,7 +16,6 @@ use crate::infrastructure::services::password_hasher::Argon2PasswordHasher;
 use chrono::{Duration, Utc};
 use moka::future::Cache;
 use rand_core::RngCore;
-use smol_str::SmolStr;
 use std::sync::Arc;
 use std::time::Duration as StdDuration;
 use uuid::Uuid;
@@ -38,9 +38,19 @@ const NC_PREFIX_LEN: usize = 8;
 /// cost every 30 s per client; 5 min cuts it ~10× under steady sync load.
 ///
 /// Security envelope of this window:
-/// - **Revocation is immediate**: `revoke()` calls `invalidate_entries_if`
-///   on this cache for the user, so a revoked password never survives in
-///   cache regardless of TTL.
+/// - **Revocation is immediate**: every path that stops a credential being
+///   valid calls [`AppPasswordService::invalidate_auth_cache`], so a
+///   revoked password never survives in cache regardless of TTL.
+///
+///   This claim was FALSE for a long time. The call was
+///   `invalidate_entries_if(...).ok()` while the builder lacked
+///   `support_invalidation_closures()`, so moka returned
+///   `Err(InvalidationClosuresDisabled)` every time and `.ok()` threw it
+///   away: the doc promised immediate revocation while the TTL was the
+///   only thing bounding it. The builder now opts in, the error is
+///   handled rather than discarded, and a failure falls back to a full
+///   flush after shouting — so the guarantee can degrade loudly but not
+///   silently.
 /// - **Expiry / deactivation are bounded by the TTL**: `expires_at` and
 ///   `user.is_active()` are only re-checked on a cache *miss* (the DB
 ///   query filters them), so an app password that expires — or a user
@@ -58,16 +68,33 @@ const BASIC_AUTH_CACHE_MAX_ENTRIES: u64 = 10_000;
 
 /// Cached identity returned after a successful Basic Auth verification.
 ///
-/// `Arc<str>` / inline `SmolStr` fields: moka's `get` clones the value, so
-/// with owned `String`s every warm Basic-auth request (all DAV traffic)
-/// paid 3 string copies just to read the cached identity. Now a hit is
-/// refcount bumps + a 24-byte memcpy.
+/// `Arc<str>` fields: moka's `get` clones the value, so with owned
+/// `String`s every warm Basic-auth request (all DAV traffic) paid string
+/// copies just to read the cached identity. Now a hit is refcount bumps.
+///
+/// **No role.** It was cached here and DROPPED by both callers, each with
+/// a comment saying why: this cache has a 300 s TTL, so a role read from
+/// it can name one the user no longer holds, and the live value is
+/// re-resolved per request from the 30 s flags cache. Carrying it was 24
+/// bytes of staleness that only invited a third caller to trust it.
+/// **Scopes ARE cached, unlike the role above, and the difference is
+/// mutability.** A role changes under a live credential — an admin
+/// demotes a user and the 300 s TTL would keep serving the old one. An
+/// app password's scopes are fixed at mint: the three endpoints are
+/// create, list and revoke, with nothing that edits an existing row's
+/// `scopes` column. So a cached copy cannot name access the credential
+/// no longer has.
+///
+/// If a scope-editing endpoint is ever added, that stops being true and
+/// this field must come out of the cache — the narrowing would not take
+/// effect for up to 300 s, which is exactly the staleness the role note
+/// above rejects.
 #[derive(Clone)]
 struct CachedBasicAuthResult {
     user_id: Uuid,
     username: Arc<str>,
     email: Arc<str>,
-    role: SmolStr,
+    scopes: ScopeSet,
 }
 
 pub struct AppPasswordService {
@@ -85,11 +112,22 @@ pub struct AppPasswordService {
     /// **Key**: `blake3(username + ":" + password)` — the plain-text password
     /// is never stored; only a cryptographic hash is kept as lookup key.
     ///
-    /// **Value**: the authenticated identity (user_id, username, email, role).
+    /// **Value**: the authenticated identity plus the credential's SCOPE
+    /// set — `user_id`, `username`, `email`, `scopes`. No `role`: see
+    /// [`CachedBasicAuthResult`] for why that one is re-read live and the
+    /// scopes are not.
     ///
     /// **Eviction**: TTL-based (see `BASIC_AUTH_CACHE_TTL_SECS`) +
     /// capacity-based (10 000 entries). Failed verifications are *never*
     /// cached, so brute-force attackers always pay the full Argon2id cost.
+    ///
+    /// **NOT evicted on revoke**, which is a gap rather than a decision:
+    /// a revoked app password keeps authenticating for up to the TTL. The
+    /// key is `blake3(username:password)` and `revoke` holds only the row
+    /// id — the plaintext is never stored, so the key cannot be computed
+    /// to target it. Closing it means either `invalidate_all()` on any
+    /// revoke (one extra Argon2 for every live Basic client, on a rare
+    /// human action) or a side index from app-password id to cache key.
     auth_cache: Cache<[u8; 32], CachedBasicAuthResult>,
 }
 
@@ -102,6 +140,12 @@ impl AppPasswordService {
         require_verified_email: bool,
     ) -> Self {
         let auth_cache = Cache::builder()
+            // REQUIRED for `invalidate_entries_if`. Without it moka
+            // returns `Err(InvalidationClosuresDisabled)` on every call —
+            // which is exactly how per-user revocation was a silent
+            // no-op before: the builder lacked this line and the call
+            // site ended in `.ok()`.
+            .support_invalidation_closures()
             .max_capacity(BASIC_AUTH_CACHE_MAX_ENTRIES)
             .time_to_live(StdDuration::from_secs(BASIC_AUTH_CACHE_TTL_SECS))
             .build();
@@ -174,13 +218,27 @@ impl AppPasswordService {
             .expires_in_days
             .map(|days| Utc::now() + Duration::days(days as i64));
 
+        // Narrow at the STORE — see the note in `device_auth_service`.
+        // The credential list reads this row back, so capping here makes
+        // that output correct for free; the creation response below is
+        // the one site that echoes rather than reads.
+        let granted = CredentialKind::AppPassword
+            .effective(Some(&request.scopes))
+            .map_err(|e| {
+                DomainError::new(
+                    ErrorKind::InvalidInput,
+                    "AppPassword",
+                    format!("invalid scope: {e}"),
+                )
+            })?;
+
         // Create entity
         let app_password = AppPassword::new(
             user_id,
             label.clone(),
             password_hash,
             prefix.clone(),
-            request.scopes.clone(),
+            granted.to_wire(),
             expires_at,
         );
 
@@ -198,7 +256,13 @@ impl AppPasswordService {
             label,
             password: plain_token,
             username: username.clone(),
-            scopes: request.scopes,
+            // The EFFECTIVE set, not the request. RFC 6749 §5.1 makes
+            // `scope` required in the response whenever it differs from
+            // what was asked for — and echoing the request would tell a
+            // client it holds `security` when it holds three areas,
+            // which it would discover only as a 403 much later. Silent
+            // narrowing is defensible; unreported narrowing is not.
+            scopes: granted.to_wire(),
             expires_at: expires_str,
             instructions: AppPasswordInstructions {
                 davx5: format!(
@@ -260,6 +324,67 @@ impl AppPasswordService {
     ///
     /// Also invalidates **all** cached Basic Auth entries for the owning user
     /// so that the revocation takes effect immediately (instead of waiting
+    /// Drop every cached Basic-auth verification.
+    ///
+    /// Called whenever a credential stops being valid: an app password
+    /// revoked or deleted, or the account's password changed. Without it
+    /// a revoked app password keeps authenticating for up to
+    /// `BASIC_AUTH_CACHE_TTL_SECS` (300 s), because a cache hit never
+    /// reaches the row that says `active = FALSE`. Revocation is the
+    /// action a user takes when a credential LEAKS, so a five-minute
+    /// grace is the wrong five minutes.
+    ///
+    /// **All of it, not one entry**, and that is forced rather than lazy:
+    /// the key is `blake3(username:password)` over the PLAINTEXT, which
+    /// the server never stores. Holding only a row id, there is no way to
+    /// compute the key to target. The alternative is a side index from
+    /// app-password id to cache key, which buys precision at the cost of
+    /// a second structure to keep consistent — for an operation a human
+    /// performs by hand, once.
+    ///
+    /// The cost is one extra Argon2id verification for each live Basic
+    /// client, on their next request. Revocations are rare; wrongly
+    /// authenticating a revoked credential is not a trade worth making
+    /// for that.
+    pub fn invalidate_auth_cache_for_user(&self, user_id: Uuid) {
+        // Targeted: only THIS user's entries. Dropping the whole cache
+        // would make one user's revocation cost every other user's Basic
+        // clients an Argon2id, and DAV clients poll constantly.
+        if let Err(e) = self
+            .auth_cache
+            .invalidate_entries_if(move |_key, val| val.user_id == user_id)
+        {
+            // NOT `.ok()`. That is what hid this for so long: the only
+            // way this errors is `InvalidationClosuresDisabled`, meaning
+            // someone dropped `support_invalidation_closures()` from the
+            // builder — at which point revocation silently goes back to
+            // being TTL-bounded, which is the bug this whole path exists
+            // to prevent.
+            //
+            // So: shout, then fail SAFE by dropping everything. Blunt
+            // beats a revoked credential that still authenticates.
+            tracing::error!(
+                target: "audit",
+                event = "app_password.auth_cache_invalidation_degraded",
+                reason = "invalidation_closures_disabled",
+                user_id = %user_id,
+                error = %e,
+                "👮🏻‍♂️ per-user Basic-auth invalidation failed — falling \
+                 back to a full flush; restore \
+                 `support_invalidation_closures()` on the cache builder",
+            );
+            self.auth_cache.invalidate_all();
+            return;
+        }
+
+        tracing::debug!(
+            target: "oxicloud::authz",
+            event = "app_password.auth_cache_invalidated",
+            user_id = %user_id,
+            "Basic-auth cache entries dropped for the user",
+        );
+    }
+
     /// up to `BASIC_AUTH_CACHE_TTL_SECS`).
     pub async fn revoke(
         &self,
@@ -276,13 +401,9 @@ impl AppPasswordService {
             ));
         }
         self.repo.revoke(id, user_id).await?;
-
-        // Invalidate all cached auth entries for this user so the
-        // revocation is effective immediately.
-        let uid = user_id;
-        self.auth_cache
-            .invalidate_entries_if(move |_key, val| val.user_id == uid)
-            .ok();
+        // The row now says `active = FALSE`, but a cache hit never reads
+        // the row.
+        self.invalidate_auth_cache_for_user(user_id);
 
         tracing::debug!(
             "Revoked app password {} — auth cache entries for user {} invalidated",
@@ -311,7 +432,7 @@ impl AppPasswordService {
         &self,
         username: &str,
         password: &str,
-    ) -> Result<(Uuid, Arc<str>, Arc<str>, SmolStr), DomainError> {
+    ) -> Result<(Uuid, Arc<str>, Arc<str>, ScopeSet), DomainError> {
         // ── 1. Compute cache key = blake3("username:password") ────────
         // Stream the parts into an incremental hasher instead of
         // `blake3::hash(format!("{username}:{password}").as_bytes())` — the
@@ -355,7 +476,7 @@ impl AppPasswordService {
                     }
                 },
             )?;
-        Ok((result.user_id, result.username, result.email, result.role))
+        Ok((result.user_id, result.username, result.email, result.scopes))
     }
 
     /// The uncached Basic Auth slow path: user lookup, prefix-scoped
@@ -453,10 +574,10 @@ impl AppPasswordService {
                 // Caching happens in `verify_basic_auth`: `try_get_with`
                 // stores this value under the blake3 key on return.
                 return Ok(CachedBasicAuthResult {
+                    scopes: ScopeSet::from_credential(Some(&ap.scopes)),
                     user_id: user.id(),
                     username: Arc::from(user.username().unwrap_or("")),
                     email: Arc::from(user.email()),
-                    role: SmolStr::new_static(user.role().as_str()),
                 });
             }
         }
@@ -521,12 +642,9 @@ impl AppPasswordService {
                 .await
             {
                 self.repo.revoke(ap.id, user_id).await?;
+                self.invalidate_auth_cache_for_user(user_id);
 
                 // Invalidate cache for this user
-                let uid = user_id;
-                self.auth_cache
-                    .invalidate_entries_if(move |_key, val| val.user_id == uid)
-                    .ok();
                 break;
             }
         }
@@ -542,6 +660,11 @@ impl AppPasswordService {
     /// Delete an app password by ID, scoped to the owning user.
     pub async fn delete_by_user(&self, id: Uuid, user_id: Uuid) -> Result<(), DomainError> {
         let deleted = self.repo.delete_by_user_and_id(id, user_id).await?;
+        if deleted {
+            // A DELETED row cannot be re-read at all, so a surviving
+            // cache entry is strictly worse here than for a revoke.
+            self.invalidate_auth_cache_for_user(user_id);
+        }
         if !deleted {
             return Err(DomainError::new(
                 ErrorKind::NotFound,

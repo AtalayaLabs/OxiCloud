@@ -58,12 +58,11 @@ pub struct RtTicketResponse {
         (status = 200, description = "Ticket issued", body = RtTicketResponse),
         (status = 401, description = "Unauthenticated", body = crate::interfaces::errors::ApiErrorBody),
     ),
-    security(("bearerAuth" = []))
 )]
 pub async fn issue_rt_ticket(
     // `AuthUser` rather than `CurrentUserId` because this handler needs
     // the session the caller presented, not only their id. It derefs to
-    // `CurrentUser`, so this costs no allocation and no extra extraction.
+    // `CurrentCaller`, so this costs no allocation and no extra extraction.
     caller: AuthUser,
     State(state): State<Arc<AppState>>,
 ) -> Json<RtTicketResponse> {
@@ -76,7 +75,12 @@ pub async fn issue_rt_ticket(
     //
     // Already `PresentedToken::default()` for a credential that is not a
     // JWT, so there is nothing to handle here.
-    let ticket = state.rt_ticket_store.issue(caller_id, caller.token);
+    // The SCOPE set rides along for the same reason as the token: this
+    // endpoint runs under the full middleware chain and knows what the
+    // credential may reach; the upgrade that redeems the ticket does not.
+    let ticket = state
+        .rt_ticket_store
+        .issue(caller_id, caller.token, caller.scopes);
     let ticket_str = ticket.to_string();
     tracing::debug!(
         target: "oxicloud::message_bus",

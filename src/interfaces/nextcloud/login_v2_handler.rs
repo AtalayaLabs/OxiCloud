@@ -11,7 +11,7 @@ use std::sync::Arc;
 use crate::application::ports::folder_ports::FolderUseCase;
 use crate::common::di::AppState;
 use crate::common::errors::DomainError;
-use crate::interfaces::middleware::auth::CurrentUser;
+use crate::interfaces::middleware::auth::CurrentCaller;
 
 /// Drive option rendered on the picker page. `name` is the folder's
 /// display name; `id` is the folder UUID that becomes the `~{marker}`
@@ -242,7 +242,7 @@ async fn resolve_drive_or_complete(
     state: &Arc<AppState>,
     nextcloud: &crate::common::di::NextcloudServices,
     token: &str,
-    current_user: &CurrentUser,
+    current_user: &CurrentCaller,
     label: &'static str,
     mut drives: Vec<crate::application::dtos::folder_dto::FolderDto>,
 ) -> Response {
@@ -335,7 +335,7 @@ pub async fn handle_oidc_login_completion(
         None => return StatusCode::SERVICE_UNAVAILABLE.into_response(),
     };
 
-    // Full user record — needed to build the `CurrentUser` the shared
+    // Full user record — needed to build the `CurrentCaller` the shared
     // helpers expect (email + role in particular). We already have the
     // username from the OIDC claims, but not the rest.
     let user_dto = match auth.auth_application_service.get_user_by_id(user_id).await {
@@ -346,13 +346,25 @@ pub async fn handle_oidc_login_completion(
         }
     };
 
-    let current_user = CurrentUser {
+    let current_caller = CurrentCaller {
+        // EVERY scope: Login Flow v2 is browser-driven and ends by
+        // minting an app password, which gets its OWN narrowed set. This
+        // caller is the human approving that mint, not the credential
+        // being minted.
+        scopes: crate::application::ports::scope_ports::ScopeSet::full(),
+        // From the DTO this door already loaded. `UserRoleDto` carries only
+        // the three roles a row may hold, so the conversion is total — no
+        // unparseable case and no `Anonymous` default to fall back to.
+        kind: if user_dto.is_external {
+            crate::domain::entities::user::CallerKind::External
+        } else {
+            crate::domain::entities::user::CallerKind::Internal(user_dto.role.into())
+        },
         // Login Flow v2 ends in an app password, not a JWT: no claims.
         token: crate::domain::entities::presented_token::PresentedToken::default(),
         id: user_id,
         username: std::sync::Arc::from(username),
         email: std::sync::Arc::from(user_dto.email.as_str()),
-        role: smol_str::SmolStr::new(user_dto.role.as_str()),
         // NC login-flow-v2 mints an app password — no browser, no
         // WebCrypto, always unbound. DPoP middleware exempts.
         dpop_jkt: None,
@@ -361,12 +373,12 @@ pub async fn handle_oidc_login_completion(
     let drives = match state
         .applications
         .folder_service
-        .list_folders_with_perms(None, current_user.id)
+        .list_folders_with_perms(None, current_caller.id)
         .await
     {
         Ok(d) => d,
         Err(e) => {
-            tracing::error!(error = %e, user = %current_user.username, "OIDC+NC: failed to list drives");
+            tracing::error!(error = %e, user = %current_caller.username, "OIDC+NC: failed to list drives");
             return StatusCode::INTERNAL_SERVER_ERROR.into_response();
         }
     };
@@ -375,7 +387,7 @@ pub async fn handle_oidc_login_completion(
         state,
         nextcloud,
         token,
-        &current_user,
+        &current_caller,
         "Nextcloud (OIDC)",
         drives,
     )
@@ -434,7 +446,7 @@ async fn complete_flow(
     state: &Arc<AppState>,
     login_flow: &crate::application::services::nextcloud_login_flow_service::NextcloudLoginFlowService,
     token: &str,
-    user: &CurrentUser,
+    user: &CurrentCaller,
     drive_id: Option<&str>,
     // Persisted verbatim as `auth.app_passwords.label`. Callers pass
     // `"Nextcloud"` for the password path and `"Nextcloud (OIDC)"` for
@@ -578,13 +590,25 @@ pub async fn handle_drive_pick(
         tracing::error!(%user_id, "Login Flow v2: pending user has no username — invariant violated");
         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
     };
-    let user = CurrentUser {
+    let current_caller = CurrentCaller {
+        // EVERY scope: Login Flow v2 is browser-driven and ends by
+        // minting an app password, which gets its OWN narrowed set. This
+        // caller is the human approving that mint, not the credential
+        // being minted.
+        scopes: crate::application::ports::scope_ports::ScopeSet::full(),
+        // From the DTO this door already loaded. `UserRoleDto` carries only
+        // the three roles a row may hold, so the conversion is total — no
+        // unparseable case and no `Anonymous` default to fall back to.
+        kind: if user_dto.is_external {
+            crate::domain::entities::user::CallerKind::External
+        } else {
+            crate::domain::entities::user::CallerKind::Internal(user_dto.role.into())
+        },
         // Login Flow v2 ends in an app password, not a JWT: no claims.
         token: crate::domain::entities::presented_token::PresentedToken::default(),
         id: user_id,
         username: std::sync::Arc::from(username.as_str()),
         email: std::sync::Arc::from(user_dto.email.as_str()),
-        role: smol_str::SmolStr::new(user_dto.role.as_str()),
         // NC login-flow-v2 mints an app password — no browser, no
         // WebCrypto, always unbound. DPoP middleware exempts.
         dpop_jkt: None,
@@ -636,7 +660,7 @@ pub async fn handle_drive_pick(
     };
     let home_id = crate::domain::repositories::drive_repository::position_of_user_home_root_folder(
         state.drive_repo.as_ref(),
-        user.id,
+        current_caller.id,
         &drives,
         |f| uuid::Uuid::parse_str(&f.id).ok(),
     )
@@ -664,7 +688,7 @@ pub async fn handle_drive_pick(
         &state,
         &nextcloud.login_flow,
         &token,
-        &user,
+        &current_caller,
         drive_marker,
         &label,
     )

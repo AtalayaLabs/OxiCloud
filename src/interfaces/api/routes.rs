@@ -1,13 +1,55 @@
+use crate::application::ports::scope_ports::{Access, Condition, MinRole, Scope};
 use crate::application::services::batch_operations::BatchOperationService;
+use crate::application::services::scope_table::PolicyRegistry;
 use crate::common::di::AppState;
-use crate::interfaces::middleware::user::require_internal_user_layer;
+use crate::interfaces::api::policy_router::{GatedRouter, Policied, delete, get, patch, post, put};
+
+/// The seven share-visitor-reachable GETs all carry this one condition.
+/// Declared per VERB: three of their paths also serve a write, which no
+/// visitor may reach.
+const VISITOR: [Condition; 1] = [Condition::visitor_allowed()];
+
+// ── Scope-axis declarations, one per AREA ────────────────────────────────
+//
+// Declared on the NEST, so one line covers a subtree and any route added
+// to it later inherits rather than defaulting to `Undefined`. That
+// inheritance is also why the nest is the right site rather than the
+// route: `/api/version` and `/api/openapi.json` are not in the OpenAPI
+// spec, so the generation check cannot see them — but the runtime gate
+// still compiles a policy for them, and a prefix declaration is what
+// stops that being unsatisfiable.
+//
+// `scope_by_verb` throughout: the access follows the method, so a GET
+// under `/api/files` needs `files:ro` while a DELETE needs `files:rw`.
+// The three places the verb lies declare their access explicitly — see
+// the overrides further down, and § Access follows the VERB in the plan.
+
+/// Anything that reads or writes stored bytes. Photos and playlists are
+/// here too: they DISPLAY files rather than being areas of their own.
+const FILES: [Condition; 1] = [Condition::scope_by_verb(Scope::Files)];
+const CALENDAR: [Condition; 1] = [Condition::scope_by_verb(Scope::Calendar)];
+const CONTACTS: [Condition; 1] = [Condition::scope_by_verb(Scope::Contacts)];
+/// The biometric face index. Its own area because pixel analysis produces
+/// data the file bytes do not contain.
+const FACES: [Condition; 1] = [Condition::scope_by_verb(Scope::Faces)];
+/// Grants to OTHER people — shares, drive members, playlist sharing, and
+/// the recipient lookup that makes a share picker work.
+const SHARING: [Condition; 1] = [Condition::scope_by_verb(Scope::Sharing)];
+/// The caller's own profile and preferences.
+const ACCOUNT: [Condition; 1] = [Condition::scope_by_verb(Scope::Account)];
+/// No scope required, DECLARED — distinct from declaring nothing, which
+/// leaves `ScopeReq::Undefined` and fails spec generation.
+const SCOPELESS: [Condition; 1] = [Condition::scopeless()];
+/// Public AND scopeless: the login and pre-auth flows, where no
+/// credential exists yet to carry a scope.
+const PUBLIC_SCOPELESS: [Condition; 2] = [Condition::public(), Condition::scopeless()];
 use axum::{
     Router,
     body::Body,
     extract::{DefaultBodyLimit, State},
     http::StatusCode,
     response::{IntoResponse, Json as AxumJson, Response},
-    routing::{any, delete, get, patch, post, put},
+    routing::any,
 };
 use serde_json::json;
 use std::sync::Arc;
@@ -100,17 +142,28 @@ use crate::interfaces::api::handlers::trash_handler;
 /// - `GET /ready`  — readiness probe, pings DB pool, returns 503 if unreachable.
 pub fn create_health_routes(app_state: &Arc<AppState>) -> Router<Arc<AppState>> {
     Router::new()
-        .route("/health", get(health))
-        .route("/ready", get(ready))
+        .route("/health", axum::routing::get(health))
+        .route("/ready", axum::routing::get(ready))
         .with_state(app_state.clone())
 }
 
 /// Creates public API routes that should NOT require authentication.
-pub fn create_public_api_routes(app_state: &Arc<AppState>) -> Router<Arc<AppState>> {
+/// Returns the router AND its declarations.
+///
+/// Every operation here is PUBLIC — reachable with no credential — and
+/// says so with `.policy([Condition::public()])`. That is not decoration:
+/// the default policy is an authenticated user, so without it the spec
+/// claims a bearer these routes do not need, and `just openapi` reports
+/// each one as a disagreement.
+///
+/// Declared per route rather than on the subtree, because this router is
+/// nested at `/api` alongside the protected one — a prefix declaration
+/// would cover both.
+pub fn create_public_api_routes(app_state: &Arc<AppState>) -> GatedRouter<Arc<AppState>> {
     let share_service = app_state.share_service.clone();
     let i18n_service = Some(app_state.applications.i18n_service.clone());
 
-    let mut router = Router::new();
+    let mut router = GatedRouter::<Arc<AppState>>::new();
 
     // Public share access routes — no auth required
     if let Some(share_service) = share_service {
@@ -130,13 +183,20 @@ pub fn create_public_api_routes(app_state: &Arc<AppState>) -> Router<Arc<AppStat
             100_000,
         ));
 
-        let public_share_router = Router::new()
-            .route("/{token}", get(share_handler::access_shared_item))
+        let public_share_router = GatedRouter::new()
+            .route(
+                "/{token}",
+                get(share_handler::access_shared_item).policy(PUBLIC_SCOPELESS),
+            )
             .route(
                 "/{token}/verify",
-                post(share_handler::verify_shared_item_password).layer(
-                    axum::middleware::from_fn_with_state(verify_limiter, rate_limit_share_verify),
-                ),
+                // A rate limit is not a policy: the two coexist.
+                post(share_handler::verify_shared_item_password)
+                    .policy(PUBLIC_SCOPELESS)
+                    .layer(axum::middleware::from_fn_with_state(
+                        verify_limiter,
+                        rate_limit_share_verify,
+                    )),
             )
             .with_state(share_service);
 
@@ -152,12 +212,23 @@ pub fn create_public_api_routes(app_state: &Arc<AppState>) -> Router<Arc<AppStat
         // contents/{folder_id}, file/{file_id}, zip, zip/{folder_id}) were a
         // parallel implementation of that surface and are gone; see the
         // Phase 4 commit for what they were and why they could not stay.
-        router = router.nest("/s", public_share_router);
+        router = router.nest("/s", public_share_router.policy(SCOPELESS));
     }
 
     // i18n routes — no auth required (localization should be available before login)
     if let Some(i18n_service) = i18n_service {
-        let i18n_router = Router::new()
+        // One SUBTREE declaration rather than three identical per-route
+        // ones. `.policy()` on a `GatedRouter` declares
+        // `Site::RestPrefix("/")`, which `nest` rebases to `/api/i18n`.
+        //
+        // Sound here because every route in this router is a public GET.
+        // Note what it costs: a prefix declaration covers every METHOD on
+        // every path beneath it, so a write endpoint added here later
+        // would inherit `PUBLIC` silently. Per-route declarations do not
+        // have that property — see AGENTS.md § Declare the policy where
+        // the route is.
+        let i18n_router = GatedRouter::new()
+            .policy(PUBLIC_SCOPELESS)
             .route("/locales", get(get_locales))
             .route("/translate", get(translate))
             .route("/locales/{locale_code}", get(get_translations_by_locale))
@@ -167,8 +238,11 @@ pub fn create_public_api_routes(app_state: &Arc<AppState>) -> Router<Arc<AppStat
     }
 
     // Version endpoint — public, no auth required
-    router = router.route("/version", get(get_version));
-    router = router.route("/openapi.json", get(get_openapi_spec));
+    router = router.route("/version", get(get_version).policy(PUBLIC_SCOPELESS));
+    router = router.route(
+        "/openapi.json",
+        get(get_openapi_spec).policy(PUBLIC_SCOPELESS),
+    );
 
     // Server-configuration discovery endpoint — public, unauthenticated.
     // Returns feature flags, version, and a snapshot of the server-status
@@ -177,18 +251,45 @@ pub fn create_public_api_routes(app_state: &Arc<AppState>) -> Router<Arc<AppStat
     router = router.route(
         "/config",
         get(crate::interfaces::api::handlers::config_handler::get_config)
+            .policy(PUBLIC_SCOPELESS)
             .with_state(app_state.clone()),
     );
 
     router
 }
 
-/// Creates protected API routes for the application.
+/// The whole app's compiled policy declarations, keyed by operation.
 ///
-/// These routes require authentication when auth is enabled.
-/// Receives the fully-assembled `AppState` and extracts all needed services
-/// from it, avoiding a long parameter list.
-pub fn create_api_routes(app_state: &Arc<AppState>) -> Router<Arc<AppState>> {
+/// Built from the SAME two functions the server builds its router from —
+/// `ApiSubRouters::new` and `main_api_router` — so the table the spec is
+/// marked from cannot differ from the table the gate enforces. It used to
+/// re-declare `main.rs`'s prefixes by hand, and that drifted three times:
+/// each time the generator marked nothing, because its registry was keyed
+/// `/admin` where the server's was keyed `/api/admin`.
+///
+/// Undecorated on purpose. A layer cannot change a declaration —
+/// `GatedRouter::layer` passes the registry through untouched — and the
+/// generator has no rate limiters to decorate with.
+pub fn app_policies(app_state: &Arc<AppState>) -> PolicyRegistry {
+    let mut registry = main_api_router(ApiSubRouters::new(app_state))
+        .into_policies()
+        .rebased_under("/api");
+
+    // Plus the operations with no route to declare against — the DAV
+    // surfaces, whose one `any` handler covers a whole subtree.
+    registry.absorb(crate::interfaces::api::policy_declarations::declarations());
+
+    registry
+}
+
+/// Returns the router AND the policy declarations made against it.
+///
+/// Route, layer and policy are declared in ONE place — that is the point
+/// of `.policy([...])` sitting on the nest or the handler rather than in a
+/// central table. The declarations come back as a registry because a
+/// `Router` cannot be asked what it holds, and the paths here are relative
+/// to this router, so `main.rs` rebases them under `/api`.
+pub fn create_api_routes(app_state: &Arc<AppState>) -> GatedRouter<Arc<AppState>> {
     // Extract services from the pre-built AppState
     let folder_service = app_state.applications.folder_service_concrete.clone();
     let file_retrieval_service = app_state.applications.file_retrieval_service.clone();
@@ -220,35 +321,39 @@ pub fn create_api_routes(app_state: &Arc<AppState>) -> Router<Arc<AppState>> {
 
     // Basic folder listing (no caller-flag enrichment needed — flags
     // come from the per-row SQL EXISTS in the listing repo).
-    let folders_basic_router = Router::new()
+    let folders_basic_router = GatedRouter::new()
         .route("/", get(list_root_folders))
-        .route("/{id}/resources", get(list_folder_resources))
+        // Reachable by a public-share VISITOR, per verb: the GET only.
+        .route(
+            "/{id}/resources",
+            get(list_folder_resources).policy(VISITOR),
+        )
         .with_state(folder_service.clone());
 
     // Single-item CRUD emits a FolderDto to the SPA and MUST carry
     // authoritative `is_favorite` / `is_shared` flags. The impls call
     // the `caller_flags` enrichment helper via
     // `state.favorites_service`, so the full `AppState` is required.
-    let folders_crud_router = Router::new()
+    let folders_crud_router = GatedRouter::new()
         .route("/", post(create_folder))
-        .route("/{id}", get(get_folder))
+        .route("/{id}", get(get_folder).policy(VISITOR))
         // Ancestor chain for the shared breadcrumb component — one
         // round-trip vs the pre-2026-07-26 per-segment `getFolder` walk
         // on the /files client. Returns caller-visible parents (walk
         // stops at share/drive-membership boundary) + access_source.
-        .route("/{id}/ancestors", get(get_folder_ancestors))
+        .route("/{id}/ancestors", get(get_folder_ancestors).policy(VISITOR))
         .route("/{id}/upload-preflight", post(upload_preflight))
         .route("/{id}/rename", put(rename_folder))
         .route("/{id}/move", put(move_folder))
         .with_state(app_state.clone());
 
     // Special route for ZIP download that requires AppState instead of just FolderService
-    let folder_zip_router = Router::new()
-        .route("/{id}/download", get(download_folder_zip))
+    let folder_zip_router = GatedRouter::new()
+        .route("/{id}/download", get(download_folder_zip).policy(VISITOR))
         .with_state(app_state.clone());
 
     // Create folder operations that use trash (requires full AppState)
-    let folders_ops_router = Router::new().route("/{id}", delete(delete_folder_with_trash));
+    let folders_ops_router = GatedRouter::new().route("/{id}", delete(delete_folder_with_trash));
 
     // Merge the routers
     let folders_router = folders_basic_router
@@ -257,7 +362,7 @@ pub fn create_api_routes(app_state: &Arc<AppState>) -> Router<Arc<AppState>> {
         .merge(folder_zip_router);
 
     // Create file routes for basic operations and trash-enabled delete
-    let basic_file_router = Router::new()
+    let basic_file_router = GatedRouter::new()
         .route("/", get(list_files_query))
         .route("/upload", post(upload_file_with_thumbnails))
         .route("/by-hash", post(create_file_by_hash))
@@ -266,13 +371,17 @@ pub fn create_api_routes(app_state: &Arc<AppState>) -> Router<Arc<AppState>> {
         .route("/delta/commit", post(delta_commit))
         .route("/delta/download", post(delta_download_chunks))
         .route("/{id}/manifest", get(delta_file_manifest))
-        .route("/{id}", get(download_file))
         .route("/{id}/content", put(replace_file_content))
-        .route(
-            "/{id}/thumbnail/{size}",
-            get(get_thumbnail).put(upload_thumbnail),
-        )
-        .route("/{id}/metadata", get(get_file_metadata))
+        // Visitor-reachable, GET only — the DELETE on this same path
+        // must NOT be, which is why the declaration names the verb.
+        .route("/{id}", get(download_file).policy(VISITOR))
+        // Split rather than chained (`get(..).put(..)`), so the GET can
+        // be visitor-reachable while the PUT is not. Two `route()` calls
+        // on one path with DIFFERENT verbs merge; axum panics only on a
+        // duplicate SAME method.
+        .route("/{id}/thumbnail/{size}", get(get_thumbnail).policy(VISITOR))
+        .route("/{id}/thumbnail/{size}", put(upload_thumbnail))
+        .route("/{id}/metadata", get(get_file_metadata).policy(VISITOR))
         .layer(DefaultBodyLimit::max({
             // Use architecture-appropriate body limit: 10 GB on 64-bit, 1 GB on 32-bit
             #[cfg(target_pointer_width = "64")]
@@ -284,7 +393,7 @@ pub fn create_api_routes(app_state: &Arc<AppState>) -> Router<Arc<AppState>> {
         .with_state(app_state.clone());
 
     // File operations with trash support
-    let file_operations_router = Router::new()
+    let file_operations_router = GatedRouter::new()
         .route("/{id}", delete(delete_file))
         .route("/{id}/move", put(move_file_simple))
         .route("/{id}/rename", put(rename_file));
@@ -308,43 +417,59 @@ pub fn create_api_routes(app_state: &Arc<AppState>) -> Router<Arc<AppState>> {
     if app_state.core.config.features.enable_recent_changes {
         use crate::interfaces::api::handlers::recent_changes_handler;
         files_router = files_router.merge(
-            Router::new()
+            GatedRouter::new()
                 .route(
                     "/recent-changes",
-                    get(recent_changes_handler::list_recent_changes),
+                    // Internal users only: a feed of colleagues' activity
+                    // aggregates more than a guest's invitation implied.
+                    get(recent_changes_handler::list_recent_changes)
+                        .policy([Condition::role(MinRole::Internal)]),
                 )
-                .with_state(app_state.clone())
-                .layer(axum::middleware::from_fn_with_state(
-                    app_state.clone(),
-                    require_internal_user_layer,
-                )),
+                .with_state(app_state.clone()),
         );
     }
 
     // Create routes for batch operations
-    let batch_router = Router::new()
+    let batch_router = GatedRouter::new()
         // File operations
         .route("/files/move", post(batch_handler::move_files_batch))
         .route("/files/copy", post(batch_handler::copy_files_batch))
         .route("/files/delete", post(batch_handler::delete_files_batch))
-        .route("/files/get", post(batch_handler::get_files_batch))
+        .route(
+            "/files/get",
+            // A READ posted for its body: the id list does not fit a query
+            // string. `scope_by_verb` would demand `files:rw` and lock a
+            // read-only credential out of a read.
+            post(batch_handler::get_files_batch)
+                .policy([Condition::scope(Scope::Files, Access::ReadOnly)]),
+        )
         // Folder operations
         .route("/folders/delete", post(batch_handler::delete_folders_batch))
         .route("/folders/create", post(batch_handler::create_folders_batch))
-        .route("/folders/get", post(batch_handler::get_folders_batch))
+        .route(
+            "/folders/get",
+            post(batch_handler::get_folders_batch)
+                .policy([Condition::scope(Scope::Files, Access::ReadOnly)]),
+        )
         .route("/folders/copy", post(batch_handler::copy_folders_batch))
         .route("/folders/move", post(batch_handler::move_folders_batch))
         // Trash operations (soft delete)
         .route("/trash", post(batch_handler::trash_batch))
         // Download as ZIP
-        .route("/download", post(batch_handler::download_batch_post))
+        .route(
+            "/download",
+            // A READ posted for its body — the id list does not fit a
+            // query string. The GET twin below needs no override.
+            post(batch_handler::download_batch_post)
+                .policy([Condition::scope(Scope::Files, Access::ReadOnly)]),
+        )
         // work arround for drag & drop (does not support POST requests)
         .route("/download", get(batch_handler::download_batch_querystring))
         .with_state(batch_handler_state);
 
     // Create search routes if the service is available
     let search_router = if search_service.is_some() {
-        Router::new()
+        GatedRouter::new()
             // Simple search with query parameters
             // Cursor-paginated search with the `/*/resources` envelope
             // (items + next_cursor + meta). `POST /search/advanced` was
@@ -361,7 +486,7 @@ pub fn create_api_routes(app_state: &Arc<AppState>) -> Router<Arc<AppState>> {
             // intent. AuthZ audit #14 (2026-07-16).
             .with_state(app_state.clone())
     } else {
-        Router::new()
+        GatedRouter::new()
     };
 
     // Direct handler implementations for sharing, without depending on ShareHandler
@@ -370,7 +495,7 @@ pub fn create_api_routes(app_state: &Arc<AppState>) -> Router<Arc<AppState>> {
     let share_router = if let Some(share_service) = share_service.clone() {
         use crate::interfaces::api::handlers::share_handler;
 
-        Router::new()
+        GatedRouter::new()
             .route("/", post(share_handler::create_shared_link))
             .route("/", get(share_handler::get_user_shares))
             .route("/{id}", get(share_handler::get_shared_link))
@@ -378,7 +503,7 @@ pub fn create_api_routes(app_state: &Arc<AppState>) -> Router<Arc<AppState>> {
             .route("/{id}", delete(share_handler::delete_shared_link))
             .with_state(share_service.clone())
     } else {
-        Router::new()
+        GatedRouter::new()
     };
 
     // Create routes for ReBAC grants (/api/grants).
@@ -387,7 +512,7 @@ pub fn create_api_routes(app_state: &Arc<AppState>) -> Router<Arc<AppState>> {
     // State<Arc<PgAclEngine>> via the FromRef impl in di.rs.
     let grants_router = {
         use crate::interfaces::api::handlers::grant_handler;
-        Router::new()
+        GatedRouter::new()
             .route("/", post(grant_handler::create_grant))
             .route("/", get(grant_handler::list_on_resource))
             .route("/{id}", delete(grant_handler::revoke_grant))
@@ -408,7 +533,7 @@ pub fn create_api_routes(app_state: &Arc<AppState>) -> Router<Arc<AppState>> {
     let favorites_router = if let Some(favorites_service) = favorites_service.clone() {
         use crate::interfaces::api::handlers::favorites_handler::{self, list_favorites_resources};
 
-        Router::new()
+        GatedRouter::new()
             .route("/resources", get(list_favorites_resources))
             .route("/batch", post(favorites_handler::batch_add_favorites))
             .route(
@@ -421,14 +546,14 @@ pub fn create_api_routes(app_state: &Arc<AppState>) -> Router<Arc<AppState>> {
             )
             .with_state(favorites_service.clone())
     } else {
-        Router::new()
+        GatedRouter::new()
     };
 
     // Create routes for recent items if the service is available
     let recent_router = if let Some(recent_service) = recent_service.clone() {
         use crate::interfaces::api::handlers::recent_handler;
 
-        Router::new()
+        GatedRouter::new()
             .route("/resources", get(recent_handler::list_recent_resources))
             .route(
                 "/{item_type}/{item_id}",
@@ -441,7 +566,7 @@ pub fn create_api_routes(app_state: &Arc<AppState>) -> Router<Arc<AppState>> {
             .route("/clear", delete(recent_handler::clear_recent_items))
             .with_state(recent_service.clone())
     } else {
-        Router::new()
+        GatedRouter::new()
     };
 
     // Notifications bell (Slice E). Mounted only when the service is
@@ -452,7 +577,7 @@ pub fn create_api_routes(app_state: &Arc<AppState>) -> Router<Arc<AppState>> {
     // for admin mounts.
     let notifications_router = if let Some(ref svc) = notification_service {
         use crate::interfaces::api::handlers::notifications_handler;
-        Router::new()
+        GatedRouter::new()
             .route("/", get(notifications_handler::list_notifications))
             .route("/unread", get(notifications_handler::unread_count))
             .route("/read-all", post(notifications_handler::mark_all_read))
@@ -460,7 +585,7 @@ pub fn create_api_routes(app_state: &Arc<AppState>) -> Router<Arc<AppState>> {
             .route("/{id}", delete(notifications_handler::delete_notification))
             .with_state(svc.clone())
     } else {
-        Router::new()
+        GatedRouter::new()
     };
 
     // Create routes for chunked uploads (large files >10MB).
@@ -473,7 +598,7 @@ pub fn create_api_routes(app_state: &Arc<AppState>) -> Router<Arc<AppState>> {
     // The route registration itself has to keep referencing them until the
     // clients migrate off, so we suppress the local `deprecated` lint here.
     #[allow(deprecated)]
-    let chunked_upload_router = Router::new()
+    let chunked_upload_router = GatedRouter::new()
         .route("/", post(create_upload))
         .route("/{upload_id}", axum::routing::patch(upload_chunk))
         .route("/{upload_id}", axum::routing::head(get_upload_status))
@@ -485,9 +610,14 @@ pub fn create_api_routes(app_state: &Arc<AppState>) -> Router<Arc<AppState>> {
     // All handlers are free functions — see dedup_handler.rs for why
     // #[utoipa::path] cannot be applied to DedupHandler impl methods directly.
     use super::handlers::dedup_handler::{check_hash, check_hashes_batch, get_blob};
-    let dedup_router = Router::new()
+    let dedup_router = GatedRouter::new()
         .route("/check/{hash}", get(check_hash))
-        .route("/check-batch", post(check_hashes_batch))
+        .route(
+            "/check-batch",
+            // Asks which hashes the server already has — a read, posted
+            // because the hash list is a body.
+            post(check_hashes_batch).policy([Condition::scope(Scope::Files, Access::ReadOnly)]),
+        )
         .route("/blob/{hash}", get(get_blob))
         // NOTE: `remove_reference` is intentionally NOT exposed as a
         // public endpoint — ref_count management is an internal concern
@@ -502,18 +632,18 @@ pub fn create_api_routes(app_state: &Arc<AppState>) -> Router<Arc<AppState>> {
         // See §9b of `docs/plan/photos-resources-migration.md`.
         .with_state(app_state.clone());
 
-    let mut router = Router::new()
-        .nest("/folders", folders_router)
-        .nest("/files", files_router)
-        .nest("/uploads", chunked_upload_router)
-        .nest("/dedup", dedup_router)
-        .nest("/batch", batch_router)
-        .nest("/search", search_router)
-        .nest("/shares", share_router)
-        .nest("/grants", grants_router)
-        .nest("/favorites", favorites_router)
-        .nest("/recent", recent_router)
-        .nest("/notifications", notifications_router);
+    let mut router = GatedRouter::<Arc<AppState>>::new()
+        .nest("/folders", folders_router.policy(FILES))
+        .nest("/files", files_router.policy(FILES))
+        .nest("/uploads", chunked_upload_router.policy(FILES))
+        .nest("/dedup", dedup_router.policy(FILES))
+        .nest("/batch", batch_router.policy(FILES))
+        .nest("/search", search_router.policy(SCOPELESS))
+        .nest("/shares", share_router.policy(SHARING))
+        .nest("/grants", grants_router.policy(SHARING))
+        .nest("/favorites", favorites_router.policy(FILES))
+        .nest("/recent", recent_router.policy(FILES))
+        .nest("/notifications", notifications_router.policy(ACCOUNT));
 
     // Photos timeline endpoint — lists all image/video files sorted by capture date.
     // Top-level gate on `features.enable_photos`: when the operator sets
@@ -526,13 +656,13 @@ pub fn create_api_routes(app_state: &Arc<AppState>) -> Router<Arc<AppState>> {
         use crate::interfaces::api::handlers::photos_handler;
 
         let mut photos_router =
-            Router::new().route("/resources", get(photos_handler::list_photos_resources));
+            GatedRouter::new().route("/resources", get(photos_handler::list_photos_resources));
         if app_state.places_service.is_some() {
             photos_router = photos_router.route("/geo", get(photos_handler::list_photos_geo));
         }
         let photos_router = photos_router.with_state(app_state.clone());
 
-        router = router.nest("/photos", photos_router);
+        router = router.nest("/photos", photos_router.policy(FILES));
     }
 
     // Drives — every drive the caller can read. D0 ships the read-only
@@ -540,11 +670,9 @@ pub fn create_api_routes(app_state: &Arc<AppState>) -> Router<Arc<AppState>> {
     {
         use crate::interfaces::api::handlers::drive_handler;
 
-        let drives_router = Router::new()
-            .route(
-                "/",
-                get(drive_handler::list_drives).post(drive_handler::create_drive),
-            )
+        let drives_router = GatedRouter::new()
+            .route("/", get(drive_handler::list_drives))
+            .route("/", post(drive_handler::create_drive))
             .route("/{id}", axum::routing::delete(drive_handler::delete_drive))
             .route(
                 "/{id}/policies",
@@ -553,23 +681,35 @@ pub fn create_api_routes(app_state: &Arc<AppState>) -> Router<Arc<AppState>> {
             .route("/{id}/quota", patch(drive_handler::update_drive_quota))
             .route(
                 "/{id}/members",
-                get(drive_handler::list_drive_members).post(drive_handler::add_drive_member),
+                // Drive membership is a GRANT to another user, so `sharing`
+                // rather than the `files` of its parent prefix — the split is
+                // by OPERATION, not by collection.
+                get(drive_handler::list_drive_members)
+                    .policy([Condition::scope_by_verb(Scope::Sharing)]),
+            )
+            .route(
+                "/{id}/members",
+                post(drive_handler::add_drive_member)
+                    .policy([Condition::scope_by_verb(Scope::Sharing)]),
             )
             .route(
                 "/{id}/members/{kind}/{sid}",
-                patch(drive_handler::update_drive_member)
-                    .delete(drive_handler::remove_drive_member),
+                patch(drive_handler::update_drive_member),
+            )
+            .route(
+                "/{id}/members/{kind}/{sid}",
+                delete(drive_handler::remove_drive_member),
             )
             .with_state(app_state.clone());
 
-        router = router.nest("/drives", drives_router);
+        router = router.nest("/drives", drives_router.policy(FILES));
     }
 
     // People (faces) routes — mounted only when OXICLOUD_ENABLE_FACES is on.
     if app_state.people_service.is_some() {
         use crate::interfaces::api::handlers::people_handler;
 
-        let people_router = Router::new()
+        let people_router = GatedRouter::new()
             .route("/", get(people_handler::list_people))
             .route("/merge", post(people_handler::merge_people))
             .route("/recluster", post(people_handler::recluster))
@@ -579,14 +719,14 @@ pub fn create_api_routes(app_state: &Arc<AppState>) -> Router<Arc<AppState>> {
             .route("/{id}/photos", get(people_handler::person_photos))
             .with_state(app_state.clone());
 
-        router = router.nest("/people", people_router);
+        router = router.nest("/people", people_router.policy(FACES));
     }
 
     // Re-enable trash routes to make the trash view work
     if let Some(_trash_service_ref) = trash_service.clone() {
         tracing::info!("Setting up trash routes for trash view");
 
-        let trash_router = Router::new()
+        let trash_router = GatedRouter::new()
             // Literal paths first — order matters for axum overlap handling
             // when a wildcard like /{id} could otherwise capture them.
             .route("/resources", get(trash_handler::get_trash_resources))
@@ -604,7 +744,7 @@ pub fn create_api_routes(app_state: &Arc<AppState>) -> Router<Arc<AppState>> {
             .route("/{id}", delete(trash_handler::delete_permanently))
             .with_state(app_state.clone());
 
-        router = router.nest("/trash", trash_router);
+        router = router.nest("/trash", trash_router.policy(FILES));
     } else {
         tracing::warn!("Trash service not available - trash view will not work");
     }
@@ -627,15 +767,16 @@ pub fn create_api_routes(app_state: &Arc<AppState>) -> Router<Arc<AppState>> {
         // holds no handle that can resolve a user, so the router is
         // where this costs nothing. A service-layer gate is the better
         // home the day `MusicService` grows a user port.
-        let music_create = Router::new()
-            .route("/", post(music_handler::create_playlist))
-            .with_state(music_svc.clone())
-            .layer(axum::middleware::from_fn_with_state(
-                app_state.clone(),
-                require_internal_user_layer,
-            ));
-
-        let music_router = Router::new()
+        let music_router = GatedRouter::new()
+            // Creating a playlist is internal-only: the service seeds the
+            // caller an Owner grant and has no user port to gate on. The
+            // LIST on this same path stays open, which is why the
+            // declaration names the verb — and why `POST /` no longer
+            // needs a router of its own just to carry a layer.
+            .route(
+                "/",
+                post(music_handler::create_playlist).policy([Condition::role(MinRole::Internal)]),
+            )
             .route("/", get(music_handler::list_playlists))
             .route("/{playlist_id}", get(music_handler::get_playlist))
             .route("/{playlist_id}", put(music_handler::update_playlist))
@@ -653,23 +794,31 @@ pub fn create_api_routes(app_state: &Arc<AppState>) -> Router<Arc<AppState>> {
                 axum::routing::delete(music_handler::remove_track),
             )
             .route("/{playlist_id}/reorder", put(music_handler::reorder_tracks))
-            .route("/{playlist_id}/share", post(music_handler::share_playlist))
+            .route(
+                "/{playlist_id}/share",
+                // Sharing a playlist creates a GRANT to another user, so
+                // `sharing` rather than the `files` of its prefix. Ed plans
+                // album sharing too; it follows the same rule.
+                post(music_handler::share_playlist)
+                    .policy([Condition::scope_by_verb(Scope::Sharing)]),
+            )
             .route(
                 "/{playlist_id}/share/{user_id}",
-                axum::routing::delete(music_handler::remove_share),
+                delete(music_handler::remove_share)
+                    .policy([Condition::scope_by_verb(Scope::Sharing)]),
             )
             .route(
                 "/{playlist_id}/shares",
-                get(music_handler::get_playlist_shares),
+                get(music_handler::get_playlist_shares)
+                    .policy([Condition::scope_by_verb(Scope::Sharing)]),
             )
             .route(
                 "/audio-metadata/{file_id}",
                 get(music_handler::get_audio_metadata),
             )
-            .with_state(music_svc.clone())
-            .merge(music_create);
+            .with_state(music_svc.clone());
 
-        router = router.nest("/playlists", music_router);
+        router = router.nest("/playlists", music_router.policy(FILES));
         tracing::info!("Music routes initialized");
     }
 
@@ -712,54 +861,66 @@ pub fn create_api_routes(app_state: &Arc<AppState>) -> Router<Arc<AppState>> {
         // "OxiCloud Users" book from them). Gating the nest would make
         // that branch dead code and cut guests off from books shared
         // with them.
-        let contacts_create = Router::new()
-            .route("/", post(contacts_handler::create_address_book))
-            .with_state(contacts_state.clone())
-            .layer(axum::middleware::from_fn_with_state(
-                app_state.clone(),
-                require_internal_user_layer,
-            ));
-
-        let contacts_router = Router::new()
-            .route("/", get(contacts_handler::list_address_books))
+        let contacts_router = GatedRouter::new()
+            // Creating an address book is internal-only. LISTING stays
+            // open: `list_address_books` deliberately handles an external
+            // caller, hiding the system "OxiCloud Users" book from them,
+            // and gating the path would make that branch dead code and
+            // cut guests off from books shared with them.
             .route(
-                "/{book_id}",
-                put(contacts_handler::update_address_book)
-                    .delete(contacts_handler::delete_address_book),
+                "/",
+                post(contacts_handler::create_address_book)
+                    .policy([Condition::role(MinRole::Internal)]),
             )
+            .route("/", get(contacts_handler::list_address_books))
+            .route("/{book_id}", put(contacts_handler::update_address_book))
+            .route("/{book_id}", delete(contacts_handler::delete_address_book))
+            .route("/{book_id}/contacts", get(contacts_handler::list_contacts))
             .route(
                 "/{book_id}/contacts",
-                get(contacts_handler::list_contacts).post(contacts_handler::create_contact),
+                post(contacts_handler::create_contact),
             )
             .route(
                 "/{book_id}/contacts/{contact_id}",
-                get(contacts_handler::get_contact)
-                    .put(contacts_handler::update_contact)
-                    .delete(contacts_handler::delete_contact),
+                get(contacts_handler::get_contact),
             )
             .route(
-                "/{book_id}/groups",
-                get(contacts_handler::list_groups).post(contacts_handler::create_group),
+                "/{book_id}/contacts/{contact_id}",
+                put(contacts_handler::update_contact),
+            )
+            .route(
+                "/{book_id}/contacts/{contact_id}",
+                delete(contacts_handler::delete_contact),
+            )
+            .route("/{book_id}/groups", get(contacts_handler::list_groups))
+            .route("/{book_id}/groups", post(contacts_handler::create_group))
+            .route(
+                "/{book_id}/groups/{group_id}",
+                get(contacts_handler::get_group),
             )
             .route(
                 "/{book_id}/groups/{group_id}",
-                get(contacts_handler::get_group)
-                    .put(contacts_handler::update_group)
-                    .delete(contacts_handler::delete_group),
+                put(contacts_handler::update_group),
+            )
+            .route(
+                "/{book_id}/groups/{group_id}",
+                delete(contacts_handler::delete_group),
             )
             .route(
                 "/{book_id}/groups/{group_id}/contacts",
-                get(contacts_handler::list_contacts_in_group)
-                    .post(contacts_handler::add_contact_to_group),
+                get(contacts_handler::list_contacts_in_group),
+            )
+            .route(
+                "/{book_id}/groups/{group_id}/contacts",
+                post(contacts_handler::add_contact_to_group),
             )
             .route(
                 "/{book_id}/groups/{group_id}/contacts/{contact_id}",
                 delete(contacts_handler::remove_contact_from_group),
             )
-            .with_state(contacts_state)
-            .merge(contacts_create);
+            .with_state(contacts_state);
 
-        router = router.nest("/address-books", contacts_router);
+        router = router.nest("/address-books", contacts_router.policy(CONTACTS));
         tracing::info!("Contacts REST API routes initialized");
     }
 
@@ -778,26 +939,27 @@ pub fn create_api_routes(app_state: &Arc<AppState>) -> Router<Arc<AppState>> {
     {
         use crate::interfaces::api::handlers::calendar_handler::{self, CalendarApiState};
 
-        let calendar_router = Router::new()
-            .route(
-                "/",
-                get(calendar_handler::list_calendars).post(calendar_handler::create_calendar),
-            )
-            .route(
-                "/{calendar_id}",
-                put(calendar_handler::update_calendar).delete(calendar_handler::delete_calendar),
-            )
+        let calendar_router = GatedRouter::new()
+            .route("/", get(calendar_handler::list_calendars))
+            .route("/", post(calendar_handler::create_calendar))
+            .route("/{calendar_id}", put(calendar_handler::update_calendar))
+            .route("/{calendar_id}", delete(calendar_handler::delete_calendar))
+            .route("/{calendar_id}/events", get(calendar_handler::list_events))
             .route(
                 "/{calendar_id}/events",
-                get(calendar_handler::list_events).post(calendar_handler::create_event),
+                post(calendar_handler::create_event),
             )
             .route(
                 "/{calendar_id}/events/{event_id}",
-                put(calendar_handler::update_event).delete(calendar_handler::delete_event),
+                put(calendar_handler::update_event),
+            )
+            .route(
+                "/{calendar_id}/events/{event_id}",
+                delete(calendar_handler::delete_event),
             )
             .with_state(CalendarApiState { calendar_service });
 
-        router = router.nest("/calendars", calendar_router);
+        router = router.nest("/calendars", calendar_router.policy(CALENDAR));
         tracing::info!("Calendar REST API routes initialized");
     }
 
@@ -808,19 +970,33 @@ pub fn create_api_routes(app_state: &Arc<AppState>) -> Router<Arc<AppState>> {
     // in main.rs for protocol compliance, NOT under /api.
 
     // Admin settings routes — the whole subtree is admin-only by
-    // construction. The `require_admin` layer runs AFTER the outer
-    // `auth_middleware` (main.rs::protected_api), so it can rely on
-    // `CurrentUser` already being in the request extensions. Any new
-    // route added to `admin_handler::admin_routes()` inherits the
-    // gate automatically — implementors no longer have to remember
-    // to call `require_admin(&state, &headers).await?` inline, and a
-    // forgotten call can't silently expose a non-admin surface.
-    let admin_router = admin_handler::admin_routes(app_state)
-        .layer(axum::middleware::from_fn(
-            crate::interfaces::middleware::auth::require_admin,
-        ))
-        .with_state(app_state.clone());
-    router = router.nest("/admin", admin_router);
+    // construction, declared once on the nest. Any route added to
+    // `admin_handler::admin_routes()` inherits it, so an implementor
+    // cannot forget a gate and silently expose a non-admin surface.
+    //
+    // The `require_admin` layer that used to sit here is GONE (PR 1 step
+    // 4-xi): the declaration below is the gate, and the policy gate
+    // evaluates it — applied once in `main.rs` to the whole protected
+    // subtree, which `route_layer` carries into this nest.
+    //
+    // `/api/admin/transfer-ownership` tightens to Owner, which
+    // `require_admin` could not express at all; that refusal lives in the
+    // service until `admin_routes()` can declare per verb.
+    let admin_router = admin_handler::admin_routes(app_state).with_state(app_state.clone());
+    router = router.nest(
+        "/admin",
+        // Both axes in one slice: a repeated AXIS is the boot error, two
+        // different axes are the normal case.
+        //
+        // The scope matters independently of the role. `MinRole::Admin`
+        // reads the USER row, so an admin's app password carries the admin
+        // role — without `Scope::Admin`, a credential created for DAVx⁵
+        // could administer the instance, and no ceiling would stop it.
+        admin_router.policy([
+            Condition::role(MinRole::Admin),
+            Condition::scope_by_verb(Scope::Admin),
+        ]),
+    );
 
     // ReBAC subject-group management. All mutating routes are admin-gated;
     // /api/groups/search is authenticated-only so the share dialog can list
@@ -828,14 +1004,27 @@ pub fn create_api_routes(app_state: &Arc<AppState>) -> Router<Arc<AppState>> {
     let group_router =
         crate::interfaces::api::handlers::subject_group_handler::subject_group_routes()
             .with_state(app_state.clone());
-    router = router.nest("/groups", group_router);
+    router = router.nest(
+        "/groups",
+        // NO prefix declaration, deliberately. This subtree is MIXED:
+        // the group CRUD is the `admin` control surface, but
+        // `/api/groups/search` is recipient lookup for the share picker,
+        // which an ordinary user does. Because a leaf APPENDS and can
+        // never shed what a prefix imposed, declaring `admin` here would
+        // make the share picker require admin scope — it did, and the
+        // spec showed `search` as `["admin:ro","sharing:ro"]`.
+        //
+        // A mixed subtree declares per route. See
+        // `docs/architecture/authorization-axes.md` § Scope APPENDS.
+        group_router,
+    );
 
     // Per-user profile lookup `/api/users/{id}` — authenticated only,
     // throttled by a per-caller limiter inside the handler. External
     // callers are 403'd in the service layer.
     let users_router = crate::interfaces::api::handlers::users_handler::user_routes()
         .with_state(app_state.clone());
-    router = router.nest("/users", users_router);
+    router = router.nest("/users", users_router.policy(SHARING));
 
     // Message bus — ticket issuance (`POST /api/rt/ticket`). Stays in
     // the protected router (auth + DPoP), so the caller proves session
@@ -848,8 +1037,22 @@ pub fn create_api_routes(app_state: &Arc<AppState>) -> Router<Arc<AppState>> {
     if app_state.core.config.features.enable_message_bus {
         router = router.route(
             "/rt/ticket",
+            // SCOPELESS, declared explicitly. Minting a ticket is not
+            // itself an access to anything: the ticket carries the
+            // caller's OWN scope set, and the socket it opens is bounded
+            // by that set topic by topic. Requiring an area here would
+            // mean a narrow credential could not open a socket at all,
+            // rather than opening one that can reach less.
+            //
+            // It was undeclared until this landed, which made it
+            // `ScopeReq::Undefined` — permissive today only because
+            // `Undefined` and `None` still behave alike at runtime, and
+            // invisible to the generation check because this route is
+            // feature-gated out of the OpenAPI spec. Exactly the blind
+            // spot `authz.scope_undeclared` exists to shout about.
             post(crate::interfaces::api::handlers::rt_ticket_handler::issue_rt_ticket)
-                .with_state(app_state.clone()),
+                .with_state(app_state.clone())
+                .policy([Condition::scopeless()]),
         );
     }
 
@@ -871,7 +1074,12 @@ pub fn create_api_routes(app_state: &Arc<AppState>) -> Router<Arc<AppState>> {
     // `handlers/server_status_handler.rs`.
     router = router.route(
         "/status",
+        // Scopeless: an operational probe reports on the SERVER, not on
+        // any data area of the caller's, so there is nothing for a scope
+        // to withhold. Authenticated, though — § Deliberately scopeless
+        // distinguishes "needs no area" from "needs no credential".
         get(crate::interfaces::api::handlers::server_status_handler::get_server_status)
+            .policy(SCOPELESS)
             .with_state(app_state.clone()),
     );
 
@@ -914,4 +1122,96 @@ async fn api_not_found() -> Response {
         .status(StatusCode::NOT_FOUND)
         .body(Body::empty())
         .unwrap()
+}
+
+/// Every sub-router that lives under `/api`, straight from its
+/// constructor and before any middleware.
+///
+/// It exists so the PREFIXES have exactly one home (`main_api_router`)
+/// and the CONSTRUCTORS have exactly one home (here). Three separate
+/// bugs came from a second place assembling the registry: the server and
+/// the spec generator then saw different tables, and the generator marked
+/// nothing. Both now call the same two functions, so they cannot drift —
+/// the duplication is not policed, it is gone.
+///
+/// `main.rs` decorates these fields with the middleware stacks whose
+/// construction needs things only it has — the per-route rate limiters,
+/// and config. The spec generator decorates nothing, which is sound
+/// because a layer cannot change a DECLARATION: `.layer()` on a
+/// `GatedRouter` passes the registry through untouched.
+pub struct ApiSubRouters {
+    pub login: GatedRouter<Arc<AppState>>,
+    pub register: GatedRouter<Arc<AppState>>,
+    pub refresh: GatedRouter<Arc<AppState>>,
+    pub auth_public: GatedRouter<Arc<AppState>>,
+    pub auth_protected: GatedRouter<Arc<AppState>>,
+    pub app_passwords: GatedRouter<Arc<AppState>>,
+    pub opaque_register: GatedRouter<Arc<AppState>>,
+    pub opaque_login: GatedRouter<Arc<AppState>>,
+    pub opaque_params: GatedRouter<Arc<AppState>>,
+    pub setup: GatedRouter<Arc<AppState>>,
+    pub device_public: GatedRouter<Arc<AppState>>,
+    pub device_protected: GatedRouter<Arc<AppState>>,
+    pub public: GatedRouter<Arc<AppState>>,
+    pub protected: GatedRouter<Arc<AppState>>,
+}
+
+impl ApiSubRouters {
+    /// Undecorated — no middleware, as the spec generator wants them.
+    pub fn new(app_state: &Arc<AppState>) -> Self {
+        use crate::interfaces::api::handlers::{
+            app_password_handler, auth_handler, device_auth_handler, opaque_auth_handler,
+        };
+        Self {
+            login: auth_handler::login_route(),
+            register: auth_handler::register_route(),
+            refresh: auth_handler::refresh_route(),
+            auth_public: auth_handler::auth_public_routes(),
+            auth_protected: auth_handler::auth_protected_routes(),
+            app_passwords: app_password_handler::app_password_routes(),
+            opaque_register: opaque_auth_handler::opaque_register_routes(),
+            opaque_login: opaque_auth_handler::opaque_login_routes(),
+            opaque_params: opaque_auth_handler::opaque_params_routes(),
+            setup: auth_handler::setup_route(),
+            device_public: device_auth_handler::device_auth_public_routes(),
+            device_protected: device_auth_handler::device_auth_protected_routes(),
+            public: create_public_api_routes(app_state),
+            protected: create_api_routes(app_state),
+        }
+    }
+}
+
+/// **The one place every `/api` path is written.** Paths are RELATIVE —
+/// the caller mounts the result at `/api`, and `rebased_under("/api")`
+/// shifts the declarations to match.
+///
+/// Nothing may nest a `/api/…` router anywhere else. A second mount point
+/// is how the registry and the router drift apart: the server would gate
+/// a path the generator never saw, which is a silent hole in the spec and
+/// — before the type guard — could be a silent hole in the gate.
+pub fn main_api_router(subs: ApiSubRouters) -> GatedRouter<Arc<AppState>> {
+    GatedRouter::new()
+        // Rate-limited auth endpoints, then the rest of `/api/auth`.
+        // Several routers nest at the SAME prefix on purpose: axum merges
+        // nests that share a path, and keeping them separate is what lets
+        // each carry its own middleware stack.
+        .nest("/auth", subs.login)
+        .nest("/auth", subs.register)
+        .nest("/auth", subs.refresh)
+        .nest("/auth", subs.auth_public)
+        .nest("/auth", subs.auth_protected)
+        .nest("/auth", subs.app_passwords)
+        // OPAQUE aPAKE — three mounts because the register half needs a
+        // session and the login half must not.
+        .nest("/auth/opaque/register", subs.opaque_register)
+        .nest("/auth/opaque/login", subs.opaque_login)
+        .nest("/auth/opaque", subs.opaque_params)
+        // Device Authorization Grant (RFC 8628): `authorize`/`token` are
+        // public by design, `verify`/`devices` need the session.
+        .nest("/auth/device", subs.device_public)
+        .nest("/auth/device", subs.device_protected)
+        // Mounted AT `/api`, so merged rather than nested.
+        .merge(subs.setup)
+        .merge(subs.public)
+        .merge(subs.protected)
 }

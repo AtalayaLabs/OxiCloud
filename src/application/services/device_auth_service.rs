@@ -8,6 +8,7 @@
 //!   5. `poll` — client polls by device_code; returns tokens or status error
 //!   6. `cleanup_expired` — background job to purge stale entries
 
+use crate::application::ports::scope_ports::CredentialKind;
 use std::sync::Arc;
 
 use crate::application::dtos::device_auth_dto::*;
@@ -120,11 +121,39 @@ impl DeviceAuthService {
         let verification_uri = format!("{}/device", self.base_url.trim_end_matches('/'));
         let verification_uri_complete = format!("{}?code={}", verification_uri, user_code);
 
+        // Narrow at the STORE, not at each response.
+        //
+        // `effective = (requested ?? default) ∩ ceiling`. Doing it here
+        // rather than when answering makes three outputs correct for
+        // free, because they all read the stored row back: the token
+        // response (`DeviceTokenSuccessDto.scope`), the credential list,
+        // and — the one that matters — the CONSENT SCREEN
+        // (`DeviceVerifyInfoDto.scopes`).
+        //
+        // The device flow stores at `authorize`, BEFORE the user
+        // approves. So narrowing here means the user consents to what
+        // will actually be granted. Before this, a client could request
+        // `oxicloud:security:rw`, the screen would show it, the user
+        // would approve it, and the credential would hold it.
+        //
+        // A malformed request is an ERROR, not a narrowing: RFC 6749 §3.3
+        // lets a server ignore part of a scope it does not grant, but a
+        // token it cannot PARSE is a client bug worth reporting.
+        let granted = CredentialKind::DeviceFlow
+            .effective(Some(&req.scope))
+            .map_err(|e| {
+                DomainError::new(
+                    ErrorKind::InvalidInput,
+                    "DeviceCode",
+                    format!("invalid scope: {e}"),
+                )
+            })?;
+
         let dc = DeviceCode::new(
             device_code_token.clone(),
             user_code.clone(),
             req.client_name,
-            req.scope,
+            granted.to_wire(),
             verification_uri.clone(),
             Some(verification_uri_complete.clone()),
             DEVICE_CODE_LIFETIME_SECS,
@@ -261,9 +290,16 @@ impl DeviceAuthService {
             Uuid::new_v4(),
             crate::domain::entities::session::SessionOrigin::Device,
         );
-        let access_token =
-            self.token_service
-                .generate_access_token(user, Some(session.id()), None)?;
+        // The device code's STORED scope set — already narrowed to the
+        // device-flow ceiling at `authorize`, so this freezes into the
+        // token exactly what the user saw and approved on the consent
+        // screen.
+        let access_token = self.token_service.generate_access_token(
+            user,
+            Some(session.id()),
+            None,
+            Some(dc.scopes()),
+        )?;
         self.session_storage.create_session(session).await?;
 
         // Store tokens on the device code entity

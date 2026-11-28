@@ -73,7 +73,7 @@ oxicloud_login
 APP_PASSWORD_RESPONSE=$(curl -s -X POST \
     -H "Authorization: Bearer $TOKEN" \
     -H "Content-Type: application/json" \
-    -d '{"label":"nc-put-blake3-test","scopes":"webdav"}' \
+    -d '{"label":"nc-put-blake3-test","scopes":"oxicloud:files:rw"}' \
     "$base_url/api/auth/app-passwords")
 APP_PASSWORD=$(jq -r '.password' <<<"$APP_PASSWORD_RESPONSE")
 APP_PASSWORD_ID=$(jq -r '.id' <<<"$APP_PASSWORD_RESPONSE")

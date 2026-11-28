@@ -12,15 +12,32 @@ use utoipa::ToSchema;
 pub struct CreateAppPasswordRequestDto {
     /// Human-readable label (e.g. "DAVx5 on Pixel 8")
     pub label: String,
-    /// Comma-separated scopes (defaults to all DAV protocols)
+    /// Scopes, space- or comma-separated (e.g. `oxicloud:files:rw`).
+    /// Omitted means the default set: files, calendar and contacts at
+    /// `:rw`, plus `sharing:ro`.
     #[serde(default = "default_scopes")]
     pub scopes: String,
     /// Optional expiration in days (None = never expires)
     pub expires_in_days: Option<u32>,
 }
 
+/// The default scope set, matching the column default in
+/// `20261126000000_credential_scopes_to_areas.sql`.
+///
+/// The two MUST agree: a request omitting `scope` falls back to this, and
+/// a row inserted without the column falls back to the SQL default. If
+/// they diverge, the same credential gets different scopes depending on
+/// which path created it.
+///
+/// Area vocabulary, `oxicloud:`-prefixed — see § Wire format on why these
+/// values live in the OAuth scope namespace and must not collide with
+/// OIDC's reserved names.
+///
+/// No `account`: avatars are the only profile-shaped thing a sync client
+/// fetches, and they are SCOPELESS — keyed by `{user}`, serving initials
+/// for any name, so they enumerate nothing.
 fn default_scopes() -> String {
-    "webdav,caldav,carddav".to_string()
+    "oxicloud:files:rw,oxicloud:calendar:rw,oxicloud:contacts:rw,oxicloud:sharing:ro".to_string()
 }
 
 // ============================================================================

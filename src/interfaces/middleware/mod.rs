@@ -1,9 +1,9 @@
 pub mod admin;
-pub mod anonymous_allowlist;
 pub mod auth;
 pub mod csrf;
 pub mod dpop;
 pub mod locale;
+pub mod policy;
 pub mod rate_limit;
 pub mod security_headers;
 pub mod server_status;

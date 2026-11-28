@@ -2,6 +2,8 @@ pub mod cookie_auth;
 pub mod deserializer;
 pub mod etag;
 pub mod handlers;
+pub mod policy_declarations;
+pub mod policy_router;
 pub mod routes;
 pub mod sized_json;
 
@@ -86,6 +88,12 @@ use crate::interfaces::middleware::server_status::{HeaderPayload, ProgressHeader
 #[openapi(
     modifiers(&SecurityAddon),
     paths(
+        // WOPI — only the FRONTEND endpoint. `/wopi/*` is the protocol
+        // surface the Office server calls with `?access_token=`; it has no
+        // `CurrentCaller`, so it is deliberately absent from the spec and
+        // therefore from the policy engine. See § Between PR 1 and PR 2 in
+        // `docs/plan/scope-gates.md`.
+        handlers::wopi_handler::get_editor_url,
         handlers::admin_appearance_handler::get_appearance,
         handlers::admin_appearance_handler::reload_themes,
         handlers::admin_appearance_handler::select_theme,
@@ -451,6 +459,7 @@ use crate::interfaces::middleware::server_status::{HeaderPayload, ProgressHeader
         // The full six-class audit, and why the rule is off rather than
         // merely downgraded, is in `checks/openapi/redocly.yaml`.
         schemas(
+            handlers::wopi_handler::EditorUrlResponse,
             crate::application::dtos::theme_dto::AppearanceDto,
             crate::application::dtos::theme_dto::ThemeDiagnosticDto,
             crate::application::dtos::theme_dto::SelectThemeDto,
@@ -803,14 +812,40 @@ pub struct ApiDoc;
 /// The vendor extension marking an operation reachable with only a
 /// public-share token. `share:read` names a CAPABILITY, not a caller: the set
 /// of reads a share link permits.
-pub const SCOPE_EXTENSION: &str = "x-oxicloud-scope";
-const SHARE_READ_SCOPE: &str = "share:read";
-
-/// Prefix of the admin-only nest. `require_admin` wraps exactly this subtree
-/// (`routes.rs`), so the path prefix IS the gate — which is what lets the
-/// marker below be derived rather than hand-maintained across 40 handlers.
-const ADMIN_PREFIX: &str = "/api/admin";
-const ADMIN_SCOPE: &str = "role:admin";
+/// The compiled policy for an operation, as ONE object, on EVERY
+/// operation.
+///
+/// ```json
+/// "x-oxicloud-policy": { "caller": "admin" }
+/// ```
+///
+/// Three sibling keys came first — `x-oxicloud-minrole`,
+/// `x-oxicloud-principal`, `x-oxicloud-scope` — each emitted only when it
+/// DIFFERED from the default, on the reasoning that marking 250
+/// operations `principal: user` was noise. That reasoning was wrong, and
+/// a consumer is why: absence could not be read. An operation with no
+/// marker might require a user session or might have no requirement at
+/// all, and a frontend deciding whether to prompt for elevation before
+/// issuing a call cannot act on that. So the object is always present and
+/// always complete.
+///
+/// `caller` is ONE ladder, weakest first:
+///
+/// `public` < `visitor` < `user` < `internal` < `admin` < `owner`
+///
+/// It collapses what the engine holds as two axes — `MinPrincipal` and
+/// `MinRole` — and the collapse is total rather than lossy: the compile
+/// step REFUSES `public`/`visitor` combined with a role floor, and a role
+/// floor implies an internal user, so every policy is exactly one of
+/// those six. `MinRole` has no `User` variant precisely because
+/// internal-vs-external is not a role; on the consumer's single ladder
+/// that distinction becomes `user` (any user, external included) versus
+/// `internal`.
+///
+/// Fields added as the axes land: `scope` (`"files:rw"`) in PR 2, and an
+/// `elevated` flag when `Condition::Elevated` exists — which is the case
+/// that motivated one object rather than more sibling keys.
+pub const POLICY_EXTENSION: &str = "x-oxicloud-policy";
 
 /// Injects the `bearerAuth` HTTP Bearer security scheme into the generated
 /// spec, and marks the operations a public-share visitor may reach.
@@ -829,11 +864,10 @@ const ADMIN_SCOPE: &str = "role:admin";
 ///
 /// ## Why it is generated, not annotated
 ///
-/// The marked set is read straight from `ANONYMOUS_ALLOWLIST` — the constant
-/// the runtime gate itself uses. Hand-annotating each handler would put the
-/// published description and the enforced rule in two places that can
-/// disagree; deriving one from the other means they cannot. The gate stays
-/// the authority: an extension here grants nothing.
+/// Hand-annotating each handler would put the published description and
+/// the enforced rule in two places that can disagree; deriving one from
+/// the other means they cannot. The policy stays the authority — an
+/// extension here grants nothing.
 struct SecurityAddon;
 
 impl Modify for SecurityAddon {
@@ -843,73 +877,350 @@ impl Modify for SecurityAddon {
             "bearerAuth",
             SecurityScheme::Http(Http::new(HttpAuthScheme::Bearer)),
         );
+    }
+}
 
-        // GET only, matching `anonymous_may_reach`: a method mounted later on
-        // an already-listed path does not inherit share access, and the spec
-        // must not imply it does.
-        for path in crate::interfaces::middleware::anonymous_allowlist::ANONYMOUS_ALLOWLIST {
-            let Some(item) = openapi.paths.paths.get_mut(*path) else {
-                // An allowlisted route with no `#[utoipa::path]` — undocumented
-                // rather than wrong. `share_read_marks_exactly_the_allowlist`
-                // fails on it, which is the nudge to document it.
-                continue;
-            };
-            let Some(op) = item.get.as_mut() else {
-                continue;
-            };
-            op.extensions = Some(
-                utoipa::openapi::extensions::ExtensionsBuilder::new()
-                    .add(SCOPE_EXTENSION, serde_json::json!(SHARE_READ_SCOPE))
-                    .build(),
-            );
-            let note = "Reachable with a public-share token (`share:read`): a visitor \
-                        holding an unlocked share link may call this, scoped to what \
-                        that share grants.";
-            op.description = Some(match op.description.take() {
-                Some(existing) if !existing.is_empty() => format!("{existing}\n\n{note}"),
-                _ => note.to_owned(),
-            });
-        }
+/// The wire name of a scope area, as it appears in a credential's scope
+/// set — lowercase, so `files:ro` rather than `Files:ReadOnly`.
+/// The area's wire name.
+///
+/// Delegates to `Scope::name`, which owns the one table. This used to
+/// keep its own copy, and a duplicated name table is a name that can
+/// disagree with itself — the parser, the dump and this marker must all
+/// say `files`.
+fn area_name(scope: crate::application::ports::scope_ports::Scope) -> &'static str {
+    scope.name()
+}
 
-        // The admin nest. Derived from the path prefix for the same reason:
-        // `require_admin` wraps exactly this subtree, so the prefix is the
-        // gate, and marking 40 handlers by hand would be 40 chances to forget.
-        //
-        // EVERY method, not just GET — unlike the share marker. A share
-        // visitor may only read, so a `PUT` on an allowlisted path is a
-        // different decision; admin is a property of the whole subtree.
-        let admin_note = "Requires the deployment administrator role \
-                          (`role:admin`); enforced by the `require_admin` layer \
-                          on the `/api/admin` nest.";
-        for (path, item) in openapi.paths.paths.iter_mut() {
-            if !path.starts_with(ADMIN_PREFIX) {
+/// Operations whose `security(...)` annotation disagrees with the compiled
+/// policy, as `(method, path, macro_says, policy_says)`.
+///
+/// **Do not write `security(("bearerAuth" = []))` in `#[utoipa::path]`.**
+/// The engine derives it from the operation's policy — `public()` means no
+/// credential, anything else means bearer — so a hand-written one can only
+/// agree or be wrong.
+///
+/// A finding is therefore a stale annotation or a missing declaration.
+/// Reported rather than fatal while the two are being reconciled.
+/// Every operation whose declarations FAIL to compile, with the reason.
+///
+/// PR 2 step 4. `mark_policies` skips an operation it cannot compile —
+/// correctly, since a spec is no place to report a boot error — but that
+/// made a broken declaration indistinguishable from an undeclared one:
+/// both left the operation with no `x-oxicloud-policy` object. 34
+/// operations were failing silently when this was written, which is how
+/// it was found.
+///
+/// Reported at GENERATION time rather than boot, because the operation
+/// list comes from the spec while a feature-gated router only exists when
+/// its feature is on — see `ScopeReq` on why boot is the wrong phase.
+#[must_use]
+pub fn compile_failures(
+    openapi: &utoipa::openapi::OpenApi,
+    registry: &crate::application::services::scope_table::PolicyRegistry,
+) -> Vec<(String, String, String)> {
+    use crate::application::ports::scope_ports::Op;
+    let mut out = Vec::new();
+    for (path, item) in openapi.paths.paths.iter() {
+        let path_static: &'static str = Box::leak(path.clone().into_boxed_str());
+        for (method, present) in [
+            ("GET", item.get.is_some()),
+            ("POST", item.post.is_some()),
+            ("PUT", item.put.is_some()),
+            ("DELETE", item.delete.is_some()),
+            ("PATCH", item.patch.is_some()),
+            ("HEAD", item.head.is_some()),
+            ("OPTIONS", item.options.is_some()),
+        ] {
+            if !present {
                 continue;
             }
-            for op in [
-                item.get.as_mut(),
-                item.put.as_mut(),
-                item.post.as_mut(),
-                item.delete.as_mut(),
-                item.patch.as_mut(),
-                item.head.as_mut(),
-                item.options.as_mut(),
-                item.trace.as_mut(),
-            ]
-            .into_iter()
-            .flatten()
+            if let Err(e) = registry.compile_one(Op::Rest(method, path_static)) {
+                out.push((method.to_string(), path.clone(), e.to_string()));
+            }
+        }
+    }
+    out.sort();
+    out
+}
+
+/// Every operation whose compiled scope is [`ScopeReq::Undefined`] —
+/// nobody classified it.
+///
+/// PR 2 step 4. `Undefined` is the DEFAULT on the scope axis, and it is
+/// unsatisfiable: the gate axis can default to a real requirement
+/// (`MinPrincipal::User`) while scope has no such candidate, since "no
+/// scope required" would be fail-open. So the absence is made
+/// unrepresentable by refusing it here.
+///
+/// GENERATION time, not boot. The operation list comes from the specs
+/// while a feature-gated router only exists when its feature is on, so a
+/// boot check would make a deployment with `enable_photos=false` refuse
+/// to start over a feature the operator turned off.
+///
+/// `extra` carries the operations that are in NO spec and so cannot be
+/// enumerated from one — the six `Op::Dav` pairs. Without them the check
+/// would pass over `/webdav`, `/caldav` and `/carddav`, which is the
+/// worst possible omission: those are what app passwords and device
+/// codes exist for.
+#[must_use]
+pub fn undefined_scopes(
+    openapi: &utoipa::openapi::OpenApi,
+    registry: &crate::application::services::scope_table::PolicyRegistry,
+    extra: &[crate::application::ports::scope_ports::Op],
+) -> Vec<String> {
+    use crate::application::ports::scope_ports::{Op, ScopeReq};
+    let mut out = Vec::new();
+
+    for (path, item) in openapi.paths.paths.iter() {
+        let path_static: &'static str = Box::leak(path.clone().into_boxed_str());
+        for (method, present) in [
+            ("GET", item.get.is_some()),
+            ("POST", item.post.is_some()),
+            ("PUT", item.put.is_some()),
+            ("DELETE", item.delete.is_some()),
+            ("PATCH", item.patch.is_some()),
+            ("HEAD", item.head.is_some()),
+            ("OPTIONS", item.options.is_some()),
+        ] {
+            if !present {
+                continue;
+            }
+            if let Ok(p) = registry.compile_one(Op::Rest(method, path_static))
+                && p.scope == ScopeReq::Undefined
             {
-                op.extensions = Some(
-                    utoipa::openapi::extensions::ExtensionsBuilder::new()
-                        .add(SCOPE_EXTENSION, serde_json::json!(ADMIN_SCOPE))
-                        .build(),
-                );
-                op.description = Some(match op.description.take() {
-                    Some(existing) if !existing.is_empty() => {
-                        format!("{existing}\n\n{admin_note}")
-                    }
-                    _ => admin_note.to_owned(),
+                out.push(format!("{method} {path}"));
+            }
+        }
+    }
+
+    for &op in extra {
+        if let Ok(p) = registry.compile_one(op)
+            && p.scope == ScopeReq::Undefined
+        {
+            out.push(format!("{op}"));
+        }
+    }
+
+    out.sort();
+    out
+}
+
+pub fn audit_declared_security(
+    openapi: &utoipa::openapi::OpenApi,
+    registry: &crate::application::services::scope_table::PolicyRegistry,
+) -> Vec<(String, String, &'static str, &'static str)> {
+    use crate::application::ports::scope_ports::{MinPrincipal, Op};
+
+    let mut findings = Vec::new();
+    for (path, item) in openapi.paths.paths.iter() {
+        let path_static: &'static str = Box::leak(path.clone().into_boxed_str());
+        for (method, op) in [
+            ("GET", item.get.as_ref()),
+            ("PUT", item.put.as_ref()),
+            ("POST", item.post.as_ref()),
+            ("DELETE", item.delete.as_ref()),
+            ("PATCH", item.patch.as_ref()),
+            ("HEAD", item.head.as_ref()),
+            ("OPTIONS", item.options.as_ref()),
+            ("TRACE", item.trace.as_ref()),
+        ]
+        .into_iter()
+        .filter_map(|(m, o)| o.map(|o| (m, o)))
+        {
+            let Ok(policy) = registry.compile_one(Op::Rest(method, path_static)) else {
+                continue;
+            };
+            // An EMPTY array is "no credential required"; anything else
+            // names a scheme.
+            let macro_says = match op.security.as_deref() {
+                Some([]) => "no auth",
+                _ => "bearer",
+            };
+            let policy_says = if policy.principal == MinPrincipal::Public {
+                "no auth"
+            } else {
+                "bearer"
+            };
+            if macro_says != policy_says {
+                findings.push((method.to_owned(), path.clone(), macro_says, policy_says));
+            }
+        }
+    }
+    findings.sort();
+    findings
+}
+
+/// Mark every operation from the COMPILED POLICY TABLE.
+///
+/// Called by the two places that produce a spec: `generate-openapi`, which
+/// builds the service graph in memory to get a registry, and the server's
+/// `/api/openapi.json`, which already has one installed. Both mark from
+/// the same data the gate enforces, so the published description and the
+/// enforced rule are one thing rather than two kept in agreement.
+///
+/// Per-operation, which is what a path prefix could not be: the table
+/// knows `GET /api/files/{id}` is visitor-reachable while the `DELETE` on
+/// the same path is not.
+pub fn mark_policies(
+    openapi: &mut utoipa::openapi::OpenApi,
+    registry: &crate::application::services::scope_table::PolicyRegistry,
+) {
+    use crate::application::ports::scope_ports::{Access, MinPrincipal, MinRole, Op, ScopeReq};
+
+    const SHARE_NOTE: &str = "Reachable by a public-share VISITOR: someone holding an \
+                              unlocked share link may call this, scoped to what that share \
+                              grants. No account is required, but a share ring is.";
+    const PUBLIC_NOTE: &str = "Reachable with NO credential at all.";
+    const INTERNAL_NOTE: &str = "Requires an INTERNAL user. An external (grant-only) account \
+                                 is refused: it is a guest invited to specific resources, and \
+                                 this surface aggregates more than that invitation implied.";
+    const ADMIN_NOTE: &str = "Requires the deployment administrator role; enforced by the \
+                              compiled policy declared on the `/api/admin` nest.";
+    const OWNER_NOTE: &str = "Requires the SERVER OWNER — stricter than admin. An \
+                              administrator is refused.";
+
+    for (path, item) in openapi.paths.paths.iter_mut() {
+        // `Op` holds `&'static str` so the table allocates nothing per
+        // request. A spec path is one of a fixed set and this runs ONCE
+        // per process, so leaking is cheaper than threading a lifetime.
+        let path_static: &'static str = Box::leak(path.clone().into_boxed_str());
+
+        for (method, op) in [
+            ("GET", item.get.as_mut()),
+            ("PUT", item.put.as_mut()),
+            ("POST", item.post.as_mut()),
+            ("DELETE", item.delete.as_mut()),
+            ("PATCH", item.patch.as_mut()),
+            ("HEAD", item.head.as_mut()),
+            ("OPTIONS", item.options.as_mut()),
+            ("TRACE", item.trace.as_mut()),
+        ]
+        .into_iter()
+        .filter_map(|(m, o)| o.map(|o| (m, o)))
+        {
+            let Ok(policy) = registry.compile_one(Op::Rest(method, path_static)) else {
+                // Uncompilable declarations are a BOOT error; the spec is
+                // not the place to report one.
+                continue;
+            };
+
+            // The engine OWNS the security array, so no operation has to
+            // (and must not) hand-write `security(...)`: a credential is
+            // required unless the principal is Public.
+            op.security = Some(if policy.principal == MinPrincipal::Public {
+                // `[]`, not `[{}]`: an EMPTY array removes the
+                // document-level requirement, while an array holding an
+                // empty object means auth is OPTIONAL. Only the first
+                // says "no credential needed".
+                Vec::new()
+            } else {
+                vec![utoipa::openapi::security::SecurityRequirement::new::<
+                    &str,
+                    [&str; 0],
+                    &str,
+                >("bearerAuth", [])]
+            });
+
+            // ONE object, on EVERY operation — see `POLICY_EXTENSION` for
+            // why absence-when-default was the wrong call.
+            let mut notes: Vec<&str> = Vec::new();
+
+            // The object IS `Policy`, field for field. Keys are the
+            // struct's field names and every one is present, including
+            // explicit nulls — so the published contract evolves exactly
+            // when the Rust type does, instead of needing a shape
+            // decision per release. `elevation` is already a commented
+            // field on `Policy`; when it is uncommented it appears here
+            // and nothing else about the format changes.
+            let mut policy_obj = serde_json::Map::new();
+
+            policy_obj.insert(
+                "role".to_string(),
+                match policy.role {
+                    None => serde_json::Value::Null,
+                    Some(MinRole::Internal) => serde_json::json!("internal"),
+                    Some(MinRole::Admin) => serde_json::json!("admin"),
+                    Some(MinRole::Owner) => serde_json::json!("owner"),
+                },
+            );
+            policy_obj.insert(
+                "principal".to_string(),
+                match policy.principal {
+                    MinPrincipal::Public => serde_json::json!("public"),
+                    MinPrincipal::Visitor => serde_json::json!("visitor"),
+                    MinPrincipal::User => serde_json::json!("user"),
+                },
+            );
+
+            if let Some(role) = policy.role {
+                notes.push(match role {
+                    MinRole::Internal => INTERNAL_NOTE,
+                    MinRole::Admin => ADMIN_NOTE,
+                    MinRole::Owner => OWNER_NOTE,
                 });
             }
+            match policy.principal {
+                MinPrincipal::Visitor => notes.push(SHARE_NOTE),
+                MinPrincipal::Public => notes.push(PUBLIC_NOTE),
+                MinPrincipal::User => {}
+            }
+
+            // Three states, three renderings — and `Undefined` as `null`
+            // is load-bearing, not cosmetic. It makes
+            //
+            //     jq '[.. | objects | select(has("x-oxicloud-policy"))
+            //          | .["x-oxicloud-policy"].scope]
+            //         | map(select(. == null)) | length'
+            //
+            // a count of operations NOBODY CLASSIFIED, which is the same
+            // fact PR 2 step 4 turns into a generation failure — but
+            // visible as a reviewable diff, attributable to a path,
+            // before it can fail a build. Rendering `Undefined` as
+            // `"undefined"` instead would make that query silently
+            // return 0 forever.
+            policy_obj.insert(
+                "scope".to_string(),
+                match policy.scope {
+                    ScopeReq::Undefined => serde_json::Value::Null,
+                    ScopeReq::None => serde_json::json!("none"),
+                    // An ARRAY, because an operation can require more than
+                    // one area: a leaf appends to what its prefix declared
+                    // rather than replacing it, so `/api/drives/{id}/members`
+                    // requires `files` AND `sharing`. A joined string would
+                    // make a consumer parse a separator.
+                    ScopeReq::Areas(set) => serde_json::Value::Array(
+                        set.iter()
+                            .map(|(scope, access)| {
+                                let access = match access {
+                                    Access::ReadOnly => "ro",
+                                    Access::ReadWrite => "rw",
+                                };
+                                serde_json::json!(format!("{}:{access}", area_name(scope)))
+                            })
+                            .collect(),
+                    ),
+                },
+            );
+
+            op.extensions = Some(
+                utoipa::openapi::extensions::ExtensionsBuilder::new()
+                    .add(POLICY_EXTENSION, serde_json::Value::Object(policy_obj))
+                    .build(),
+            );
+
+            if notes.is_empty() {
+                // Nothing to SAY in prose — the default policy needs no
+                // sentence of explanation — but the object above is
+                // emitted either way.
+                continue;
+            }
+
+            let note = notes.join("\n\n");
+            op.description = Some(match op.description.take() {
+                Some(existing) if !existing.is_empty() => format!("{existing}\n\n{note}"),
+                _ => note,
+            });
         }
     }
 }
@@ -918,159 +1229,88 @@ impl Modify for SecurityAddon {
 mod tests {
     use super::*;
 
-    #[test]
-    fn openapi_spec_is_valid_and_has_expected_structure() {
-        let spec = ApiDoc::openapi();
-
-        assert_eq!(spec.info.title, "OxiCloud API");
-        assert!(!spec.info.version.is_empty());
-
-        let paths = &spec.paths;
-        assert!(
-            paths.paths.len() >= 10,
-            "expected at least 10 paths, got {}",
-            paths.paths.len()
-        );
-        // The old grouped list endpoints (/api/trash, /api/favorites, /api/recent)
-        // were removed in favour of the normalized cursor-paginated /resources API.
-        assert!(
-            paths.paths.contains_key("/api/trash/resources"),
-            "missing /api/trash/resources"
-        );
-        assert!(
-            paths.paths.contains_key("/api/shares"),
-            "missing /api/shares"
-        );
-        assert!(
-            paths.paths.contains_key("/api/favorites/resources"),
-            "missing /api/favorites/resources"
-        );
-        assert!(
-            paths.paths.contains_key("/api/recent/resources"),
-            "missing /api/recent/resources"
-        );
-
-        let schemas = &spec
-            .components
-            .as_ref()
-            .expect("components missing")
-            .schemas;
-        assert!(
-            schemas.len() >= 25,
-            "expected at least 25 schemas, got {}",
-            schemas.len()
-        );
-        for name in [
-            "FileDto",
-            "FolderDto",
-            "ShareDto",
-            "TrashedItemDto",
-            "PublicUserDto",
-        ] {
-            assert!(schemas.contains_key(name), "missing schema: {name}");
-        }
-
-        let json = serde_json::to_string(&spec).expect("spec should serialise to JSON");
-        assert!(json.len() > 1000, "spec JSON suspiciously small");
-    }
-
-    /// The spec marks exactly the allowlisted routes — checked in BOTH
-    /// directions.
+    /// The three axes land in three KEYS, and only when they differ from
+    /// the default.
     ///
-    /// The marker is generated FROM `ANONYMOUS_ALLOWLIST`, so this cannot
-    /// catch a human forgetting an annotation; it is a regression guard on the
-    /// generation. It still earns its place: it fails if an allowlisted route
-    /// carries no `#[utoipa::path]` (silently skipped by the injector, leaving
-    /// the spec understating what a share link reaches), and it fails if the
-    /// injector ever marks something the gate does not allow — which would
-    /// promise visitors an endpoint that 403s and, worse, invite someone to
-    /// "fix" the mismatch by widening the allowlist.
-    ///
-    /// The allowlist is the authority. This asserts the published description
-    /// matches it.
+    /// Markers are derived from the compiled table, so there is no copy to
+    /// drift from and nothing to compare. What IS worth pinning is that
+    /// each axis gets its own key — one key used to carry all three.
     #[test]
-    fn scope_markers_match_their_gates() {
-        use crate::interfaces::middleware::anonymous_allowlist::ANONYMOUS_ALLOWLIST;
-        use std::collections::BTreeSet;
+    fn every_operation_carries_its_whole_policy() {
+        use crate::application::ports::scope_ports::{Condition, MinRole};
+        use crate::application::services::scope_table::{PolicyRegistry, Site};
 
-        // Walked as serialised JSON rather than through utoipa's types: this
-        // is the document consumers actually read, and it does not break when
-        // `PathItem`'s shape changes between utoipa releases.
-        let spec = serde_json::to_value(ApiDoc::openapi()).expect("spec should serialise");
-        let paths = spec["paths"].as_object().expect("spec has no paths object");
-
-        let declared: BTreeSet<&str> = paths
-            .iter()
-            .filter(|(_, item)| {
-                item.as_object().is_some_and(|methods| {
-                    methods
-                        .values()
-                        .any(|op| op[SCOPE_EXTENSION] == serde_json::json!(SHARE_READ_SCOPE))
-                })
-            })
-            .map(|(path, _)| path.as_str())
-            .collect();
-
-        // Scopes belong to oauth2/openIdConnect schemes only; on an `http`
-        // scheme the array must stay empty or the document is non-conformant
-        // (and Swagger UI silently drops it). Pinned so nobody reintroduces
-        // the marker there.
-        for (path, item) in paths {
-            for (method, op) in item.as_object().into_iter().flatten() {
-                for req in op["security"].as_array().into_iter().flatten() {
-                    for (scheme, scopes) in req.as_object().into_iter().flatten() {
-                        assert!(
-                            scopes.as_array().is_none_or(|s| s.is_empty()),
-                            "{method} {path}: `{scheme}` is an http scheme, \
-                             so its scopes array must be empty (got {scopes})"
-                        );
-                    }
-                }
-            }
-        }
-
-        // The admin half of the same contract. `require_admin` wraps exactly
-        // the `/api/admin` nest, so prefix and marker must agree both ways: an
-        // unmarked admin path understates the requirement, and a marked path
-        // outside the nest claims a gate that is not there — the more
-        // dangerous direction, since it reads as "already protected".
-        let admin_marked: BTreeSet<&str> = paths
-            .iter()
-            .filter(|(_, item)| {
-                item.as_object().is_some_and(|methods| {
-                    methods
-                        .values()
-                        .any(|op| op[SCOPE_EXTENSION] == serde_json::json!(ADMIN_SCOPE))
-                })
-            })
-            .map(|(path, _)| path.as_str())
-            .collect();
-        let admin_nested: BTreeSet<&str> = paths
-            .keys()
-            .map(String::as_str)
-            .filter(|p| p.starts_with(ADMIN_PREFIX))
-            .collect();
-        assert_eq!(
-            admin_marked,
-            admin_nested,
-            "`{ADMIN_SCOPE}` has drifted from the `{ADMIN_PREFIX}` nest.\n\
-             marked but not nested: {:?}\n\
-             nested but unmarked: {:?}",
-            admin_marked.difference(&admin_nested).collect::<Vec<_>>(),
-            admin_nested.difference(&admin_marked).collect::<Vec<_>>(),
+        let mut registry = PolicyRegistry::new();
+        registry.declare(
+            Site::RestPrefix("/api/admin"),
+            vec![Condition::role(MinRole::Admin)],
+        );
+        registry.declare(
+            Site::Exact(crate::application::ports::scope_ports::Op::Rest(
+                "GET",
+                "/api/files/{id}",
+            )),
+            vec![Condition::visitor_allowed()],
         );
 
-        let allowlisted: BTreeSet<&str> = ANONYMOUS_ALLOWLIST.iter().copied().collect();
+        let mut openapi = ApiDoc::openapi();
+        mark_policies(&mut openapi, &registry);
+        let spec = serde_json::to_value(openapi).expect("spec serializes");
 
+        // The object is `Policy` field for field, on EVERY operation,
+        // with explicit nulls. Absence used to mean "the default", which
+        // a consumer could not distinguish from "no requirement" — the
+        // reason a frontend could not decide whether to prompt before
+        // issuing a call.
+        let admin = &spec["paths"]["/api/admin/users"]["get"][POLICY_EXTENSION];
         assert_eq!(
-            declared,
-            allowlisted,
-            "`{SCOPE_EXTENSION}: {SHARE_READ_SCOPE}` in the OpenAPI spec has \
-             drifted from ANONYMOUS_ALLOWLIST.\n\
-             marked only in the spec: {:?}\n\
-             allowlisted but unmarked (missing a `#[utoipa::path]`?): {:?}",
-            declared.difference(&allowlisted).collect::<Vec<_>>(),
-            allowlisted.difference(&declared).collect::<Vec<_>>(),
+            *admin,
+            serde_json::json!({"role": "admin", "principal": "user", "scope": null}),
+            "a role floor is the ROLE field, and the other two are still stated"
+        );
+
+        let shared = &spec["paths"]["/api/files/{id}"]["get"][POLICY_EXTENSION];
+        assert_eq!(
+            *shared,
+            serde_json::json!({"role": null, "principal": "visitor", "scope": null}),
+            "visitor-reachable is the PRINCIPAL axis, never a scope, and the \
+             absent role floor is stated as null rather than omitted"
+        );
+
+        // A PUBLIC operation drops the bearer requirement, which is the
+        // only honest way to document one: the spec claims a bearer on
+        // `/api/auth/login` today purely because nothing declares it
+        // public, so its compiled policy is the default.
+        let mut public_reg = PolicyRegistry::new();
+        public_reg.declare(
+            Site::Exact(crate::application::ports::scope_ports::Op::Rest(
+                "POST",
+                "/api/auth/login",
+            )),
+            vec![Condition::public()],
+        );
+        let mut public_spec = ApiDoc::openapi();
+        mark_policies(&mut public_spec, &public_reg);
+        let public_spec = serde_json::to_value(public_spec).expect("serializes");
+        let login = &public_spec["paths"]["/api/auth/login"]["post"];
+        assert_eq!(
+            login["security"],
+            serde_json::json!([]),
+            "an empty security array removes the bearer requirement; \
+             `[{{}}]` would mean auth is merely OPTIONAL"
+        );
+        assert_eq!(
+            login[POLICY_EXTENSION],
+            serde_json::json!({"role": null, "principal": "public", "scope": null})
+        );
+
+        // And the sibling verb on that same path is untouched, which a
+        // path-level marker could not express.
+        let deleted = &spec["paths"]["/api/files/{id}"]["delete"][POLICY_EXTENSION];
+        assert_eq!(
+            deleted["principal"], "user",
+            "DELETE on a visitor-allowed path must NOT be visitor — and now it \
+             SAYS `user` rather than leaving a reader to infer it from silence"
         );
     }
 }

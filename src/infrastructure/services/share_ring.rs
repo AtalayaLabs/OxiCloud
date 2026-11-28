@@ -83,7 +83,7 @@ struct RingClaims {
     /// The ring IS the anonymous session, so this is the only identifier a
     /// public-share visitor has. It is not a user id and matches no row; it
     /// exists so one visitor's requests can be correlated in logs, and so
-    /// `CurrentUser.id` has something honest to hold.
+    /// `CurrentCaller.id` has something honest to hold.
     vid: Uuid,
     /// `storage.shares.id` values, oldest first.
     shares: Vec<Uuid>,

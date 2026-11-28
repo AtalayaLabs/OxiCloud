@@ -52,7 +52,7 @@ impl UserRole {
     }
 
     /// Parse a role as carried on a **session** — a JWT claim or
-    /// `CurrentUser`. Unlike [`Self::from_stored`] this can yield
+    /// `CurrentCaller`. Unlike [`Self::from_stored`] this can yield
     /// `Anonymous`: a share visitor has a session role but no user row.
     pub fn from_session(raw: &str) -> Option<Self> {
         match raw {
@@ -105,9 +105,11 @@ impl UserRole {
 
     /// Does this **stringly-typed** role meet `min`?
     ///
-    /// The role crosses several boundaries as a plain `String` — the JWT
-    /// claim, `CurrentUser.role`, `PublicUserDto.role`, the live-role
-    /// string — and before the Owner role existed, six sites compared
+    /// The role crossed several boundaries as a plain `String` — the JWT
+    /// claim, the then-`CurrentCaller.role`, `PublicUserDto.role`, the
+    /// live-role string. The request path no longer does: `CurrentCaller`
+    /// carries a [`CallerKind`], so the comparisons below are on enums.
+    /// Before the Owner role existed, six of those sites compared
     /// those strings to `"admin"` literally. Every one silently denied the
     /// owner, who outranks admin: the admin API, the admin middleware, the
     /// NextCloud OCS group list, group management, dedup ref-counts, and
@@ -197,6 +199,100 @@ impl FederationKind {
 impl std::fmt::Display for FederationKind {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         f.write_str(self.as_str())
+    }
+}
+
+/// WHAT the caller is — one value replacing the `(role, is_external)` pair
+/// that `CurrentCaller` used to carry.
+///
+/// The pair could express three states that cannot exist:
+/// anonymous+internal, anonymous+external, and admin/owner+external — the
+/// last of which the schema already forbids with
+/// `CHECK (NOT (is_external AND role <> 'user'))`. So the database knew
+/// the two fields were dependent while the in-memory pair did not. All
+/// three are unrepresentable here.
+///
+/// **There is no `Public` variant, and that is the design.** A caller with
+/// no credential has no `CurrentCaller` in the request extensions at all, so
+/// the ABSENCE of the extension is what "public" means. That makes
+/// `Option<Arc<CurrentCaller>>` the `Option<CallerKind>` — no second optional
+/// layer, and it matches what `require_internal_user_layer` already does
+/// when it passes an unauthenticated request straight through.
+///
+/// Distinct from `MinPrincipal { Public, Visitor, User }` in
+/// `docs/plan/scope-gates.md`, which is the REQUIREMENT side — what an
+/// operation admits. The variant sets differ on purpose:
+///
+/// | caller | satisfies |
+/// |---|---|
+/// | (no `CurrentCaller`) | `Public` |
+/// | `Visitor` | `Public`, `Visitor` |
+/// | `External` | `Public`, `Visitor`, `User` |
+/// | `Internal(_)` | `Public`, `Visitor`, `User` |
+///
+/// The requirement side never distinguishes external from internal because
+/// that is the ROLE axis's question (`MinRole::Internal`); the caller side
+/// must, because [`UserRole`] has no `External` variant and that is
+/// precisely the pair being eliminated.
+/// `Default` is `Visitor` — the LEAST privileged value, so a careless
+/// `CallerKind::default()` fails closed. It exists only because
+/// `#[serde(skip)]` on `CurrentCaller::kind` requires it; nothing
+/// deserializes a `CurrentCaller` (its `Serialize`/`Deserialize` derives are
+/// vestigial — it appears in no OpenAPI path).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CallerKind {
+    /// A public-share visitor. Has a session (the ring) and a
+    /// `visitor_id`, but **no `auth.users` row** — so neither "internal"
+    /// nor "external" is true of them.
+    #[default]
+    Visitor,
+    /// An external user. Their role is necessarily [`UserRole::User`],
+    /// guaranteed by `users_external_not_privileged`, which is why this
+    /// variant carries no payload.
+    External,
+    /// An internal user. Never [`UserRole::Anonymous`]: this is built from
+    /// [`UserFlags`], whose role comes from [`UserRole::from_stored`],
+    /// which returns `None` for `"anonymous"` by construction.
+    Internal(UserRole),
+}
+
+impl CallerKind {
+    /// Build from the live flags — the only production path, which is what
+    /// keeps `Internal(Anonymous)` out.
+    pub fn from_flags(flags: &UserFlags) -> Self {
+        if flags.is_external {
+            CallerKind::External
+        } else {
+            CallerKind::Internal(flags.role)
+        }
+    }
+
+    /// The account's ROLE, ignoring externality — exactly what the old
+    /// `role` field held, so a migrated callsite behaves identically.
+    /// `External` reports [`UserRole::User`] because the CHECK guarantees
+    /// that is its role.
+    ///
+    /// Use [`Self::is_internal`] or an explicit `matches!` where you MEAN
+    /// to exclude externals, and say so at the callsite — the distinction
+    /// is invisible here by design.
+    pub fn role(self) -> UserRole {
+        match self {
+            CallerKind::Visitor => UserRole::Anonymous,
+            CallerKind::External => UserRole::User,
+            CallerKind::Internal(r) => r,
+        }
+    }
+
+    /// Only an internal user. A visitor and an external user are BOTH
+    /// false — which is what "internal users only" actually asks, and what
+    /// the `(role, is_external)` pair could not state in one read.
+    pub fn is_internal(self) -> bool {
+        matches!(self, CallerKind::Internal(_))
+    }
+
+    /// A public-share visitor, who has no user row.
+    pub fn is_visitor(self) -> bool {
+        matches!(self, CallerKind::Visitor)
     }
 }
 

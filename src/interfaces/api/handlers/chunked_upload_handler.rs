@@ -585,7 +585,6 @@ backward compatibility with existing clients but is no longer receiving new feat
         (status = 507, description = "Storage quota exceeded", body = crate::interfaces::errors::ApiErrorBody),
     ),
     tag = "uploads",
-    security(("bearerAuth" = []))
 )]
 #[deprecated(note = "prefer /api/files/delta/*")]
 pub async fn create_upload(
@@ -627,7 +626,6 @@ pub async fn create_upload(
         (status = 413, description = "Chunk exceeds `storage.chunk_max_bytes` cap", body = crate::interfaces::errors::ApiErrorBody),
     ),
     tag = "uploads",
-    security(("bearerAuth" = []))
 )]
 #[deprecated(note = "prefer /api/files/delta/*")]
 pub async fn upload_chunk(
@@ -756,7 +754,6 @@ pub async fn upload_chunk(
         (status = 404, description = "Upload session not found", body = crate::interfaces::errors::ApiErrorBody),
     ),
     tag = "uploads",
-    security(("bearerAuth" = []))
 )]
 #[deprecated(note = "prefer /api/files/delta/*")]
 pub async fn get_upload_status(
@@ -794,7 +791,6 @@ pub async fn get_upload_status(
         (status = 500, description = "Assembly, hashing, or file creation failed", body = crate::interfaces::errors::ApiErrorBody),
     ),
     tag = "uploads",
-    security(("bearerAuth" = []))
 )]
 #[deprecated(note = "prefer /api/files/delta/*")]
 pub async fn complete_upload(
@@ -823,7 +819,6 @@ pub async fn complete_upload(
         (status = 500, description = "Cancel failed", body = crate::interfaces::errors::ApiErrorBody),
     ),
     tag = "uploads",
-    security(("bearerAuth" = []))
 )]
 #[deprecated(note = "prefer /api/files/delta/*")]
 pub async fn cancel_upload(
