@@ -38,9 +38,19 @@ const NC_PREFIX_LEN: usize = 8;
 /// cost every 30 s per client; 5 min cuts it ~10× under steady sync load.
 ///
 /// Security envelope of this window:
-/// - **Revocation is immediate**: `revoke()` calls `invalidate_entries_if`
-///   on this cache for the user, so a revoked password never survives in
-///   cache regardless of TTL.
+/// - **Revocation is immediate**: every path that stops a credential being
+///   valid calls [`AppPasswordService::invalidate_auth_cache`], so a
+///   revoked password never survives in cache regardless of TTL.
+///
+///   This claim was FALSE for a long time. The call was
+///   `invalidate_entries_if(...).ok()` while the builder lacked
+///   `support_invalidation_closures()`, so moka returned
+///   `Err(InvalidationClosuresDisabled)` every time and `.ok()` threw it
+///   away: the doc promised immediate revocation while the TTL was the
+///   only thing bounding it. The builder now opts in, the error is
+///   handled rather than discarded, and a failure falls back to a full
+///   flush after shouting — so the guarantee can degrade loudly but not
+///   silently.
 /// - **Expiry / deactivation are bounded by the TTL**: `expires_at` and
 ///   `user.is_active()` are only re-checked on a cache *miss* (the DB
 ///   query filters them), so an app password that expires — or a user
@@ -130,6 +140,12 @@ impl AppPasswordService {
         require_verified_email: bool,
     ) -> Self {
         let auth_cache = Cache::builder()
+            // REQUIRED for `invalidate_entries_if`. Without it moka
+            // returns `Err(InvalidationClosuresDisabled)` on every call —
+            // which is exactly how per-user revocation was a silent
+            // no-op before: the builder lacked this line and the call
+            // site ended in `.ok()`.
+            .support_invalidation_closures()
             .max_capacity(BASIC_AUTH_CACHE_MAX_ENTRIES)
             .time_to_live(StdDuration::from_secs(BASIC_AUTH_CACHE_TTL_SECS))
             .build();
@@ -330,14 +346,42 @@ impl AppPasswordService {
     /// client, on their next request. Revocations are rare; wrongly
     /// authenticating a revoked credential is not a trade worth making
     /// for that.
-    pub fn invalidate_auth_cache(&self) {
-        self.auth_cache.invalidate_all();
-        tracing::info!(
-            target: "audit",
+    pub fn invalidate_auth_cache_for_user(&self, user_id: Uuid) {
+        // Targeted: only THIS user's entries. Dropping the whole cache
+        // would make one user's revocation cost every other user's Basic
+        // clients an Argon2id, and DAV clients poll constantly.
+        if let Err(e) = self
+            .auth_cache
+            .invalidate_entries_if(move |_key, val| val.user_id == user_id)
+        {
+            // NOT `.ok()`. That is what hid this for so long: the only
+            // way this errors is `InvalidationClosuresDisabled`, meaning
+            // someone dropped `support_invalidation_closures()` from the
+            // builder — at which point revocation silently goes back to
+            // being TTL-bounded, which is the bug this whole path exists
+            // to prevent.
+            //
+            // So: shout, then fail SAFE by dropping everything. Blunt
+            // beats a revoked credential that still authenticates.
+            tracing::error!(
+                target: "audit",
+                event = "app_password.auth_cache_invalidation_degraded",
+                reason = "invalidation_closures_disabled",
+                user_id = %user_id,
+                error = %e,
+                "👮🏻‍♂️ per-user Basic-auth invalidation failed — falling \
+                 back to a full flush; restore \
+                 `support_invalidation_closures()` on the cache builder",
+            );
+            self.auth_cache.invalidate_all();
+            return;
+        }
+
+        tracing::debug!(
+            target: "oxicloud::authz",
             event = "app_password.auth_cache_invalidated",
-            reason = "credential_changed",
-            "👮🏻‍♂️ Basic-auth cache dropped — a revoked or changed \
-             credential must stop working now, not in 300 s",
+            user_id = %user_id,
+            "Basic-auth cache entries dropped for the user",
         );
     }
 
@@ -358,16 +402,8 @@ impl AppPasswordService {
         }
         self.repo.revoke(id, user_id).await?;
         // The row now says `active = FALSE`, but a cache hit never reads
-        // the row — so without this the credential keeps working for the
-        // rest of its 300 s window.
-        self.invalidate_auth_cache();
-
-        // Invalidate all cached auth entries for this user so the
-        // revocation is effective immediately.
-        let uid = user_id;
-        self.auth_cache
-            .invalidate_entries_if(move |_key, val| val.user_id == uid)
-            .ok();
+        // the row.
+        self.invalidate_auth_cache_for_user(user_id);
 
         tracing::debug!(
             "Revoked app password {} — auth cache entries for user {} invalidated",
@@ -606,13 +642,9 @@ impl AppPasswordService {
                 .await
             {
                 self.repo.revoke(ap.id, user_id).await?;
-                self.invalidate_auth_cache();
+                self.invalidate_auth_cache_for_user(user_id);
 
                 // Invalidate cache for this user
-                let uid = user_id;
-                self.auth_cache
-                    .invalidate_entries_if(move |_key, val| val.user_id == uid)
-                    .ok();
                 break;
             }
         }
@@ -631,7 +663,7 @@ impl AppPasswordService {
         if deleted {
             // A DELETED row cannot be re-read at all, so a surviving
             // cache entry is strictly worse here than for a revoke.
-            self.invalidate_auth_cache();
+            self.invalidate_auth_cache_for_user(user_id);
         }
         if !deleted {
             return Err(DomainError::new(

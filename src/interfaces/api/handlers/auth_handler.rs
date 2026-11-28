@@ -852,7 +852,7 @@ pub async fn change_password(
             // `change_password` beside the session revocation, not here.
             // The eviction is then already in place for it.
             if let Some(ap_svc) = state.app_password_service.as_ref() {
-                ap_svc.invalidate_auth_cache();
+                ap_svc.invalidate_auth_cache_for_user(user_id);
             }
 
             // Fire-and-forget security notification: password changed
