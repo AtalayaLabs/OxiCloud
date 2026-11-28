@@ -65,7 +65,7 @@ use crate::interfaces::middleware::auth::CurrentUser;
 /// arbitrary clients set `X-Forwarded-*`, they can already forge
 /// audit-log IPs everywhere else — that's an operator responsibility
 /// solved by the trusted-proxy config, not this helper.
-fn external_scheme_host(headers: &HeaderMap) -> (String, String) {
+pub(crate) fn external_scheme_host(headers: &HeaderMap) -> (String, String) {
     let scheme = headers
         .get("x-forwarded-proto")
         .and_then(|v| v.to_str().ok())

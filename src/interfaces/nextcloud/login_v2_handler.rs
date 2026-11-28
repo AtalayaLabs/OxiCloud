@@ -679,6 +679,7 @@ pub async fn handle_drive_pick(
 pub async fn handle_login_oidc(
     State(state): State<Arc<AppState>>,
     Path(token): Path<String>,
+    headers: axum::http::HeaderMap,
 ) -> Response {
     // Verify Nextcloud services are configured
     let nextcloud = match state.nextcloud.as_ref() {
@@ -709,7 +710,10 @@ pub async fn handle_login_oidc(
     // Prepare an OIDC authorize flow that carries the NC flow token
     match auth
         .auth_application_service
-        .prepare_oidc_authorize_for_nextcloud(&token)
+        .prepare_oidc_authorize_for_nextcloud(
+            &token,
+            crate::interfaces::middleware::trusted_proxy::request_origin(&headers).as_deref(),
+        )
         .await
     {
         Ok(authorize_url) => {

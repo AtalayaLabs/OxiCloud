@@ -556,6 +556,11 @@
 
 	// OIDC
 	let oidc = $state<(OidcSettings & { client_secret?: string }) | null>(null);
+	// #117: the list the admin must register in the IdP. Falls back to the single
+	// callback_url so single-origin deployments render exactly as before.
+	let oidcCallbackUrls = $derived(
+		oidc?.callback_urls?.length ? oidc.callback_urls : oidc?.callback_url ? [oidc.callback_url] : []
+	);
 	let oidcTest = $state<OidcTestResult | null>(null);
 	let oidcMsg = $state<{ text: string; ok: boolean } | null>(null);
 	let oidcSaving = $state(false);
@@ -2843,22 +2848,28 @@
 							)}</span
 						>
 					</label>
-					{#if oidc.callback_url}
+					{#each oidcCallbackUrls as cbUrl, i (cbUrl)}
 						<p class="muted callback-row">
-							<span>{t('admin.oidc_callback', 'Callback URL')}:</span>
-							<code title={oidc.callback_url}>{oidc.callback_url}</code>
+							<span
+								>{oidcCallbackUrls.length > 1
+									? t('admin.oidc_callbacks', 'Callback URLs')
+									: t('admin.oidc_callback', 'Callback URL')}:</span
+							>
+							<code title={cbUrl}>{cbUrl}</code>
 							<button
 								type="button"
 								class="btn-action"
-								data-testid="admin-oidc-callback-copy-btn"
+								data-testid={i === 0
+									? 'admin-oidc-callback-copy-btn'
+									: `admin-oidc-callback-copy-btn-${i}`}
 								title={t('common.copy', 'Copy')}
 								aria-label={t('common.copy', 'Copy')}
-								onclick={() => copyText(oidc?.callback_url ?? '')}
+								onclick={() => copyText(cbUrl)}
 							>
 								<Icon name="copy" />
 							</button>
 						</p>
-					{/if}
+					{/each}
 					{#if oidcMsg}<p
 							class={oidcMsg.ok
 								? 'admin-result admin-result--ok'

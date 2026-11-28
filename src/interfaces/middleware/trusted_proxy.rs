@@ -120,6 +120,14 @@ pub fn log_config() {
 }
 
 /// Returns `true` when `peer` falls inside one of the configured CIDR ranges.
+/// Browser-facing origin of a request (`X-Forwarded-*`, else `Host`), in
+/// [`crate::common::config::normalize_origin`] form. Selects among the
+/// operator's OIDC redirect entries only (#117).
+pub fn request_origin(headers: &axum::http::HeaderMap) -> Option<String> {
+    let (scheme, host) = crate::interfaces::middleware::dpop::external_scheme_host(headers);
+    crate::common::config::normalize_origin(&scheme, &host)
+}
+
 pub fn is_trusted_proxy(peer: IpAddr) -> bool {
     let cidrs = trusted_cidrs();
     if cidrs.is_empty() {

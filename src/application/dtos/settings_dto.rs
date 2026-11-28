@@ -82,7 +82,11 @@ pub struct OidcSettingsDto {
     pub disable_password_login: bool,
     pub provider_name: String,
     /// Auto-generated callback URL the admin must register in their IdP
+    /// (the primary entry; `callback_urls` carries the full list).
     pub callback_url: String,
+    /// Every callback URL to register in the IdP — one per configured origin
+    /// (#117). Single-origin deployments have exactly one, equal to callback_url.
+    pub callback_urls: Vec<String>,
     /// Field names overridden by environment variables (read-only in UI)
     pub env_overrides: Vec<String>,
 }

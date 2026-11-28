@@ -1927,6 +1927,198 @@ impl Default for OidcConfig {
     }
 }
 
+/// Path every non-primary redirect entry must end in; the part before it is
+/// that origin's frontend base (#117).
+const OIDC_CALLBACK_PATH: &str = "/api/auth/oidc/callback";
+
+/// One entry of `OXICLOUD_OIDC_REDIRECT_URI` (#117).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OidcRedirect {
+    /// Exact `redirect_uri` sent to the IdP.
+    pub uri: String,
+    /// `scheme://host[:port]` the entry serves.
+    pub origin: String,
+    /// Where the callback sends the browser afterwards.
+    pub frontend_url: String,
+    pub is_primary: bool,
+}
+
+fn url_origin(url: &url::Url) -> String {
+    url.origin().ascii_serialization()
+}
+
+/// Normalise a request's `scheme` + `host[:port]` to the form of
+/// [`OidcRedirect::origin`] (lower-case host, default port dropped).
+pub fn normalize_origin(scheme: &str, host: &str) -> Option<String> {
+    url::Url::parse(&format!("{scheme}://{host}/"))
+        .ok()
+        .map(|u| url_origin(&u))
+}
+
+impl OidcConfig {
+    /// Parse `redirect_uri` as a comma-separated list. The first entry is the
+    /// primary and keeps `frontend_url`; the others derive theirs from the
+    /// entry. Errors name the bad entry so startup can refuse it.
+    pub fn redirects(&self) -> Result<Vec<OidcRedirect>, String> {
+        let entries: Vec<&str> = self
+            .redirect_uri
+            .split(',')
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .collect();
+        if entries.is_empty() {
+            return Err("OXICLOUD_OIDC_REDIRECT_URI is empty".into());
+        }
+        entries
+            .iter()
+            .enumerate()
+            .map(|(i, raw)| {
+                let url = url::Url::parse(raw)
+                    .map_err(|e| format!("OXICLOUD_OIDC_REDIRECT_URI entry '{raw}': {e}"))?;
+                if !matches!(url.scheme(), "http" | "https") || url.host_str().is_none() {
+                    return Err(format!(
+                        "OXICLOUD_OIDC_REDIRECT_URI entry '{raw}' must be an http(s) URL"
+                    ));
+                }
+                let frontend_url = if i == 0 {
+                    self.frontend_url.trim_end_matches('/').to_string()
+                } else {
+                    raw.strip_suffix(OIDC_CALLBACK_PATH)
+                        .ok_or_else(|| {
+                            format!(
+                                "OXICLOUD_OIDC_REDIRECT_URI entry '{raw}' must end in {OIDC_CALLBACK_PATH}"
+                            )
+                        })?
+                        .to_string()
+                };
+                Ok(OidcRedirect {
+                    uri: raw.to_string(),
+                    origin: url_origin(&url),
+                    frontend_url,
+                    is_primary: i == 0,
+                })
+            })
+            .collect()
+    }
+
+    /// Entry whose origin equals `origin`, else the primary. The request
+    /// origin only selects among listed entries, never becomes a URL.
+    pub fn redirect_for_origin(&self, origin: Option<&str>) -> OidcRedirect {
+        let list = self.redirects().unwrap_or_default();
+        origin
+            .and_then(|o| list.iter().find(|r| r.origin == o))
+            .or_else(|| list.first())
+            .cloned()
+            // Unparseable config is refused at startup; keep today's value here.
+            .unwrap_or_else(|| OidcRedirect {
+                uri: self.redirect_uri.clone(),
+                origin: String::new(),
+                frontend_url: self.frontend_url.trim_end_matches('/').to_string(),
+                is_primary: true,
+            })
+    }
+}
+
+#[cfg(test)]
+mod oidc_redirect_tests {
+    use super::*;
+
+    fn cfg(uris: &str) -> OidcConfig {
+        OidcConfig {
+            redirect_uri: uris.into(),
+            frontend_url: "https://cloud.example.com/".into(),
+            ..OidcConfig::default()
+        }
+    }
+
+    const PRIMARY: &str = "https://cloud.example.com/api/auth/oidc/callback";
+    const LAN: &str = "http://192.168.1.10:8086/api/auth/oidc/callback";
+
+    #[test]
+    fn single_entry_is_todays_behaviour() {
+        let r = cfg(PRIMARY).redirects().unwrap();
+        assert_eq!(r.len(), 1);
+        assert_eq!(r[0].uri, PRIMARY);
+        assert_eq!(r[0].origin, "https://cloud.example.com");
+        assert_eq!(r[0].frontend_url, "https://cloud.example.com");
+        assert!(r[0].is_primary);
+    }
+
+    #[test]
+    fn two_entries_parse_with_own_frontend_base() {
+        let r = cfg(&format!("{PRIMARY} , {LAN},")).redirects().unwrap();
+        assert_eq!(r.len(), 2);
+        assert_eq!(r[1].uri, LAN);
+        assert_eq!(r[1].origin, "http://192.168.1.10:8086");
+        assert_eq!(r[1].frontend_url, "http://192.168.1.10:8086");
+        assert!(!r[1].is_primary);
+    }
+
+    #[test]
+    fn base_path_stays_in_frontend_base() {
+        let r = cfg(&format!(
+            "{PRIMARY},https://lan.example/oxi/api/auth/oidc/callback"
+        ))
+        .redirects()
+        .unwrap();
+        assert_eq!(r[1].frontend_url, "https://lan.example/oxi");
+    }
+
+    #[test]
+    fn bad_entries_are_refused() {
+        for bad in [
+            "",
+            "not a url",
+            "ftp://cloud.example.com/api/auth/oidc/callback",
+            &format!("{PRIMARY},https://lan.example/wrong/path"),
+            &format!("{PRIMARY},nonsense"),
+        ] {
+            assert!(cfg(bad).redirects().is_err(), "accepted {bad:?}");
+        }
+    }
+
+    #[test]
+    fn for_origin_matches_exactly_and_port_matters() {
+        let c = cfg(&format!("{PRIMARY},{LAN}"));
+        assert_eq!(
+            c.redirect_for_origin(Some("http://192.168.1.10:8086")).uri,
+            LAN
+        );
+        assert_eq!(
+            c.redirect_for_origin(Some("http://192.168.1.10:9999")).uri,
+            PRIMARY
+        );
+        assert_eq!(
+            c.redirect_for_origin(Some("https://192.168.1.10:8086")).uri,
+            PRIMARY
+        );
+    }
+
+    #[test]
+    fn for_origin_falls_back_to_primary_never_to_request_host() {
+        let c = cfg(&format!("{PRIMARY},{LAN}"));
+        let r = c.redirect_for_origin(Some("https://evil.example"));
+        assert_eq!(r.uri, PRIMARY);
+        assert!(r.is_primary);
+        assert_eq!(c.redirect_for_origin(None).uri, PRIMARY);
+    }
+
+    #[test]
+    fn normalize_origin_matches_entry_form() {
+        assert_eq!(
+            normalize_origin("https", "Cloud.Example.com:443").as_deref(),
+            Some("https://cloud.example.com")
+        );
+        assert_eq!(
+            normalize_origin("http", "192.168.1.10:8086").as_deref(),
+            Some("http://192.168.1.10:8086")
+        );
+        let c = cfg(&format!("{PRIMARY},{LAN}"));
+        let o = normalize_origin("https", "CLOUD.example.com").unwrap();
+        assert!(c.redirect_for_origin(Some(&o)).is_primary);
+    }
+}
+
 /// OPAQUE aPAKE configuration (RFC 9807, Phase 0 substrate).
 ///
 /// OPAQUE is a zero-knowledge password-authenticated key exchange: the

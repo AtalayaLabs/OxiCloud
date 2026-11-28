@@ -380,7 +380,7 @@ See the [OIDC configuration guide](/config/oidc) for details.
 | `OXICLOUD_OIDC_ISSUER_URL` | — | OIDC issuer URL |
 | `OXICLOUD_OIDC_CLIENT_ID` | — | Client ID |
 | `OXICLOUD_OIDC_CLIENT_SECRET` | — | Client secret |
-| `OXICLOUD_OIDC_REDIRECT_URI` | `http://localhost:8086/api/auth/oidc/callback` | Callback URL (must match IdP config) |
+| `OXICLOUD_OIDC_REDIRECT_URI` | `http://localhost:8086/api/auth/oidc/callback` | Callback URL (must match IdP config). Comma-separated list for multiple origins; the first is primary, a login is sent back to the origin it started on, and each entry must be registered in the IdP. |
 | `OXICLOUD_OIDC_SCOPES` | `openid profile email` | Requested scopes |
 | `OXICLOUD_OIDC_FRONTEND_URL` | `http://localhost:8086` | Frontend URL to redirect to after login |
 | `OXICLOUD_OIDC_AUTO_PROVISION` | `true` | Auto-create users on first SSO login (JIT provisioning) |

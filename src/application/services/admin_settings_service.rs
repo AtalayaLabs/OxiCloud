@@ -174,6 +174,19 @@ impl AdminSettingsService {
         // Load effective config with env var overrides applied
         let effective = self.load_effective_oidc_config().await?;
 
+        // #117: redirect_uri may be a comma-separated list of origins. Show each
+        // callback as its own entry so the admin registers them all in the IdP;
+        // callback_url stays the primary for the single-origin UI. A parse error
+        // can't reach here (startup refuses it), but fall back to the raw value.
+        let callback_urls: Vec<String> = match effective.redirects() {
+            Ok(list) => list.into_iter().map(|r| r.uri).collect(),
+            Err(_) => vec![effective.redirect_uri.clone()],
+        };
+        let callback_url = callback_urls
+            .first()
+            .cloned()
+            .unwrap_or_else(|| effective.redirect_uri.clone());
+
         Ok(OidcSettingsDto {
             enabled: effective.enabled,
             issuer_url: effective.issuer_url,
@@ -184,7 +197,8 @@ impl AdminSettingsService {
             admin_groups: effective.admin_groups,
             disable_password_login: effective.disable_password_login,
             provider_name: effective.provider_name,
-            callback_url: effective.redirect_uri.clone(),
+            callback_url,
+            callback_urls,
             env_overrides: self.get_env_overrides(),
         })
     }

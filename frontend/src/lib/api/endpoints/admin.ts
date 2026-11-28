@@ -617,6 +617,9 @@ export interface OidcSettings {
 	disable_password_login: boolean;
 	provider_name: string | null;
 	callback_url?: string;
+	// #117: every callback URL to register in the IdP, one per configured
+	// origin. Single-origin deployments have exactly one, equal to callback_url.
+	callback_urls?: string[];
 	client_secret_set?: boolean;
 	env_overrides?: string[];
 }

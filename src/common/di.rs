@@ -30,7 +30,7 @@ use crate::application::services::{
     AppFileUseCaseFactory, FileManagementService, FileRetrievalService, FileUploadService,
 };
 use crate::common::config::AppConfig;
-use crate::common::errors::DomainError;
+use crate::common::errors::{DomainError, ErrorKind};
 use crate::common::locale::LocaleRegistry;
 use crate::infrastructure::repositories::pg::SharePgRepository;
 use crate::infrastructure::repositories::pg::{
@@ -3294,6 +3294,16 @@ impl AppServiceFactory {
                         && !eff.client_id.is_empty()
                         && !eff.client_secret.is_empty() =>
                 {
+                    // #117: refuse to start on an unparseable redirect list. A
+                    // bad entry would otherwise fall back to the primary at
+                    // request time and hide the misconfiguration — fail loud.
+                    if let Err(msg) = eff.redirects() {
+                        return Err(DomainError::new(
+                            ErrorKind::InternalError,
+                            "OIDC",
+                            format!("Invalid OXICLOUD_OIDC_REDIRECT_URI: {msg}"),
+                        ));
+                    }
                     let oidc_svc = Arc::new(
                         crate::infrastructure::services::oidc_service::OidcService::new(
                             eff.clone(),
