@@ -10792,7 +10792,12 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": null,
+          "scope": null
+        }
       }
     },
     "/api/files/{id}/manifest": {
@@ -11771,7 +11776,12 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": null,
+          "scope": null
+        }
       }
     },
     "/api/grants": {
