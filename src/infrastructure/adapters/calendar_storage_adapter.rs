@@ -56,6 +56,18 @@ impl CalendarStorageAdapter {
     }
 }
 
+impl CalendarStorageAdapter {
+    /// Content-derived `getctag` per calendar (see
+    /// `CalendarPgRepository::content_ctags`).
+    pub async fn content_ctags(
+        &self,
+        calendar_ids: &[uuid::Uuid],
+    ) -> Result<std::collections::HashMap<uuid::Uuid, String>, crate::common::errors::DomainError>
+    {
+        self.calendar_repository.content_ctags(calendar_ids).await
+    }
+}
+
 impl CalendarStoragePort for CalendarStorageAdapter {
     // Calendar operations
 

@@ -18,6 +18,55 @@ impl CalendarPgRepository {
         Self { pool }
     }
 
+    /// Content-derived CalendarServer `getctag` per calendar.
+    ///
+    /// Hashes the calendar's own `updated_at`/`color` plus every
+    /// event's `(id, etag, updated_at)` and every todo's
+    /// `(id, updated_at, md5(ical_data))`. Any create, update or delete
+    /// of an object therefore changes the value, without needing a
+    /// maintained counter or a schema change. Lets clients such as
+    /// DAVx5 skip unchanged calendars instead of re-listing every
+    /// object's ETag on each sync.
+    pub async fn content_ctags(
+        &self,
+        calendar_ids: &[Uuid],
+    ) -> Result<std::collections::HashMap<Uuid, String>, DomainError> {
+        if calendar_ids.is_empty() {
+            return Ok(std::collections::HashMap::new());
+        }
+        let rows = sqlx::query(
+            r#"
+            SELECT c.id,
+                   md5(
+                       c.updated_at::text || '|' || coalesce(c.color, '') || '|' ||
+                       coalesce((
+                           SELECT count(*)::text || ':' || coalesce(string_agg(
+                               e.id::text || '/' || coalesce(e.etag, '') || '/' || e.updated_at::text,
+                               ',' ORDER BY e.id), '')
+                           FROM caldav.calendar_events e WHERE e.calendar_id = c.id
+                       ), '') || '|' ||
+                       coalesce((
+                           SELECT count(*)::text || ':' || coalesce(string_agg(
+                               t.id::text || '/' || t.updated_at::text || '/' || md5(coalesce(t.ical_data, '')),
+                               ',' ORDER BY t.id), '')
+                           FROM caldav.calendar_todos t WHERE t.calendar_id = c.id
+                       ), '')
+                   ) AS ctag
+            FROM caldav.calendars c
+            WHERE c.id = ANY($1)
+            "#,
+        )
+        .bind(calendar_ids)
+        .fetch_all(&*self.pool)
+        .await
+        .map_err(|e| DomainError::database_error(format!("Failed to compute calendar ctags: {}", e)))?;
+
+        Ok(rows
+            .into_iter()
+            .map(|row| (row.get::<Uuid, _>("id"), row.get::<String, _>("ctag")))
+            .collect())
+    }
+
     /// `EXISTS` short-circuit for the login provisioning hook, which only
     /// needs to know whether the user owns ANY calendar. The old
     /// `list_calendars_by_owner(..).is_empty()` hydrated every owned

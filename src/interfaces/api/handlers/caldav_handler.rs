@@ -698,7 +698,10 @@ async fn handle_propfind(
                 ))
             };
 
-            if let Ok(calendar) = calendar_result {
+            if let Ok(mut calendar) = calendar_result {
+                calendar_service
+                    .attach_ctags(std::slice::from_mut(&mut calendar))
+                    .await;
                 // Valid calendar ID — return calendar collection.
                 // Depth-1 streams the event listing page by page
                 // (whole-calendar responses used to materialise every
@@ -751,10 +754,11 @@ async fn handle_propfind(
             } else {
                 // Not a calendar ID — treat as user calendar home (e.g. /caldav/{username}/)
                 // List all calendars for this user
-                let calendars = calendar_service
+                let mut calendars = calendar_service
                     .list_my_calendars(user.id)
                     .await
                     .map_err(AppError::from)?;
+                calendar_service.attach_ctags(&mut calendars).await;
 
                 let base_href = &format!(
                     "{}/caldav/{}/",
@@ -792,10 +796,13 @@ async fn handle_propfind(
                 if sub_parts.len() == 1 {
                     // /caldav/{username}/{calendar_id}
                     // Try to get this as a calendar collection
-                    let cal = calendar_service
+                    let mut cal = calendar_service
                         .get_calendar_with_access(sub_parts[0], user.id)
                         .await
                         .map_err(|e| AppError::not_found(format!("Calendar not found: {}", e)))?;
+                    calendar_service
+                        .attach_ctags(std::slice::from_mut(&mut cal))
+                        .await;
 
                     // Same streaming/buffered split as the
                     // single-segment collection branch above.

@@ -16,6 +16,12 @@ pub struct CalendarDto {
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     pub custom_properties: HashMap<String, String>,
+    /// CalendarServer `getctag`: changes whenever any object in the
+    /// calendar (or the calendar's own properties) changes. Computed on
+    /// demand for CalDAV PROPFIND responses (see
+    /// `CalendarService::attach_ctags`); not part of the REST shape.
+    #[serde(skip)]
+    pub ctag: Option<String>,
 }
 
 impl Default for CalendarDto {
@@ -29,6 +35,7 @@ impl Default for CalendarDto {
             created_at: Utc::now(),
             updated_at: Utc::now(),
             custom_properties: HashMap::new(),
+            ctag: None,
         }
     }
 }
@@ -48,6 +55,7 @@ impl From<Calendar> for CalendarDto {
             created_at: p.created_at,
             updated_at: p.updated_at,
             custom_properties: p.custom_properties,
+            ctag: None,
         }
     }
 }

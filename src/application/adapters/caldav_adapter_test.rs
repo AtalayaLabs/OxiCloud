@@ -24,6 +24,7 @@ mod tests {
             created_at: Utc.with_ymd_and_hms(2025, 1, 1, 0, 0, 0).unwrap(),
             updated_at: Utc.with_ymd_and_hms(2025, 1, 15, 12, 0, 0).unwrap(),
             custom_properties: HashMap::new(),
+            ctag: Some("ctag-abc".to_string()),
         };
         AccessibleCalendar { calendar, access }
     }
@@ -710,5 +711,64 @@ mod tests {
             }
             other => panic!("Expected CalendarQuery, got {:?}", other),
         }
+    }
+
+    // ========================
+    // getctag
+    // ========================
+
+    fn ctag_request() -> PropFindRequest {
+        PropFindRequest {
+            prop_find_type: PropFindType::Prop(vec![QualifiedName {
+                namespace: "http://calendarserver.org/ns/".to_string(),
+                name: "getctag".to_string(),
+            }]),
+        }
+    }
+
+    #[test]
+    fn test_getctag_served_on_collection_and_home_listing() {
+        let calendar = sample_calendar();
+        let mut output = Vec::new();
+        CalDavAdapter::generate_calendar_collection_propfind(
+            &mut output,
+            &calendar,
+            &[],
+            &ctag_request(),
+            "/caldav/cal-001/",
+            "0",
+        )
+        .expect("propfind");
+        let xml = String::from_utf8(output).expect("utf8");
+        assert!(xml.contains("<CS:getctag>ctag-abc</CS:getctag>"), "{xml}");
+
+        let mut output = Vec::new();
+        CalDavAdapter::generate_calendars_propfind_response(
+            &mut output,
+            &[sample_calendar()],
+            &ctag_request(),
+            "/caldav/",
+        )
+        .expect("propfind");
+        let xml = String::from_utf8(output).expect("utf8");
+        assert!(xml.contains("<CS:getctag>ctag-abc</CS:getctag>"), "{xml}");
+    }
+
+    #[test]
+    fn test_getctag_empty_when_not_computed() {
+        let mut calendar = sample_calendar();
+        calendar.calendar.ctag = None;
+        let mut output = Vec::new();
+        CalDavAdapter::generate_calendar_collection_propfind(
+            &mut output,
+            &calendar,
+            &[],
+            &ctag_request(),
+            "/caldav/cal-001/",
+            "0",
+        )
+        .expect("propfind");
+        let xml = String::from_utf8(output).expect("utf8");
+        assert!(xml.contains("<CS:getctag/>"), "{xml}");
     }
 }

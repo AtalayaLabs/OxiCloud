@@ -18,6 +18,49 @@ impl AddressBookPgRepository {
         Self { pool }
     }
 
+    /// Content-derived CalendarServer `getctag` per address book.
+    ///
+    /// Hashes the book's own `updated_at`/`color` plus every contact's
+    /// `(id, etag, updated_at)`, so any create, update or delete of a
+    /// contact changes the value — without a maintained counter or a
+    /// schema change. Lets clients such as DAVx5 skip an unchanged
+    /// address book instead of re-listing every contact's ETag.
+    pub async fn content_ctags(
+        &self,
+        address_book_ids: &[Uuid],
+    ) -> Result<std::collections::HashMap<Uuid, String>, DomainError> {
+        if address_book_ids.is_empty() {
+            return Ok(std::collections::HashMap::new());
+        }
+        let rows = sqlx::query(
+            r#"
+            SELECT b.id,
+                   md5(
+                       b.updated_at::text || '|' || coalesce(b.color, '') || '|' ||
+                       coalesce((
+                           SELECT count(*)::text || ':' || coalesce(string_agg(
+                               c.id::text || '/' || c.etag || '/' || c.updated_at::text,
+                               ',' ORDER BY c.id), '')
+                           FROM carddav.contacts c WHERE c.address_book_id = b.id
+                       ), '')
+                   ) AS ctag
+            FROM carddav.address_books b
+            WHERE b.id = ANY($1)
+            "#,
+        )
+        .bind(address_book_ids)
+        .fetch_all(&*self.pool)
+        .await
+        .map_err(|e| {
+            DomainError::database_error(format!("Failed to compute address book ctags: {}", e))
+        })?;
+
+        Ok(rows
+            .into_iter()
+            .map(|row| (row.get::<Uuid, _>("id"), row.get::<String, _>("ctag")))
+            .collect())
+    }
+
     /// `EXISTS` short-circuit for the login provisioning hook — the old
     /// `get_address_books_by_owner(..).is_empty()` hydrated every owned
     /// `AddressBook` row on EVERY login just to test emptiness (the ROUND9

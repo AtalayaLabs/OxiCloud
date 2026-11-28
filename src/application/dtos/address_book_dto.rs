@@ -11,6 +11,13 @@ pub struct AddressBookDto {
     pub color: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+    /// CalendarServer `getctag`: changes whenever any contact in the
+    /// address book (or the book's own properties) changes. Computed on
+    /// demand for CardDAV PROPFIND responses (see
+    /// `ContactService::attach_address_book_ctags`); not part of the
+    /// REST shape.
+    #[serde(skip)]
+    pub ctag: Option<String>,
 }
 
 impl Default for AddressBookDto {
@@ -23,6 +30,7 @@ impl Default for AddressBookDto {
             color: None,
             created_at: Utc::now(),
             updated_at: Utc::now(),
+            ctag: None,
         }
     }
 }
@@ -40,6 +48,7 @@ impl From<AddressBook> for AddressBookDto {
             color: p.color,
             created_at: p.created_at,
             updated_at: p.updated_at,
+            ctag: None,
         }
     }
 }

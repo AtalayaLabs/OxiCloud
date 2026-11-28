@@ -53,6 +53,20 @@ impl ContactStorageAdapter {
     }
 }
 
+impl ContactStorageAdapter {
+    /// Content-derived `getctag` per address book (see
+    /// `AddressBookPgRepository::content_ctags`).
+    pub async fn address_book_ctags(
+        &self,
+        address_book_ids: &[uuid::Uuid],
+    ) -> Result<std::collections::HashMap<uuid::Uuid, String>, crate::common::errors::DomainError>
+    {
+        self.address_book_repository
+            .content_ctags(address_book_ids)
+            .await
+    }
+}
+
 impl ContactStoragePort for ContactStorageAdapter {
     // ── Address books ────────────────────────────────────────────
 

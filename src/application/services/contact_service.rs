@@ -60,6 +60,24 @@ pub struct ContactService {
 }
 
 impl ContactService {
+    /// Fills `AddressBookDto::ctag` for address books the caller already
+    /// holds (they come from an access-checked lookup). Best effort: on
+    /// a database error the ctag stays `None` and clients fall back to a
+    /// full ETag listing, exactly as before.
+    pub async fn attach_address_book_ctags(&self, books: &mut [AddressBookDto]) {
+        let ids: Vec<Uuid> = books
+            .iter()
+            .filter_map(|b| Uuid::parse_str(&b.id).ok())
+            .collect();
+        if let Ok(ctags) = self.contact_storage.address_book_ctags(&ids).await {
+            for book in books.iter_mut() {
+                if let Ok(id) = Uuid::parse_str(&book.id) {
+                    book.ctag = ctags.get(&id).cloned();
+                }
+            }
+        }
+    }
+
     pub fn new(contact_storage: Arc<ContactStorageAdapter>, authz: Arc<PgAclEngine>) -> Self {
         Self {
             contact_storage,
