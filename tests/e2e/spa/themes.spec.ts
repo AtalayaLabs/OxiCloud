@@ -2,11 +2,25 @@ import { test, expect } from './coverage-helpers';
 import type { Page } from '@playwright/test';
 import { themes, colorModes, applyTheme, expectThemeLoaded, expectReadable } from './theme-helpers';
 import { apiLogin } from './helpers';
+import * as fs from 'node:fs';
+import * as nodePath from 'node:path';
 
 const rootId = '00000000-0000-4000-8000-000000000002';
 const userId = '00000000-0000-4000-8000-000000000001';
 const stamp = '2026-11-01T12:00:00Z';
 const fileName = (i: number) => `Review ${String(i + 1).padStart(3, '0')}.pdf`;
+
+// pdf.js fetches `/api/files/{id}` for every PDF-mime row in the list so it
+// can render a client-side thumbnail. The browser-side mocks give the SPA a
+// fake 120-row list but no bodies, so the pdf.js worker fetches out to the
+// real server with no real session and gets 401. The 401 surfaces as a
+// pdf.js `UnexpectedResponseException` on the page, which the global JS-error
+// collector in `helpers.ts` turns into a test failure. Serving a real
+// (tiny) PDF body from the fixture keeps pdf.js happy — thumbnail generation
+// succeeds in-browser, no outbound request, no unhandled rejection.
+const STUB_PDF = fs.readFileSync(
+  nodePath.join(__dirname, '..', '..', 'fixtures', 'doc-date.pdf'),
+);
 
 /** CSS checks use the real SPA with browser-only API fixtures. No instance
  * appearance setting, account or stored document is changed by these tests. */
@@ -87,7 +101,20 @@ async function library(page: Page) {
                 created_by: userId,
                 updated_by: userId,
                 size: 283100 + i,
-                mime_type: 'application/pdf',
+                // Not `application/pdf` on purpose. The SPA's
+                // client-side thumbnail generator (`lib/utils/thumbnail.ts`)
+                // spawns the pdf.js worker for every PDF-mime row, and
+                // dedicated-worker fetches bypass Playwright's
+                // `page.route` — so each row's `/api/files/{id}` fetch
+                // leaks out to the real server (no real session) and
+                // 401s, and pdf.js surfaces an `UnexpectedResponseException`
+                // the JS-error collector promotes to a test failure.
+                // An unrecognised mime type makes `generate()` throw
+                // "unsupported mime type" before any fetch; the caller
+                // (`queueGenerate`) catches it and warns to console. The
+                // theme suite only exercises CSS over the row names and
+                // controls — no thumbnail is painted either way.
+                mime_type: 'application/octet-stream',
                 category: 'Document',
                 created_at: stamp,
                 modified_at: stamp,
@@ -104,6 +131,17 @@ async function library(page: Page) {
       if (path === '/api/notifications')
         return route.fulfill({ json: { items: [], unread_count: 0 } });
       if (path === '/api/status') return route.fallback();
+      // Any GET /api/files/{id} — the thumbnail generator's pdf.js call.
+      // Serve a real tiny PDF so the parse succeeds in-browser; without
+      // this the fetch leaks out to the server (no real session), 401s,
+      // and pdf.js surfaces an `UnexpectedResponseException` that the
+      // global JS-error collector flags as a test failure.
+      if (/^\/api\/files\/[0-9a-f-]+$/i.test(path))
+        return route.fulfill({
+          status: 200,
+          contentType: 'application/pdf',
+          body: STUB_PDF,
+        });
       return route.fulfill({
         status: 404,
         json: { error: 'NotFound', message: 'Layout fixture' },

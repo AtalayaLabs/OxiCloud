@@ -44,6 +44,8 @@ pub mod in_process_message_bus;
 pub mod job_runs_cleanup_service;
 pub mod jwt_service;
 pub mod last_seen_tracker;
+pub mod list_cleanup_service;
+pub mod list_consistency_service;
 pub mod local_blob_backend;
 pub mod local_fs_mount_provider;
 pub mod login_lockout_service;

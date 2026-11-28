@@ -1,4 +1,5 @@
 use crate::application::dtos::cursor::PageCursor;
+use crate::application::dtos::favorites_dto::ItemKind;
 use crate::application::dtos::recent_dto::{
     RecentCursor, RecentItemDto, RecentOrderBy, RecentResourceRow,
 };
@@ -213,9 +214,114 @@ impl RecentItemsUseCase for RecentService {
     }
 }
 
+// ─────────────────────────────────────────────────────────────
+// `ListCleanup` port — issue #913. Mirror of the `FavoritesService`
+// impl in `favorites_service.rs`; same idempotency contract and
+// cost profile (bounded by `max_recent_items`, not by the user's
+// grant graph).
+//
+// `ResourceAccessHook` has no per-item removal callback (only
+// `on_recents_cleared`), so freshly-orphaned item throttles age
+// out naturally rather than being dropped eagerly. A re-access
+// within the TTL window after the user regains access would
+// quietly no-op — minor UX gap, not a correctness concern.
+// ─────────────────────────────────────────────────────────────
+#[async_trait::async_trait]
+impl crate::application::ports::list_cleanup::ListCleanup for RecentService {
+    fn list_name(&self) -> &'static str {
+        "recent"
+    }
+
+    async fn cleanup_user_orphans(&self, user_id: Uuid) -> Result<u64> {
+        let rows = self
+            .repo
+            .get_recent_items(user_id, self.max_recent_items)
+            .await?;
+        let mut removed = 0u64;
+        for item in rows {
+            let resource = match recent_resource_for(item.item_type, &item.item_id) {
+                Some(r) => r,
+                None => continue, // stray non-UUID row — ignore silently
+            };
+            if self
+                .authorization
+                .check(Subject::User(user_id), Permission::Read, resource)
+                .await?
+            {
+                continue;
+            }
+            let item_type = recent_item_type_str(item.item_type);
+            if self
+                .repo
+                .remove_item(user_id, &item.item_id, item_type)
+                .await?
+            {
+                removed += 1;
+                info!(
+                    target: "audit",
+                    event = "recent.orphan_removed",
+                    reason = "grant_revoked",
+                    caller_id = %user_id,
+                    resource_type = item_type,
+                    resource_id = %item.item_id,
+                    "👮🏻‍♂️ recent item removed after access loss",
+                );
+            }
+        }
+        Ok(removed)
+    }
+
+    async fn count_user_orphans(&self, user_id: Uuid) -> Result<u64> {
+        let rows = self
+            .repo
+            .get_recent_items(user_id, self.max_recent_items)
+            .await?;
+        let mut count = 0u64;
+        for item in rows {
+            let resource = match recent_resource_for(item.item_type, &item.item_id) {
+                Some(r) => r,
+                None => continue,
+            };
+            if !self
+                .authorization
+                .check(Subject::User(user_id), Permission::Read, resource)
+                .await?
+            {
+                count += 1;
+            }
+        }
+        Ok(count)
+    }
+}
+
+/// Mirror of `favorites_service`'s private `resource_for` — kept
+/// local rather than hoisted to the shared `ItemKind` enum so each
+/// service owns its own stray-row handling (both treat non-UUID
+/// rows as not-an-orphan, which is right for drift, not for
+/// corruption).
+fn recent_resource_for(kind: ItemKind, item_id: &str) -> Option<Resource> {
+    let id = Uuid::parse_str(item_id).ok()?;
+    Some(match kind {
+        ItemKind::File => Resource::File(id),
+        ItemKind::Folder => Resource::Folder(id),
+    })
+}
+
+fn recent_item_type_str(kind: ItemKind) -> &'static str {
+    match kind {
+        ItemKind::File => "file",
+        ItemKind::Folder => "folder",
+    }
+}
+
 impl RecentService {
     /// No authz needed — recent items are strictly user-scoped; the repository
     /// enforces `WHERE user_id = $1` so users can only see their own entries.
+    ///
+    /// Stale rows (recent items of resources the caller has lost access
+    /// to) are swept by [`Self::cleanup_user_orphans`], which
+    /// `grant_handler::revoke_grant` calls on every revoke. The
+    /// listing itself trusts the stored set.
     ///
     /// Returns `(rows, next_cursor_encoded)`.
     pub async fn list_resources_paged(
