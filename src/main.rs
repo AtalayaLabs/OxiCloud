@@ -189,6 +189,15 @@ fn make_socket(addr: &SocketAddr, reuse_port: bool) -> std::io::Result<Socket> {
     if reuse_port {
         socket.set_reuse_port(true)?;
     }
+    // Windows has no SO_REUSEPORT. Refuse instead of silently running
+    // without the behaviour the operator asked for.
+    #[cfg(windows)]
+    if reuse_port {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "OXICLOUD_REUSE_PORT is not supported on Windows",
+        ));
+    }
     // Disable Nagle's algorithm — send small responses (JSON, PROPFIND)
     // immediately instead of waiting up to 40ms for coalescing.
     socket.set_tcp_nodelay(true)?;
