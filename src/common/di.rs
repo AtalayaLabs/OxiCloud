@@ -716,6 +716,12 @@ impl AppServiceFactory {
             tracing::info!("Recent changes feed is disabled (enable_recent_changes = false)");
             None
         };
+        // Sync-collection change log — RFC 6578 incremental WebDAV sync.
+        let folder_sync_change_repository = Arc::new(
+            crate::infrastructure::repositories::pg::FolderSyncChangePgRepository::new(
+                db_pool.clone(),
+            ),
+        );
 
         tracing::info!(
             "Repository services initialized with 100% blob storage model (PG metadata + BlobHandler blobs)"
@@ -730,6 +736,7 @@ impl AppServiceFactory {
             i18n_repository,
             trash_repository,
             recent_changes_repository,
+            folder_sync_change_repository,
         }
     }
 
@@ -934,6 +941,19 @@ impl AppServiceFactory {
             None
         };
 
+        let webdav_sync_collection_service = Arc::new(
+            crate::application::services::webdav_sync_collection_service::WebdavSyncCollectionService::new(
+                repos.folder_sync_change_repository.clone(),
+                crate::application::services::webdav_sync_collection_service::PgWebdavMembers::new(
+                    repos.folder_repository.clone(),
+                    repos.file_read_repository.clone(),
+                    folder_service.clone(),
+                    file_retrieval_service.clone(),
+                ),
+                authz.clone(),
+            ),
+        );
+
         tracing::info!("Application services initialized");
 
         ApplicationServices {
@@ -955,6 +975,7 @@ impl AppServiceFactory {
             recent_service: None,    // Configured later with create_recent_service
             audio_metadata_service: core.audio_metadata_service.clone(),
             media_metadata_service: core.media_metadata_service.clone(),
+            webdav_sync_collection_service,
         }
     }
 
@@ -4166,6 +4187,9 @@ pub struct RepositoryServices {
     /// so the handler's `None` arm is unreachable belt-and-braces rather than
     /// the gate itself.
     pub recent_changes_repository: Option<Arc<RecentChangesPgRepository>>,
+    /// RFC 6578 `sync-collection` change log for WebDAV files/folders.
+    pub folder_sync_change_repository:
+        Arc<crate::infrastructure::repositories::pg::FolderSyncChangePgRepository>,
 }
 
 /// Container for application services
@@ -4192,6 +4216,11 @@ pub struct ApplicationServices {
     pub recent_service: Option<Arc<RecentService>>,
     pub audio_metadata_service: Option<Arc<AudioMetadataService>>,
     pub media_metadata_service: Arc<MediaMetadataService>,
+    /// RFC 6578 `sync-collection` REPORT — real incremental sync for
+    /// WebDAV files/folders (plain WebDAV + NextCloud surfaces).
+    pub webdav_sync_collection_service: Arc<
+        crate::application::services::webdav_sync_collection_service::WebdavSyncCollectionService,
+    >,
 }
 
 /// Container for authentication services
