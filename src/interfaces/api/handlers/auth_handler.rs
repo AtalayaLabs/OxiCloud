@@ -1,9 +1,7 @@
 use axum::{
-    Router,
     extract::{ConnectInfo, Json, Query, State},
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Redirect, Response},
-    routing::{get, post, put},
 };
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -14,10 +12,22 @@ use crate::application::dtos::user_dto::{
     AuthResponseDto, ChangePasswordDto, LoginDto, OidcCallbackQueryDto, OidcExchangeDto,
     PublicUserDto, RefreshTokenDto, RegisterDto, SelfUserDto, SetupAdminDto, UpgradeToInternalDto,
 };
+use crate::application::ports::scope_ports::Condition;
 use crate::application::services::auth_application_service::{OidcCallbackResult, RegisterResult};
 use crate::application::services::registration_policy::domain_allowed;
 use crate::common::di::AppState;
 use crate::interfaces::api::cookie_auth;
+use crate::interfaces::api::policy_router::{GatedRouter, get, post, put};
+
+/// No credential at all. The spec turns this into `security: []`, which is
+/// the only honest way to document an endpoint that needs none.
+///
+/// `policy_get` / `policy_post` are aliased rather than shadowing axum's
+/// only because this file also builds a PLAIN `Router`
+/// (`auth_protected_routes`), so both verb sets are in scope. In a file
+/// that is wholly `GatedRouter`, import them as `get` / `post` and the
+/// prefix disappears.
+const PUBLIC: [Condition; 1] = [Condition::public()];
 use crate::interfaces::errors::AppError;
 use crate::interfaces::middleware::auth::{AuthUser, CurrentUserId};
 use crate::interfaces::middleware::trusted_proxy::client_ip_from_parts;
@@ -25,8 +35,14 @@ use crate::interfaces::middleware::trusted_proxy::request_origin;
 use serde::Deserialize;
 
 /// Public auth routes, no authentication required.
-pub fn auth_public_routes() -> Router<Arc<AppState>> {
-    Router::new()
+/// Returns the router AND its declarations.
+///
+/// Every route here is PUBLIC — reachable with no credential — and says so
+/// per verb. Without that, the default policy is an authenticated user, so
+/// the spec would claim a bearer these need, and `just openapi` reports
+/// each one.
+pub fn auth_public_routes() -> GatedRouter<Arc<AppState>> {
+    GatedRouter::new()
         // /status endpoint retired. The one unique signal it carried
         // (`initialized`) moved to `/api/config.initialized`; the
         // other three fields (admin_count, registration_allowed,
@@ -35,22 +51,30 @@ pub fn auth_public_routes() -> Router<Arc<AppState>> {
         // at `/oidc/providers`; it was retired on feat/registration —
         // the same payload (plus `password`/`magic_link`/`registration`
         // sibling blocks) is now carried by `GET /api/config.auth.oidc`.
-        .route("/oidc/authorize", get(oidc_authorize))
-        .route("/oidc/callback", get(oidc_callback))
-        .route("/oidc/exchange", post(oidc_exchange))
+        .route("/oidc/authorize", get(oidc_authorize).policy(PUBLIC))
+        .route("/oidc/callback", get(oidc_callback).policy(PUBLIC))
+        .route("/oidc/exchange", post(oidc_exchange).policy(PUBLIC))
         // OIDC Back-Channel Logout 1.0 — public (server-to-server call
         // from the IdP with a signed logout_token; no cookies, no CSRF).
-        .route("/oidc/backchannel-logout", post(oidc_backchannel_logout))
+        .route(
+            "/oidc/backchannel-logout",
+            post(oidc_backchannel_logout).policy(PUBLIC),
+        )
         // Login-via-email — sends a magic-link to the user's email so
         // accounts with no other login credential can sign in.
-        .route("/magic-link/send", post(send_magic_link))
+        .route("/magic-link/send", post(send_magic_link).policy(PUBLIC))
 }
 
 /// Protected auth routes, require authentication (auth + CSRF middleware
 /// must be applied by the caller in main.rs).
-pub fn auth_protected_routes() -> Router<Arc<AppState>> {
+pub fn auth_protected_routes() -> GatedRouter<Arc<AppState>> {
     use axum::routing::patch;
-    Router::new()
+    // A `GatedRouter` even though it declares nothing yet: these
+    // operations are `account` (`/me*`) and `security`
+    // (`change-password`, `upgrade-to-internal`) in § Areas, not
+    // protocols, so PR 2 declares scopes here. Returning a bare `Router`
+    // would mean no route in it could declare per verb.
+    GatedRouter::new()
         .route("/me", get(get_current_user))
         .route("/me/image", put(update_user_image))
         .route("/me/profile", patch(update_profile))
@@ -71,21 +95,21 @@ pub fn auth_protected_routes() -> Router<Arc<AppState>> {
 
 /// Rate-limited auth routes, split out so main.rs can apply per-endpoint
 /// rate limiting middleware independently.
-pub fn login_route() -> Router<Arc<AppState>> {
-    Router::new().route("/login", post(login))
+pub fn login_route() -> GatedRouter<Arc<AppState>> {
+    GatedRouter::new().route("/login", post(login).policy(PUBLIC))
 }
 
-pub fn register_route() -> Router<Arc<AppState>> {
-    Router::new().route("/register", post(register))
+pub fn register_route() -> GatedRouter<Arc<AppState>> {
+    GatedRouter::new().route("/register", post(register).policy(PUBLIC))
 }
 
-pub fn refresh_route() -> Router<Arc<AppState>> {
-    Router::new().route("/refresh", post(refresh_token))
+pub fn refresh_route() -> GatedRouter<Arc<AppState>> {
+    GatedRouter::new().route("/refresh", post(refresh_token).policy(PUBLIC))
 }
 
 /// Public setup route, only active before the first admin is created.
-pub fn setup_route() -> Router<Arc<AppState>> {
-    Router::new().route("/setup", post(setup_admin))
+pub fn setup_route() -> GatedRouter<Arc<AppState>> {
+    GatedRouter::new().route("/setup", post(setup_admin).policy(PUBLIC))
 }
 
 /// `OXICLOUD_REGISTRATION_ALLOWED_EMAIL_DOMAINS` gate, shared by the two
@@ -176,7 +200,6 @@ fn require_registration_domain_allowed(
         (status = 503, description = "Email-only signup requires SMTP to be configured", body = crate::interfaces::errors::ApiErrorBody),
     ),
     // Public — account creation precedes any credential to present.
-    security(),
     tag = "auth"
 )]
 pub async fn register(
@@ -357,7 +380,6 @@ pub async fn register(
         (status = 429, description = "Account temporarily locked (too many failed attempts)", body = crate::interfaces::errors::ApiErrorBody),
     ),
     // Public — this endpoint is what issues the bearer token.
-    security(),
     tag = "auth"
 )]
 pub async fn login(
@@ -615,7 +637,6 @@ pub async fn login(
     // from the access token and deliberately usable once the access token
     // has expired. Empty rather than a scheme, because the spec declares
     // only `bearerAuth`.
-    security(),
     tag = "auth"
 )]
 pub async fn refresh_token(
@@ -685,7 +706,6 @@ pub async fn refresh_token(
         (status = 200, description = "Current user profile", body = SelfUserDto),
         (status = 401, description = "Not authenticated", body = crate::interfaces::errors::ApiErrorBody),
     ),
-    security(("bearerAuth" = [])),
     tag = "auth"
 )]
 pub async fn get_current_user(
@@ -742,7 +762,6 @@ pub struct UpdateUserImageDto {
         (status = 400, description = "New password does not meet requirements", body = crate::interfaces::errors::ApiErrorBody),
         (status = 401, description = "Not authenticated or current password incorrect", body = crate::interfaces::errors::ApiErrorBody),
     ),
-    security(("bearerAuth" = [])),
     tag = "auth"
 )]
 pub async fn change_password(
@@ -892,7 +911,6 @@ pub async fn change_password(
         (status = 403, description = "OIDC user, or domain not in allowlist", body = crate::interfaces::errors::ApiErrorBody),
         (status = 409, description = "Already internal", body = crate::interfaces::errors::ApiErrorBody),
     ),
-    security(("bearerAuth" = [])),
     tag = "auth"
 )]
 pub async fn upgrade_to_internal(
@@ -1011,7 +1029,6 @@ pub async fn upgrade_to_internal(
         (status = 403, description = "OIDC-managed profile — edit at the IdP", body = crate::interfaces::errors::ApiErrorBody),
         (status = 409, description = "Username already claimed (immutable) or taken by another user", body = crate::interfaces::errors::ApiErrorBody),
     ),
-    security(("bearerAuth" = [])),
     tag = "auth"
 )]
 pub async fn update_profile(
@@ -1070,7 +1087,6 @@ pub async fn update_profile(
         (status = 400, description = "Validation error (invalid data URI / unsupported MIME / oversized / malformed URL)", body = crate::interfaces::errors::ApiErrorBody),
         (status = 401, description = "Not authenticated", body = crate::interfaces::errors::ApiErrorBody),
     ),
-    security(("bearerAuth" = [])),
     tag = "auth"
 )]
 pub async fn update_user_image(
@@ -1110,7 +1126,6 @@ pub async fn update_user_image(
         (status = 200, body = Object, description = "The caller's sessions"),
         (status = 401, description = "Not authenticated", body = crate::interfaces::errors::ApiErrorBody),
     ),
-    security(("bearerAuth" = [])),
     tag = "auth"
 )]
 pub async fn list_own_sessions(
@@ -1166,7 +1181,6 @@ pub async fn list_own_sessions(
         (status = 401, description = "Not authenticated", body = crate::interfaces::errors::ApiErrorBody),
         (status = 404, description = "No such session for this caller", body = crate::interfaces::errors::ApiErrorBody),
     ),
-    security(("bearerAuth" = [])),
     tag = "auth"
 )]
 pub async fn revoke_own_session(
@@ -1210,7 +1224,6 @@ pub async fn revoke_own_session(
         (status = 200, body = Object, description = "Logged out, auth cookies cleared"),
         (status = 401, description = "Not authenticated or refresh token missing", body = crate::interfaces::errors::ApiErrorBody),
     ),
-    security(("bearerAuth" = [])),
     tag = "auth"
 )]
 pub async fn logout(
@@ -1299,7 +1312,6 @@ pub struct DpopBindDto {
         (status = 401, description = "Not authenticated", body = crate::interfaces::errors::ApiErrorBody),
         (status = 409, description = "Session already bound", body = crate::interfaces::errors::ApiErrorBody),
     ),
-    security(("bearerAuth" = [])),
     tag = "auth"
 )]
 pub async fn dpop_bind(
@@ -1364,7 +1376,6 @@ pub async fn dpop_bind(
     ),
     // Public — called by the IdP, not a user. Trust comes from the signed
     // `logout_token` JWT in the body, not from a session.
-    security(),
     tag = "auth"
 )]
 pub async fn oidc_backchannel_logout(
@@ -1465,7 +1476,6 @@ fn setup_already_initialized(username: &str) -> AppError {
     ),
     // Public — first-run bootstrap. There is no admin yet to authenticate
     // as; the 403 arm is what closes it once one exists.
-    security(),
     tag = "auth"
 )]
 pub async fn setup_admin(
@@ -1588,7 +1598,6 @@ pub async fn setup_admin(
     ),
     // Public — the entry point of the OIDC redirect dance, reached by a
     // browser that has no token yet.
-    security(),
     tag = "auth"
 )]
 pub async fn oidc_authorize(
@@ -1634,7 +1643,6 @@ pub async fn oidc_authorize(
         (status = 404, description = "OIDC not enabled", body = crate::interfaces::errors::ApiErrorBody),
         (status = 409, description = "User is already linked — unlink first", body = crate::interfaces::errors::ApiErrorBody),
     ),
-    security(("bearerAuth" = [])),
     tag = "auth"
 )]
 pub async fn oidc_link_start(
@@ -1676,7 +1684,6 @@ pub async fn oidc_link_start(
         (status = 401, description = "Not authenticated", body = crate::interfaces::errors::ApiErrorBody),
         (status = 403, description = "Refused — user has no other credential and would be locked out", body = crate::interfaces::errors::ApiErrorBody),
     ),
-    security(("bearerAuth" = [])),
     tag = "auth"
 )]
 pub async fn oidc_unlink(
@@ -1727,7 +1734,6 @@ pub async fn oidc_unlink(
     ),
     // Public — the IdP redirects the browser here. Trust comes from the
     // `state` / `nonce` validation, not from a bearer token.
-    security(),
     tag = "auth"
 )]
 pub async fn oidc_callback(
@@ -1925,7 +1931,6 @@ pub async fn oidc_callback(
     ),
     // Public — trades the one-time code minted by the OIDC callback for
     // tokens, so it necessarily runs before the caller holds one.
-    security(),
     tag = "auth"
 )]
 pub async fn oidc_exchange(
@@ -2016,7 +2021,6 @@ pub struct SendMagicLinkDto {
     ),
     // Public — the caller is by definition not signed in; the whole point
     // is to mail them a way in.
-    security(),
     tag = "auth",
 )]
 pub async fn send_magic_link(

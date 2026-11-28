@@ -15,7 +15,6 @@ use crate::infrastructure::services::password_hasher::Argon2PasswordHasher;
 use chrono::{Duration, Utc};
 use moka::future::Cache;
 use rand_core::RngCore;
-use smol_str::SmolStr;
 use std::sync::Arc;
 use std::time::Duration as StdDuration;
 use uuid::Uuid;
@@ -58,16 +57,20 @@ const BASIC_AUTH_CACHE_MAX_ENTRIES: u64 = 10_000;
 
 /// Cached identity returned after a successful Basic Auth verification.
 ///
-/// `Arc<str>` / inline `SmolStr` fields: moka's `get` clones the value, so
-/// with owned `String`s every warm Basic-auth request (all DAV traffic)
-/// paid 3 string copies just to read the cached identity. Now a hit is
-/// refcount bumps + a 24-byte memcpy.
+/// `Arc<str>` fields: moka's `get` clones the value, so with owned
+/// `String`s every warm Basic-auth request (all DAV traffic) paid string
+/// copies just to read the cached identity. Now a hit is refcount bumps.
+///
+/// **No role.** It was cached here and DROPPED by both callers, each with
+/// a comment saying why: this cache has a 300 s TTL, so a role read from
+/// it can name one the user no longer holds, and the live value is
+/// re-resolved per request from the 30 s flags cache. Carrying it was 24
+/// bytes of staleness that only invited a third caller to trust it.
 #[derive(Clone)]
 struct CachedBasicAuthResult {
     user_id: Uuid,
     username: Arc<str>,
     email: Arc<str>,
-    role: SmolStr,
 }
 
 pub struct AppPasswordService {
@@ -311,7 +314,7 @@ impl AppPasswordService {
         &self,
         username: &str,
         password: &str,
-    ) -> Result<(Uuid, Arc<str>, Arc<str>, SmolStr), DomainError> {
+    ) -> Result<(Uuid, Arc<str>, Arc<str>), DomainError> {
         // ── 1. Compute cache key = blake3("username:password") ────────
         // Stream the parts into an incremental hasher instead of
         // `blake3::hash(format!("{username}:{password}").as_bytes())` — the
@@ -355,7 +358,7 @@ impl AppPasswordService {
                     }
                 },
             )?;
-        Ok((result.user_id, result.username, result.email, result.role))
+        Ok((result.user_id, result.username, result.email))
     }
 
     /// The uncached Basic Auth slow path: user lookup, prefix-scoped
@@ -456,7 +459,6 @@ impl AppPasswordService {
                     user_id: user.id(),
                     username: Arc::from(user.username().unwrap_or("")),
                     email: Arc::from(user.email()),
-                    role: SmolStr::new_static(user.role().as_str()),
                 });
             }
         }

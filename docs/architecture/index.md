@@ -70,6 +70,7 @@ src/
 
 ## Further Reading
 
+- [Authorization Axes →](/architecture/authorization-axes) — gate vs scope vs grant: which question each answers, where each is enforced, and what a classic API request actually checks
 - [ReBAC Authorization →](/architecture/rebac-authorization)
 - [Caching Architecture →](/architecture/caching)
 - [Resource Listing API →](/architecture/resource-listing)

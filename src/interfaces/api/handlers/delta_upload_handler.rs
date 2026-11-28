@@ -159,7 +159,6 @@ fn parse_chunk_frames(
         (status = 400, description = "Malformed chunk list (hash format, size bounds, count ceiling)", body = crate::interfaces::errors::ApiErrorBody),
         (status = 429, description = "Rate limited", body = crate::interfaces::errors::ApiErrorBody),
     ),
-    security(("bearerAuth" = [])),
     tag = "delta-upload"
 )]
 pub async fn delta_negotiate(
@@ -187,7 +186,6 @@ pub async fn delta_negotiate(
         (status = 400, description = "Malformed framing, oversized frame, or oversized request", body = crate::interfaces::errors::ApiErrorBody),
         (status = 429, description = "Rate limited", body = crate::interfaces::errors::ApiErrorBody),
     ),
-    security(("bearerAuth" = [])),
     tag = "delta-upload"
 )]
 pub async fn delta_upload_chunks(
@@ -220,7 +218,6 @@ pub async fn delta_upload_chunks(
         (status = 429, description = "Rate limited", body = crate::interfaces::errors::ApiErrorBody),
         (status = 507, description = "Storage quota exceeded", body = crate::interfaces::errors::ApiErrorBody),
     ),
-    security(("bearerAuth" = [])),
     tag = "delta-upload"
 )]
 pub async fn delta_commit(
@@ -268,7 +265,6 @@ pub async fn delta_commit(
         (status = 404, description = "File not found, not accessible, or not owned by the caller", body = crate::interfaces::errors::ApiErrorBody),
         (status = 429, description = "Rate limited", body = crate::interfaces::errors::ApiErrorBody),
     ),
-    security(("bearerAuth" = [])),
     tag = "delta-upload"
 )]
 pub async fn delta_file_manifest(
@@ -321,7 +317,6 @@ pub async fn delta_file_manifest(
         (status = 404, description = "Some chunks are not available to this caller", body = DeltaNotAvailableResponse),
         (status = 429, description = "Rate limited", body = crate::interfaces::errors::ApiErrorBody),
     ),
-    security(("bearerAuth" = [])),
     tag = "delta-upload"
 )]
 pub async fn delta_download_chunks(

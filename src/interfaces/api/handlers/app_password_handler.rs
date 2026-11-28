@@ -5,17 +5,20 @@
 
 use crate::application::dtos::app_password_dto::CreateAppPasswordRequestDto;
 use crate::common::di::AppState;
+use crate::interfaces::api::policy_router::GatedRouter;
 use crate::interfaces::errors::AppError;
 use crate::interfaces::middleware::auth::AuthUser;
+use axum::Json;
 use axum::extract::State;
 use axum::routing::{delete, get, post};
-use axum::{Json, Router};
 use std::sync::Arc;
 use uuid::Uuid;
 
 /// Protected routes — require JWT auth middleware.
-pub fn app_password_routes() -> Router<Arc<AppState>> {
-    Router::new()
+/// Returns the `GatedRouter`: everything under `/api` is nested into one,
+/// so a bare `Router` here would not compose.
+pub fn app_password_routes() -> GatedRouter<Arc<AppState>> {
+    GatedRouter::new()
         .route("/app-passwords", post(create_app_password))
         .route("/app-passwords", get(list_app_passwords))
         .route("/app-passwords/{id}", delete(revoke_app_password))
@@ -44,7 +47,6 @@ pub fn app_password_routes() -> Router<Arc<AppState>> {
         (status = 403, description = "External users cannot mint app passwords", body = crate::interfaces::errors::ApiErrorBody),
         (status = 409, description = "Caller has no claimed username — app password is unusable without one", body = crate::interfaces::errors::ApiErrorBody),
     ),
-    security(("bearerAuth" = [])),
     tag = "app-passwords"
 )]
 pub async fn create_app_password(
@@ -145,7 +147,6 @@ pub async fn create_app_password(
         (status = 200, description = "The caller's app passwords (metadata only, no plain text)", body = crate::application::dtos::app_password_dto::AppPasswordListResponseDto),
         (status = 401, description = "Caller is not signed in", body = crate::interfaces::errors::ApiErrorBody),
     ),
-    security(("bearerAuth" = [])),
     tag = "app-passwords"
 )]
 pub async fn list_app_passwords(
@@ -176,7 +177,6 @@ pub async fn list_app_passwords(
         (status = 401, description = "Caller is not signed in", body = crate::interfaces::errors::ApiErrorBody),
         (status = 404, description = "No app password with this id for the caller", body = crate::interfaces::errors::ApiErrorBody),
     ),
-    security(("bearerAuth" = [])),
     tag = "app-passwords"
 )]
 pub async fn revoke_app_password(

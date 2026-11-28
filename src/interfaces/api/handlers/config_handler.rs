@@ -342,7 +342,6 @@ pub struct FeaturesDto {
     ),
     // Public — read by the SPA before login to learn which auth methods
     // and features this deployment enables (see the doc comment above).
-    security(),
 )]
 pub async fn get_config(State(state): State<Arc<AppState>>) -> Json<ServerConfigDto> {
     let f = &state.core.config.features;

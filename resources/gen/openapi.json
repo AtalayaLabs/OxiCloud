@@ -45,13 +45,19 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": null,
+          "scope": null
+        }
       },
       "post": {
         "tags": [
           "contacts"
         ],
         "summary": "Create a new personal address book.",
+        "description": "Requires an INTERNAL user. An external (grant-only) account is refused: it is a guest invited to specific resources, and this surface aggregates more than that invitation implied.",
         "operationId": "create_address_book",
         "requestBody": {
           "content": {
@@ -89,7 +95,12 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": "internal",
+          "scope": null
+        }
       }
     },
     "/api/address-books/{book_id}": {
@@ -156,7 +167,12 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": null,
+          "scope": null
+        }
       },
       "delete": {
         "tags": [
@@ -204,7 +220,12 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": null,
+          "scope": null
+        }
       }
     },
     "/api/address-books/{book_id}/contacts": {
@@ -302,7 +323,12 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": null,
+          "scope": null
+        }
       },
       "post": {
         "tags": [
@@ -377,7 +403,12 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": null,
+          "scope": null
+        }
       }
     },
     "/api/address-books/{book_id}/contacts/{contact_id}": {
@@ -443,7 +474,12 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": null,
+          "scope": null
+        }
       },
       "put": {
         "tags": [
@@ -537,7 +573,12 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": null,
+          "scope": null
+        }
       },
       "delete": {
         "tags": [
@@ -604,7 +645,12 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": null,
+          "scope": null
+        }
       }
     },
     "/api/address-books/{book_id}/groups": {
@@ -664,7 +710,12 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": null,
+          "scope": null
+        }
       },
       "post": {
         "tags": [
@@ -729,7 +780,12 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": null,
+          "scope": null
+        }
       }
     },
     "/api/address-books/{book_id}/groups/{group_id}": {
@@ -795,7 +851,12 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": null,
+          "scope": null
+        }
       },
       "put": {
         "tags": [
@@ -869,7 +930,12 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": null,
+          "scope": null
+        }
       },
       "delete": {
         "tags": [
@@ -926,7 +992,12 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": null,
+          "scope": null
+        }
       }
     },
     "/api/address-books/{book_id}/groups/{group_id}/contacts": {
@@ -995,7 +1066,12 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": null,
+          "scope": null
+        }
       },
       "post": {
         "tags": [
@@ -1072,7 +1148,12 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": null,
+          "scope": null
+        }
       }
     },
     "/api/address-books/{book_id}/groups/{group_id}/contacts/{contact_id}": {
@@ -1140,7 +1221,12 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": null,
+          "scope": null
+        }
       }
     },
     "/api/admin/banners": {
@@ -1149,7 +1235,7 @@
           "admin"
         ],
         "summary": "GET /api/admin/banners — full list, including `starts_at > now`\nentries not yet visible to users. Admin inspects what they've\nscheduled; the public endpoint filters.",
-        "description": "Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.",
+        "description": "Requires the deployment administrator role; enforced by the compiled policy declared on the `/api/admin` nest.",
         "operationId": "list_ops_banners",
         "responses": {
           "200": {
@@ -1191,14 +1277,18 @@
             "bearerAuth": []
           }
         ],
-        "x-oxicloud-scope": "role:admin"
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": "admin",
+          "scope": null
+        }
       },
       "post": {
         "tags": [
           "admin"
         ],
         "summary": "POST /api/admin/banners — create a new banner.",
-        "description": "Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.",
+        "description": "Requires the deployment administrator role; enforced by the compiled policy declared on the `/api/admin` nest.",
         "operationId": "create_ops_banner",
         "requestBody": {
           "content": {
@@ -1267,7 +1357,11 @@
             "bearerAuth": []
           }
         ],
-        "x-oxicloud-scope": "role:admin"
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": "admin",
+          "scope": null
+        }
       }
     },
     "/api/admin/banners/{id}": {
@@ -1276,7 +1370,7 @@
           "admin"
         ],
         "summary": "PUT /api/admin/banners/{id} — full-replacement update of\nseverity/body/starts_at. `id` + `created_by` + `created_at` stay.",
-        "description": "Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.",
+        "description": "Requires the deployment administrator role; enforced by the compiled policy declared on the `/api/admin` nest.",
         "operationId": "update_ops_banner",
         "parameters": [
           {
@@ -1356,14 +1450,18 @@
             "bearerAuth": []
           }
         ],
-        "x-oxicloud-scope": "role:admin"
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": "admin",
+          "scope": null
+        }
       },
       "delete": {
         "tags": [
           "admin"
         ],
         "summary": "DELETE /api/admin/banners/{id} — remove one banner.",
-        "description": "Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.",
+        "description": "Requires the deployment administrator role; enforced by the compiled policy declared on the `/api/admin` nest.",
         "operationId": "delete_ops_banner",
         "parameters": [
           {
@@ -1416,7 +1514,11 @@
             "bearerAuth": []
           }
         ],
-        "x-oxicloud-scope": "role:admin"
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": "admin",
+          "scope": null
+        }
       }
     },
     "/api/admin/dashboard": {
@@ -1425,7 +1527,7 @@
           "admin"
         ],
         "summary": "GET /api/admin/dashboard — full dashboard statistics",
-        "description": "Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.",
+        "description": "Requires the deployment administrator role; enforced by the compiled policy declared on the `/api/admin` nest.",
         "operationId": "get_dashboard_stats",
         "responses": {
           "200": {
@@ -1464,7 +1566,11 @@
             "bearerAuth": []
           }
         ],
-        "x-oxicloud-scope": "role:admin"
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": "admin",
+          "scope": null
+        }
       }
     },
     "/api/admin/dedup/check/{hash}": {
@@ -1472,7 +1578,7 @@
         "tags": [
           "admin"
         ],
-        "description": "Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.",
+        "description": "Requires the deployment administrator role; enforced by the compiled policy declared on the `/api/admin` nest.",
         "operationId": "admin_check_hash",
         "parameters": [
           {
@@ -1532,7 +1638,11 @@
             "bearerAuth": []
           }
         ],
-        "x-oxicloud-scope": "role:admin"
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": "admin",
+          "scope": null
+        }
       }
     },
     "/api/admin/dedup/recalculate": {
@@ -1540,7 +1650,7 @@
         "tags": [
           "admin"
         ],
-        "description": "Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.",
+        "description": "Requires the deployment administrator role; enforced by the compiled policy declared on the `/api/admin` nest.",
         "operationId": "recalculate_stats",
         "responses": {
           "200": {
@@ -1589,7 +1699,11 @@
             "bearerAuth": []
           }
         ],
-        "x-oxicloud-scope": "role:admin"
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": "admin",
+          "scope": null
+        }
       }
     },
     "/api/admin/dedup/stats": {
@@ -1597,7 +1711,7 @@
         "tags": [
           "admin"
         ],
-        "description": "Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.",
+        "description": "Requires the deployment administrator role; enforced by the compiled policy declared on the `/api/admin` nest.",
         "operationId": "get_stats",
         "responses": {
           "200": {
@@ -1636,7 +1750,11 @@
             "bearerAuth": []
           }
         ],
-        "x-oxicloud-scope": "role:admin"
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": "admin",
+          "scope": null
+        }
       }
     },
     "/api/admin/drive-policies/defaults/{kind}": {
@@ -1645,7 +1763,7 @@
           "admin"
         ],
         "summary": "GET /api/admin/drive-policies/defaults/{kind}",
-        "description": "The policy every new drive of this kind inherits, and that existing\ndrives resolve against for every knob they have not overridden.\n\nRequires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.",
+        "description": "The policy every new drive of this kind inherits, and that existing\ndrives resolve against for every knob they have not overridden.\n\nRequires the deployment administrator role; enforced by the compiled policy declared on the `/api/admin` nest.",
         "operationId": "get_drive_policy_defaults",
         "parameters": [
           {
@@ -1705,14 +1823,18 @@
             "bearerAuth": []
           }
         ],
-        "x-oxicloud-scope": "role:admin"
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": "admin",
+          "scope": null
+        }
       },
       "put": {
         "tags": [
           "admin"
         ],
         "summary": "PUT /api/admin/drive-policies/defaults/{kind}",
-        "description": "**Replaces** the bag rather than merging it. The per-drive PATCH merges\nso an admin can nudge one knob without restating the rest, but a default\nis a complete statement of posture for the kind — merging would leave no\nway to express \"unset this knob\", since a key could never be taken back\nout.\n\nWith `?dry_run=true` nothing is written and the response is the impact\nthe change *would* have: how many drives follow it, how many override it\nand stay put, and how many end up laxer than the new default. That turns\nboth compliance reports into a pre-commit check rather than an\nafter-the-fact audit.\n\nRefuses (400) rather than silently dropping a knob that cannot take\neffect — `read_only`, which is per-drive only, and knobs that do not\napply to the kind. A setting stored where it does nothing is one the\nadmin believes they made.\n\nRequires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.",
+        "description": "**Replaces** the bag rather than merging it. The per-drive PATCH merges\nso an admin can nudge one knob without restating the rest, but a default\nis a complete statement of posture for the kind — merging would leave no\nway to express \"unset this knob\", since a key could never be taken back\nout.\n\nWith `?dry_run=true` nothing is written and the response is the impact\nthe change *would* have: how many drives follow it, how many override it\nand stay put, and how many end up laxer than the new default. That turns\nboth compliance reports into a pre-commit check rather than an\nafter-the-fact audit.\n\nRefuses (400) rather than silently dropping a knob that cannot take\neffect — `read_only`, which is per-drive only, and knobs that do not\napply to the kind. A setting stored where it does nothing is one the\nadmin believes they made.\n\nRequires the deployment administrator role; enforced by the compiled policy declared on the `/api/admin` nest.",
         "operationId": "set_drive_policy_defaults",
         "parameters": [
           {
@@ -1789,7 +1911,11 @@
             "bearerAuth": []
           }
         ],
-        "x-oxicloud-scope": "role:admin"
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": "admin",
+          "scope": null
+        }
       }
     },
     "/api/admin/drive-policies/drift": {
@@ -1798,7 +1924,7 @@
           "admin"
         ],
         "summary": "GET /api/admin/drive-policies/drift",
-        "description": "Drives that are currently laxer than their kind's default, across both\nkinds, computed live.\n\nDeliberately NOT a consistency-job finding. It reads two small tables, so\na page load can afford it — and being live is what makes it correct: a\nscan reports a completed run, so a drive the admin has just fixed stays\non the list until someone re-scans. Here the row disappears as soon as\nthe override is corrected.\n\nRequires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.",
+        "description": "Drives that are currently laxer than their kind's default, across both\nkinds, computed live.\n\nDeliberately NOT a consistency-job finding. It reads two small tables, so\na page load can afford it — and being live is what makes it correct: a\nscan reports a completed run, so a drive the admin has just fixed stays\non the list until someone re-scans. Here the row disappears as soon as\nthe override is corrected.\n\nRequires the deployment administrator role; enforced by the compiled policy declared on the `/api/admin` nest.",
         "operationId": "get_drive_policy_drift",
         "responses": {
           "200": {
@@ -1840,7 +1966,11 @@
             "bearerAuth": []
           }
         ],
-        "x-oxicloud-scope": "role:admin"
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": "admin",
+          "scope": null
+        }
       }
     },
     "/api/admin/drives": {
@@ -1849,7 +1979,7 @@
           "admin"
         ],
         "summary": "GET /api/admin/drives — list every drive on the system, admin-only.",
-        "description": "Distinct from `GET /api/drives`, which is the caller's own listing\nfiltered through `role_grants`. An admin who creates a shared drive\nfor someone else has no grant on it — but the admin panel still\nneeds to see the drive (to audit, to manage, to delete). The admin\nguard at the handler edge is the access control; no role filtering\nhappens in the repo (see `drive_repository::list_all`).\n\nReturns rows ordered by display name. `caller_role` is omitted —\nthe admin is not necessarily a drive member, so the field would be\nmisleading here.\n\nRequires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.",
+        "description": "Distinct from `GET /api/drives`, which is the caller's own listing\nfiltered through `role_grants`. An admin who creates a shared drive\nfor someone else has no grant on it — but the admin panel still\nneeds to see the drive (to audit, to manage, to delete). The admin\nguard at the handler edge is the access control; no role filtering\nhappens in the repo (see `drive_repository::list_all`).\n\nReturns rows ordered by display name. `caller_role` is omitted —\nthe admin is not necessarily a drive member, so the field would be\nmisleading here.\n\nRequires the deployment administrator role; enforced by the compiled policy declared on the `/api/admin` nest.",
         "operationId": "list_all_drives",
         "responses": {
           "200": {
@@ -1891,7 +2021,11 @@
             "bearerAuth": []
           }
         ],
-        "x-oxicloud-scope": "role:admin"
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": "admin",
+          "scope": null
+        }
       }
     },
     "/api/admin/drives/{id}": {
@@ -1900,7 +2034,7 @@
           "admin"
         ],
         "summary": "`DELETE /api/admin/drives/{id}` — admin-only drive delete (D3b).",
-        "description": "Same shape as the user-facing `DELETE /api/drives/{id}`, but\nbypasses the per-drive `Manage` check (the admin guard at the\nroute edge is the access control). The remaining invariants —\ndefault Personal drive is undeletable, drive must be empty — still\napply: an admin can't accidentally wipe a populated drive or the\ndefault home folder of any user. Audit emits\n`drive.deleted_via_admin` on success.\n\nRequires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.",
+        "description": "Same shape as the user-facing `DELETE /api/drives/{id}`, but\nbypasses the per-drive `Manage` check (the admin guard at the\nroute edge is the access control). The remaining invariants —\ndefault Personal drive is undeletable, drive must be empty — still\napply: an admin can't accidentally wipe a populated drive or the\ndefault home folder of any user. Audit emits\n`drive.deleted_via_admin` on success.\n\nRequires the deployment administrator role; enforced by the compiled policy declared on the `/api/admin` nest.",
         "operationId": "delete_drive_admin",
         "parameters": [
           {
@@ -1964,7 +2098,11 @@
             "bearerAuth": []
           }
         ],
-        "x-oxicloud-scope": "role:admin"
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": "admin",
+          "scope": null
+        }
       }
     },
     "/api/admin/drives/{id}/members": {
@@ -1973,7 +2111,7 @@
           "admin"
         ],
         "summary": "GET /api/admin/drives/{id}/members — list every role grant on a drive,\nadmin-only.",
-        "description": "Distinct from `GET /api/drives/{id}/members` which goes through\n`DriveManagementService::list_members` and requires `Permission::Read`\non the drive. The admin who created the drive for someone else has\nno role on it, so the user-facing endpoint would 404 for them.\n\nThis endpoint reuses the engine's `list_grants_on_resource` directly\n— same query, same shape, just gated by the admin middleware instead\nof by `authz.require`. Returns the same `Vec<GrantDto>` so the\nfrontend renders it through the existing grant types.\n\nRequires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.",
+        "description": "Distinct from `GET /api/drives/{id}/members` which goes through\n`DriveManagementService::list_members` and requires `Permission::Read`\non the drive. The admin who created the drive for someone else has\nno role on it, so the user-facing endpoint would 404 for them.\n\nThis endpoint reuses the engine's `list_grants_on_resource` directly\n— same query, same shape, just gated by the admin middleware instead\nof by `authz.require`. Returns the same `Vec<GrantDto>` so the\nfrontend renders it through the existing grant types.\n\nRequires the deployment administrator role; enforced by the compiled policy declared on the `/api/admin` nest.",
         "operationId": "list_drive_members_admin",
         "parameters": [
           {
@@ -2027,14 +2165,18 @@
             "bearerAuth": []
           }
         ],
-        "x-oxicloud-scope": "role:admin"
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": "admin",
+          "scope": null
+        }
       },
       "post": {
         "tags": [
           "admin"
         ],
         "summary": "POST /api/admin/drives/{id}/members — add or refresh a member's role\nwithout holding `Manage` on the drive. Admin-only; bypasses the\nper-drive authz check via the `caller_is_admin = true` argument on\n`DriveManagementService::set_member_role`. Personal-drive guard and\nlast-owner protection still apply.",
-        "description": "Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.",
+        "description": "Requires the deployment administrator role; enforced by the compiled policy declared on the `/api/admin` nest.",
         "operationId": "add_drive_member_admin",
         "parameters": [
           {
@@ -2115,7 +2257,11 @@
             "bearerAuth": []
           }
         ],
-        "x-oxicloud-scope": "role:admin"
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": "admin",
+          "scope": null
+        }
       }
     },
     "/api/admin/drives/{id}/members/{kind}/{sid}": {
@@ -2124,7 +2270,7 @@
           "admin"
         ],
         "summary": "DELETE /api/admin/drives/{id}/members/{kind}/{sid} — remove a\nmember as an admin. Bypasses `Manage`; keeps last-owner protection.",
-        "description": "Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.",
+        "description": "Requires the deployment administrator role; enforced by the compiled policy declared on the `/api/admin` nest.",
         "operationId": "remove_drive_member_admin",
         "parameters": [
           {
@@ -2207,14 +2353,18 @@
             "bearerAuth": []
           }
         ],
-        "x-oxicloud-scope": "role:admin"
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": "admin",
+          "scope": null
+        }
       },
       "patch": {
         "tags": [
           "admin"
         ],
         "summary": "PATCH /api/admin/drives/{id}/members/{kind}/{sid} — change a member's\nrole / expiry as an admin. Same admin-bypass shape as\n`add_drive_member_admin`.",
-        "description": "Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.",
+        "description": "Requires the deployment administrator role; enforced by the compiled policy declared on the `/api/admin` nest.",
         "operationId": "update_drive_member_admin",
         "parameters": [
           {
@@ -2314,7 +2464,11 @@
             "bearerAuth": []
           }
         ],
-        "x-oxicloud-scope": "role:admin"
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": "admin",
+          "scope": null
+        }
       }
     },
     "/api/admin/jobs": {
@@ -2323,7 +2477,7 @@
           "admin"
         ],
         "summary": "`body` is spelled out rather than left as `Object`: the admin panel\nswitches on `mutates`, `parameters[].type` and `parameters[].allowed`,\nand an untyped body meant the generated SDK carried no TS type for any\nof them — so the panel's `JobSummary`/`JobParam` were hand-written and\nungoverned, exactly the drift `PhotoResourceItemDto` was registered to\nstop.",
-        "description": "Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.",
+        "description": "Requires the deployment administrator role; enforced by the compiled policy declared on the `/api/admin` nest.",
         "operationId": "list_jobs",
         "responses": {
           "200": {
@@ -2365,7 +2519,11 @@
             "bearerAuth": []
           }
         ],
-        "x-oxicloud-scope": "role:admin"
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": "admin",
+          "scope": null
+        }
       }
     },
     "/api/admin/jobs/{name}/cancel": {
@@ -2374,7 +2532,7 @@
           "admin"
         ],
         "summary": "`POST /api/admin/jobs/{name}/cancel` — cooperative cancel of the\ncurrently-running recoverable run for `{name}`.",
-        "description": "Flips the row's `status` from `Running` → `CancelRequested`. The\nhandler is responsible for polling `store.status()` between batches\nand returning `RunOutcome::Paused` at the next safe boundary; if it\ndoesn't, the cancel is a no-op until the run completes naturally.\n\nReturns 200 with the run_id when a Running row was flipped, 200 with\n`cancelled: false` when nothing was running (either no runs exist,\nor the latest is Paused / Completed / Failed / already CancelRequested).\nNever 404 on \"no active run\" — the job name is registered and the\nendpoint just reports the truth.\n\nRequires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.",
+        "description": "Flips the row's `status` from `Running` → `CancelRequested`. The\nhandler is responsible for polling `store.status()` between batches\nand returning `RunOutcome::Paused` at the next safe boundary; if it\ndoesn't, the cancel is a no-op until the run completes naturally.\n\nReturns 200 with the run_id when a Running row was flipped, 200 with\n`cancelled: false` when nothing was running (either no runs exist,\nor the latest is Paused / Completed / Failed / already CancelRequested).\nNever 404 on \"no active run\" — the job name is registered and the\nendpoint just reports the truth.\n\nRequires the deployment administrator role; enforced by the compiled policy declared on the `/api/admin` nest.",
         "operationId": "cancel_job",
         "parameters": [
           {
@@ -2434,7 +2592,11 @@
             "bearerAuth": []
           }
         ],
-        "x-oxicloud-scope": "role:admin"
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": "admin",
+          "scope": null
+        }
       }
     },
     "/api/admin/jobs/{name}/pause": {
@@ -2443,7 +2605,7 @@
           "admin"
         ],
         "summary": "`POST /api/admin/jobs/{name}/pause` — cooperative PAUSE of the\ncurrently-running recoverable run for `{name}`.",
-        "description": "Same DB mechanism as the old cancel (Running → CancelRequested,\nhandler yields to Paused), but no `cancel_intent` stamp so the\nengine writes `Paused`. Use this to interrupt a long-running\njob and resume it later; use `/cancel` to abandon it terminally.\n\nIdempotent: if the row is already Paused, returns 200 with\n`paused: false, reason: \"already_paused\"`.\n\nRequires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.",
+        "description": "Same DB mechanism as the old cancel (Running → CancelRequested,\nhandler yields to Paused), but no `cancel_intent` stamp so the\nengine writes `Paused`. Use this to interrupt a long-running\njob and resume it later; use `/cancel` to abandon it terminally.\n\nIdempotent: if the row is already Paused, returns 200 with\n`paused: false, reason: \"already_paused\"`.\n\nRequires the deployment administrator role; enforced by the compiled policy declared on the `/api/admin` nest.",
         "operationId": "pause_job",
         "parameters": [
           {
@@ -2503,7 +2665,11 @@
             "bearerAuth": []
           }
         ],
-        "x-oxicloud-scope": "role:admin"
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": "admin",
+          "scope": null
+        }
       }
     },
     "/api/admin/jobs/{name}/runs": {
@@ -2512,7 +2678,7 @@
           "admin"
         ],
         "summary": "`GET /api/admin/jobs/{name}/runs?limit=N` — history of recoverable\nruns for a registered job, newest first. Includes terminal +\nnon-terminal rows.",
-        "description": "Read-only, no audit line — standard admin-middleware auth is enough.\n\nRequires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.",
+        "description": "Read-only, no audit line — standard admin-middleware auth is enough.\n\nRequires the deployment administrator role; enforced by the compiled policy declared on the `/api/admin` nest.",
         "operationId": "list_job_runs",
         "parameters": [
           {
@@ -2583,7 +2749,11 @@
             "bearerAuth": []
           }
         ],
-        "x-oxicloud-scope": "role:admin"
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": "admin",
+          "scope": null
+        }
       }
     },
     "/api/admin/jobs/{name}/runs/{id}": {
@@ -2592,7 +2762,7 @@
           "admin"
         ],
         "summary": "`GET /api/admin/jobs/{name}/runs/{id}` — single-run detail.",
-        "description": "Returns 404 when the id doesn't exist. `{name}` is not validated\nagainst the run's `job_name` — the id is globally unique — but\nkeeping the name in the URL path lets operators build stable\nper-job history links without knowing individual run ids upfront.\n\nRequires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.",
+        "description": "Returns 404 when the id doesn't exist. `{name}` is not validated\nagainst the run's `job_name` — the id is globally unique — but\nkeeping the name in the URL path lets operators build stable\nper-job history links without knowing individual run ids upfront.\n\nRequires the deployment administrator role; enforced by the compiled policy declared on the `/api/admin` nest.",
         "operationId": "get_job_run",
         "parameters": [
           {
@@ -2671,7 +2841,11 @@
             "bearerAuth": []
           }
         ],
-        "x-oxicloud-scope": "role:admin"
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": "admin",
+          "scope": null
+        }
       }
     },
     "/api/admin/jobs/{name}/runs/{id}/findings": {
@@ -2680,7 +2854,7 @@
           "admin"
         ],
         "summary": "`GET /api/admin/jobs/{name}/runs/{id}/findings?limit=N&offset=M` —\npaginated findings emitted by a specific run of a recoverable job.",
-        "description": "404 when the run id doesn't exist (anti-enum: caller knew the id\nsomehow; we don't leak whether it was pruned vs never-existed).\nRead-only, no audit — standard admin-middleware auth is enough.\n\n`{name}` is not validated against the run's `job_name` (the id is\nglobally unique) but keeps the URL path consistent with the other\nper-run endpoints for stable per-job history links.\n\nRequires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.",
+        "description": "404 when the run id doesn't exist (anti-enum: caller knew the id\nsomehow; we don't leak whether it was pruned vs never-existed).\nRead-only, no audit — standard admin-middleware auth is enough.\n\n`{name}` is not validated against the run's `job_name` (the id is\nglobally unique) but keeps the URL path consistent with the other\nper-run endpoints for stable per-job history links.\n\nRequires the deployment administrator role; enforced by the compiled policy declared on the `/api/admin` nest.",
         "operationId": "list_job_run_findings",
         "parameters": [
           {
@@ -2781,7 +2955,11 @@
             "bearerAuth": []
           }
         ],
-        "x-oxicloud-scope": "role:admin"
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": "admin",
+          "scope": null
+        }
       }
     },
     "/api/admin/jobs/{name}/trigger": {
@@ -2790,7 +2968,7 @@
           "admin"
         ],
         "summary": "`POST /api/admin/jobs/{name}/trigger` — dispatch one run off-schedule.",
-        "description": "Returns the job's `JobOutcome` inline. Idempotent under exclusivity:\nif the previous run is still in flight, the handler returns\n`Ok { count: 0, extra: { \"skipped\": \"already_running\" } }` rather\nthan spawning a parallel dispatch.\n\nEmits an audit line before dispatch — bulk-mutation side effects on\noperator command belong on the audit stream.\n\nRequires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.",
+        "description": "Returns the job's `JobOutcome` inline. Idempotent under exclusivity:\nif the previous run is still in flight, the handler returns\n`Ok { count: 0, extra: { \"skipped\": \"already_running\" } }` rather\nthan spawning a parallel dispatch.\n\nEmits an audit line before dispatch — bulk-mutation side effects on\noperator command belong on the audit stream.\n\nRequires the deployment administrator role; enforced by the compiled policy declared on the `/api/admin` nest.",
         "operationId": "trigger_job",
         "parameters": [
           {
@@ -2850,7 +3028,11 @@
             "bearerAuth": []
           }
         ],
-        "x-oxicloud-scope": "role:admin"
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": "admin",
+          "scope": null
+        }
       }
     },
     "/api/admin/notify/info": {
@@ -2859,7 +3041,7 @@
           "admin"
         ],
         "summary": "`GET /api/admin/notify/info` — the alerting policy, as the running\nprocess sees it.",
-        "description": "Separate from `/smtp/info` and `/webhook/info`, which describe\n*transports*. This describes what gets sent: the severity floor, and\nwhich channels are actually wired. Worth its own endpoint because the\nfloor was invisible in the panel until now — an operator could see a\nconfigured webhook, a healthy SMTP server, and still be told nothing,\nbecause the default threshold only admits `data_loss`.\n\nRequires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.",
+        "description": "Separate from `/smtp/info` and `/webhook/info`, which describe\n*transports*. This describes what gets sent: the severity floor, and\nwhich channels are actually wired. Worth its own endpoint because the\nfloor was invisible in the panel until now — an operator could see a\nconfigured webhook, a healthy SMTP server, and still be told nothing,\nbecause the default threshold only admits `data_loss`.\n\nRequires the deployment administrator role; enforced by the compiled policy declared on the `/api/admin` nest.",
         "operationId": "get_notify_info",
         "responses": {
           "200": {
@@ -2898,7 +3080,11 @@
             "bearerAuth": []
           }
         ],
-        "x-oxicloud-scope": "role:admin"
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": "admin",
+          "scope": null
+        }
       }
     },
     "/api/admin/search/cache": {
@@ -2906,7 +3092,7 @@
         "tags": [
           "admin"
         ],
-        "description": "Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.",
+        "description": "Requires the deployment administrator role; enforced by the compiled policy declared on the `/api/admin` nest.",
         "operationId": "clear_search_cache",
         "responses": {
           "200": {
@@ -2955,7 +3141,11 @@
             "bearerAuth": []
           }
         ],
-        "x-oxicloud-scope": "role:admin"
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": "admin",
+          "scope": null
+        }
       }
     },
     "/api/admin/sessions": {
@@ -2964,7 +3154,7 @@
           "admin"
         ],
         "summary": "GET /api/admin/sessions?user_id=&include_revoked=&limit=&offset= — list sessions",
-        "description": "Global cross-user listing by default. `user_id` narrows to one\nuser; omit for cross-user. `include_revoked=true` opts into\nshowing revoked / expired rows for forensics (default hides).\nResponse is `{sessions, limit, offset}` — no total count (would\nrequire a second scan; the panel paginates on presence of\nexactly `limit` rows returned).\n\nRequires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.",
+        "description": "Global cross-user listing by default. `user_id` narrows to one\nuser; omit for cross-user. `include_revoked=true` opts into\nshowing revoked / expired rows for forensics (default hides).\nResponse is `{sessions, limit, offset}` — no total count (would\nrequire a second scan; the panel paginates on presence of\nexactly `limit` rows returned).\n\nRequires the deployment administrator role; enforced by the compiled policy declared on the `/api/admin` nest.",
         "operationId": "list_sessions",
         "parameters": [
           {
@@ -3043,7 +3233,11 @@
             "bearerAuth": []
           }
         ],
-        "x-oxicloud-scope": "role:admin"
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": "admin",
+          "scope": null
+        }
       }
     },
     "/api/admin/sessions/{id}": {
@@ -3052,7 +3246,7 @@
           "admin"
         ],
         "summary": "DELETE /api/admin/sessions/:id — revoke a session",
-        "description": "Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.",
+        "description": "Requires the deployment administrator role; enforced by the compiled policy declared on the `/api/admin` nest.",
         "operationId": "revoke_session",
         "parameters": [
           {
@@ -3122,7 +3316,11 @@
             "bearerAuth": []
           }
         ],
-        "x-oxicloud-scope": "role:admin"
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": "admin",
+          "scope": null
+        }
       }
     },
     "/api/admin/settings/appearance": {
@@ -3130,7 +3328,7 @@
         "tags": [
           "admin"
         ],
-        "description": "Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.",
+        "description": "Requires the deployment administrator role; enforced by the compiled policy declared on the `/api/admin` nest.",
         "operationId": "get_appearance",
         "responses": {
           "200": {
@@ -3155,13 +3353,17 @@
             "bearerAuth": []
           }
         ],
-        "x-oxicloud-scope": "role:admin"
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": "admin",
+          "scope": null
+        }
       },
       "put": {
         "tags": [
           "admin"
         ],
-        "description": "Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.",
+        "description": "Requires the deployment administrator role; enforced by the compiled policy declared on the `/api/admin` nest.",
         "operationId": "select_theme",
         "requestBody": {
           "content": {
@@ -3202,7 +3404,11 @@
             "bearerAuth": []
           }
         ],
-        "x-oxicloud-scope": "role:admin"
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": "admin",
+          "scope": null
+        }
       }
     },
     "/api/admin/settings/appearance/reload": {
@@ -3210,7 +3416,7 @@
         "tags": [
           "admin"
         ],
-        "description": "Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.",
+        "description": "Requires the deployment administrator role; enforced by the compiled policy declared on the `/api/admin` nest.",
         "operationId": "reload_themes",
         "responses": {
           "200": {
@@ -3241,7 +3447,11 @@
             "bearerAuth": []
           }
         ],
-        "x-oxicloud-scope": "role:admin"
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": "admin",
+          "scope": null
+        }
       }
     },
     "/api/admin/settings/oidc": {
@@ -3250,7 +3460,7 @@
           "admin"
         ],
         "summary": "GET /api/admin/settings/oidc — get OIDC settings for the admin panel",
-        "description": "Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.",
+        "description": "Requires the deployment administrator role; enforced by the compiled policy declared on the `/api/admin` nest.",
         "operationId": "get_oidc_settings",
         "responses": {
           "200": {
@@ -3289,14 +3499,18 @@
             "bearerAuth": []
           }
         ],
-        "x-oxicloud-scope": "role:admin"
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": "admin",
+          "scope": null
+        }
       },
       "put": {
         "tags": [
           "admin"
         ],
         "summary": "PUT /api/admin/settings/oidc — save OIDC settings + hot-reload",
-        "description": "Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.",
+        "description": "Requires the deployment administrator role; enforced by the compiled policy declared on the `/api/admin` nest.",
         "operationId": "save_oidc_settings",
         "requestBody": {
           "content": {
@@ -3365,7 +3579,11 @@
             "bearerAuth": []
           }
         ],
-        "x-oxicloud-scope": "role:admin"
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": "admin",
+          "scope": null
+        }
       }
     },
     "/api/admin/settings/registration": {
@@ -3374,7 +3592,7 @@
           "admin"
         ],
         "summary": "PUT /api/admin/settings/registration — enable/disable public registration",
-        "description": "Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.",
+        "description": "Requires the deployment administrator role; enforced by the compiled policy declared on the `/api/admin` nest.",
         "operationId": "set_registration_setting",
         "requestBody": {
           "content": {
@@ -3431,7 +3649,11 @@
             "bearerAuth": []
           }
         ],
-        "x-oxicloud-scope": "role:admin"
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": "admin",
+          "scope": null
+        }
       }
     },
     "/api/admin/settings/storage": {
@@ -3440,7 +3662,7 @@
           "admin"
         ],
         "summary": "GET /api/admin/settings/storage — get storage backend settings",
-        "description": "Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.",
+        "description": "Requires the deployment administrator role; enforced by the compiled policy declared on the `/api/admin` nest.",
         "operationId": "get_storage_settings",
         "responses": {
           "200": {
@@ -3479,14 +3701,18 @@
             "bearerAuth": []
           }
         ],
-        "x-oxicloud-scope": "role:admin"
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": "admin",
+          "scope": null
+        }
       },
       "put": {
         "tags": [
           "admin"
         ],
         "summary": "PUT /api/admin/settings/storage — save storage backend settings",
-        "description": "Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.",
+        "description": "Requires the deployment administrator role; enforced by the compiled policy declared on the `/api/admin` nest.",
         "operationId": "save_storage_settings",
         "requestBody": {
           "content": {
@@ -3535,7 +3761,11 @@
             "bearerAuth": []
           }
         ],
-        "x-oxicloud-scope": "role:admin"
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": "admin",
+          "scope": null
+        }
       }
     },
     "/api/admin/settings/storage/generate-key": {
@@ -3544,7 +3774,7 @@
           "admin"
         ],
         "summary": "POST /api/admin/settings/storage/generate-key — generate a random AES-256 key.",
-        "description": "Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.",
+        "description": "Requires the deployment administrator role; enforced by the compiled policy declared on the `/api/admin` nest.",
         "operationId": "generate_encryption_key",
         "responses": {
           "200": {
@@ -3583,7 +3813,11 @@
             "bearerAuth": []
           }
         ],
-        "x-oxicloud-scope": "role:admin"
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": "admin",
+          "scope": null
+        }
       }
     },
     "/api/admin/smtp/info": {
@@ -3592,7 +3826,7 @@
           "admin"
         ],
         "summary": "GET /api/admin/smtp/info — read-only view of the running SMTP config.",
-        "description": "Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.",
+        "description": "Requires the deployment administrator role; enforced by the compiled policy declared on the `/api/admin` nest.",
         "operationId": "get_smtp_info",
         "responses": {
           "200": {
@@ -3631,7 +3865,11 @@
             "bearerAuth": []
           }
         ],
-        "x-oxicloud-scope": "role:admin"
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": "admin",
+          "scope": null
+        }
       }
     },
     "/api/admin/smtp/test": {
@@ -3640,7 +3878,7 @@
           "admin"
         ],
         "summary": "POST /api/admin/smtp/test — send a diagnostic email to `dto.to`.",
-        "description": "Returns 200 regardless of SMTP outcome; the body's `success` flag\n+ `code`/`message` (or `error`) tell the frontend what to render.\nThis keeps SMTP-level failures (4xx/5xx replies, connection\ntimeouts) as ordinary diagnostic data rather than HTTP errors.\n\nRequires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.",
+        "description": "Returns 200 regardless of SMTP outcome; the body's `success` flag\n+ `code`/`message` (or `error`) tell the frontend what to render.\nThis keeps SMTP-level failures (4xx/5xx replies, connection\ntimeouts) as ordinary diagnostic data rather than HTTP errors.\n\nRequires the deployment administrator role; enforced by the compiled policy declared on the `/api/admin` nest.",
         "operationId": "send_smtp_test",
         "requestBody": {
           "content": {
@@ -3699,7 +3937,11 @@
             "bearerAuth": []
           }
         ],
-        "x-oxicloud-scope": "role:admin"
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": "admin",
+          "scope": null
+        }
       }
     },
     "/api/admin/storage/entries/{name}/rotate": {
@@ -3708,7 +3950,7 @@
           "admin"
         ],
         "summary": "POST /api/admin/storage/entries/{name}/rotate — trigger the\n`backend_rotate` recoverable job on a specific entry.",
-        "description": "Normalises every blob on `<name>` to the entry's head-pair\nformat: legacy → v1, plaintext ↔ encrypted, old-key → new-key.\nSee `docs/plan/storage-key-rotation.md` §\"The rotation job\".\n\nUnlike migration, rotation does NOT engage read-only mode —\nrewrites happen in place under normal traffic. Concurrent user\nwrites coexist safely.\n\nThe handler validates the entry name synchronously (400 on\nunknown entry); the actual walk detaches into a\n`tokio::spawn` so the HTTP call returns immediately.\n\nRequires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.",
+        "description": "Normalises every blob on `<name>` to the entry's head-pair\nformat: legacy → v1, plaintext ↔ encrypted, old-key → new-key.\nSee `docs/plan/storage-key-rotation.md` §\"The rotation job\".\n\nUnlike migration, rotation does NOT engage read-only mode —\nrewrites happen in place under normal traffic. Concurrent user\nwrites coexist safely.\n\nThe handler validates the entry name synchronously (400 on\nunknown entry); the actual walk detaches into a\n`tokio::spawn` so the HTTP call returns immediately.\n\nRequires the deployment administrator role; enforced by the compiled policy declared on the `/api/admin` nest.",
         "operationId": "trigger_backend_rotate",
         "parameters": [
           {
@@ -3761,7 +4003,11 @@
             "bearerAuth": []
           }
         ],
-        "x-oxicloud-scope": "role:admin"
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": "admin",
+          "scope": null
+        }
       }
     },
     "/api/admin/storage/migration": {
@@ -3770,7 +4016,7 @@
           "admin"
         ],
         "summary": "GET /api/admin/storage/migration — current migration progress.",
-        "description": "Shim over the recoverable-run engine: reads the latest\n`backend_migration` run from `jobs.recoverable_runs` (via the\n`JobStoreProvider`) and projects it into the legacy\n`MigrationStateDto` shape the admin storage tab expects. When no\nrun has ever been triggered the response is an empty \"idle\" DTO —\nsame behaviour the old in-memory `MigrationState::default()`\nproduced.\n\nRequires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.",
+        "description": "Shim over the recoverable-run engine: reads the latest\n`backend_migration` run from `jobs.recoverable_runs` (via the\n`JobStoreProvider`) and projects it into the legacy\n`MigrationStateDto` shape the admin storage tab expects. When no\nrun has ever been triggered the response is an empty \"idle\" DTO —\nsame behaviour the old in-memory `MigrationState::default()`\nproduced.\n\nRequires the deployment administrator role; enforced by the compiled policy declared on the `/api/admin` nest.",
         "operationId": "get_migration_status",
         "responses": {
           "200": {
@@ -3809,7 +4055,11 @@
             "bearerAuth": []
           }
         ],
-        "x-oxicloud-scope": "role:admin"
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": "admin",
+          "scope": null
+        }
       }
     },
     "/api/admin/storage/migration/pause": {
@@ -3818,7 +4068,7 @@
           "admin"
         ],
         "summary": "POST /api/admin/storage/migration/pause — pause a running migration.",
-        "description": "Shim over cooperative cancel: flips the run row's status to\n`CancelRequested`; the recoverable handler polls between batches\nand returns `Paused` at the next boundary. If nothing is running,\nreturns 200 with `paused: false` — matches the \"no-op is fine\"\ncontract of `/api/admin/jobs/{name}/cancel`.\n\nRequires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.",
+        "description": "Shim over cooperative cancel: flips the run row's status to\n`CancelRequested`; the recoverable handler polls between batches\nand returns `Paused` at the next boundary. If nothing is running,\nreturns 200 with `paused: false` — matches the \"no-op is fine\"\ncontract of `/api/admin/jobs/{name}/cancel`.\n\nRequires the deployment administrator role; enforced by the compiled policy declared on the `/api/admin` nest.",
         "operationId": "pause_migration",
         "responses": {
           "200": {
@@ -3857,7 +4107,11 @@
             "bearerAuth": []
           }
         ],
-        "x-oxicloud-scope": "role:admin"
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": "admin",
+          "scope": null
+        }
       }
     },
     "/api/admin/storage/migration/resume": {
@@ -3866,7 +4120,7 @@
           "admin"
         ],
         "summary": "POST /api/admin/storage/migration/resume — resume a paused migration.",
-        "description": "Same underlying trigger as `/start`: `run_or_resume` inspects the\nlatest row and picks Fresh / Resume / AlreadyActive at dispatch\ntime. Kept as a distinct endpoint for wire-compat.\n\nRequires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.",
+        "description": "Same underlying trigger as `/start`: `run_or_resume` inspects the\nlatest row and picks Fresh / Resume / AlreadyActive at dispatch\ntime. Kept as a distinct endpoint for wire-compat.\n\nRequires the deployment administrator role; enforced by the compiled policy declared on the `/api/admin` nest.",
         "operationId": "resume_migration",
         "responses": {
           "200": {
@@ -3905,7 +4159,11 @@
             "bearerAuth": []
           }
         ],
-        "x-oxicloud-scope": "role:admin"
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": "admin",
+          "scope": null
+        }
       }
     },
     "/api/admin/storage/migration/start": {
@@ -3914,7 +4172,7 @@
           "admin"
         ],
         "summary": "POST /api/admin/storage/migration/start — begin background migration.",
-        "description": "Shim that forwards to `JobRegistry::trigger(\"backend_migration\",\n...)`. `run_or_resume` (the RecoverableAdapter's inner dispatch)\nresumes a Paused run or starts a fresh one — one endpoint covers\nboth. Exclusivity is enforced at the DB layer (the partial unique\nindex on `jobs.recoverable_runs`), so a second concurrent trigger\nis a no-op that returns the existing run.\n\n`StartMigrationDto.concurrency` is currently ignored — the\nrecoverable copy loop runs sequentially. Kept in the DTO for\nwire-compat with the admin UI; will be honoured if a concurrency\nknob is added later.\n\nRequires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.",
+        "description": "Shim that forwards to `JobRegistry::trigger(\"backend_migration\",\n...)`. `run_or_resume` (the RecoverableAdapter's inner dispatch)\nresumes a Paused run or starts a fresh one — one endpoint covers\nboth. Exclusivity is enforced at the DB layer (the partial unique\nindex on `jobs.recoverable_runs`), so a second concurrent trigger\nis a no-op that returns the existing run.\n\n`StartMigrationDto.concurrency` is currently ignored — the\nrecoverable copy loop runs sequentially. Kept in the DTO for\nwire-compat with the admin UI; will be honoured if a concurrency\nknob is added later.\n\nRequires the deployment administrator role; enforced by the compiled policy declared on the `/api/admin` nest.",
         "operationId": "start_migration",
         "requestBody": {
           "content": {
@@ -3963,7 +4221,11 @@
             "bearerAuth": []
           }
         ],
-        "x-oxicloud-scope": "role:admin"
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": "admin",
+          "scope": null
+        }
       }
     },
     "/api/admin/storage/write-lock": {
@@ -3972,7 +4234,7 @@
           "admin"
         ],
         "summary": "GET /api/admin/storage/write-lock — current holder, or `None`.",
-        "description": "Public contract: the response is a stable\n[`BackendWriteLockStatusDto`] carrying `is_held` + an optional\n`holder` (typed reason). Called by the admin UI on every\nStorage-tab visit, and by hurl tests to assert pre/post state.\n\nRequires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.",
+        "description": "Public contract: the response is a stable\n[`BackendWriteLockStatusDto`] carrying `is_held` + an optional\n`holder` (typed reason). Called by the admin UI on every\nStorage-tab visit, and by hurl tests to assert pre/post state.\n\nRequires the deployment administrator role; enforced by the compiled policy declared on the `/api/admin` nest.",
         "operationId": "get_backend_write_lock",
         "responses": {
           "200": {
@@ -4011,14 +4273,18 @@
             "bearerAuth": []
           }
         ],
-        "x-oxicloud-scope": "role:admin"
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": "admin",
+          "scope": null
+        }
       },
       "post": {
         "tags": [
           "admin"
         ],
         "summary": "POST /api/admin/storage/write-lock — engage the External lock.",
-        "description": "Takes a one-line label the UI surfaces alongside the lock icon\n(e.g., \"nightly restic to NAS\"). Fails with 409 if any OTHER\nholder is already engaged — operator must release the current\nhold first via DELETE, which is audit-logged.\n\nRequires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.",
+        "description": "Takes a one-line label the UI surfaces alongside the lock icon\n(e.g., \"nightly restic to NAS\"). Fails with 409 if any OTHER\nholder is already engaged — operator must release the current\nhold first via DELETE, which is audit-logged.\n\nRequires the deployment administrator role; enforced by the compiled policy declared on the `/api/admin` nest.",
         "operationId": "acquire_backend_write_lock",
         "requestBody": {
           "description": "Label + optional auto-expiry",
@@ -4078,14 +4344,18 @@
             "bearerAuth": []
           }
         ],
-        "x-oxicloud-scope": "role:admin"
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": "admin",
+          "scope": null
+        }
       },
       "delete": {
         "tags": [
           "admin"
         ],
         "summary": "DELETE /api/admin/storage/write-lock — release the lock,\nwhatever variant currently holds it.",
-        "description": "Clears both the typed holder and the legacy bool, so writes\nresume AND backend-writer jobs stop deferring on the next tick.\nAudit-logged with the previous holder's kind for the trail.\n\nRequires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.",
+        "description": "Clears both the typed holder and the legacy bool, so writes\nresume AND backend-writer jobs stop deferring on the next tick.\nAudit-logged with the previous holder's kind for the trail.\n\nRequires the deployment administrator role; enforced by the compiled policy declared on the `/api/admin` nest.",
         "operationId": "release_backend_write_lock",
         "responses": {
           "200": {
@@ -4124,7 +4394,11 @@
             "bearerAuth": []
           }
         ],
-        "x-oxicloud-scope": "role:admin"
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": "admin",
+          "scope": null
+        }
       }
     },
     "/api/admin/transfer-ownership": {
@@ -4133,7 +4407,7 @@
           "admin"
         ],
         "summary": "POST /api/admin/transfer-ownership — hand the instance to another user.",
-        "description": "Owner-only, and the only way the owner's own role ever changes: the\ngeneric role endpoint refuses `\"owner\"` in both directions. The swap is\none transaction, so the instance is never briefly ownerless or briefly\ndouble-owned.\n\nRequires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.",
+        "description": "Owner-only, and the only way the owner's own role ever changes: the\ngeneric role endpoint refuses `\"owner\"` in both directions. The swap is\none transaction, so the instance is never briefly ownerless or briefly\ndouble-owned.\n\nRequires the SERVER OWNER — stricter than admin. An administrator is refused.",
         "operationId": "transfer_ownership",
         "requestBody": {
           "content": {
@@ -4202,7 +4476,11 @@
             "bearerAuth": []
           }
         ],
-        "x-oxicloud-scope": "role:admin"
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": "owner",
+          "scope": null
+        }
       }
     },
     "/api/admin/users": {
@@ -4211,7 +4489,7 @@
           "admin"
         ],
         "summary": "GET /api/admin/users?limit=50&offset=0 — list all users",
-        "description": "Always returns `Vec<FullUserDto>` — the shape one row of the\n`/me` response's embedded `full` block carries. The former\n`?summary` toggle (flat `PublicUserDto` vs nested `FullUserDto`)\nhas been retired: admin listing is low-volume and the FE always\nasked for the nested shape anyway, so the two-shape split served\nno caller and only invited jq-path bugs. See\n`docs/plan/userdto-refactor.md`.\n\nRequires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.",
+        "description": "Always returns `Vec<FullUserDto>` — the shape one row of the\n`/me` response's embedded `full` block carries. The former\n`?summary` toggle (flat `PublicUserDto` vs nested `FullUserDto`)\nhas been retired: admin listing is low-volume and the FE always\nasked for the nested shape anyway, so the two-shape split served\nno caller and only invited jq-path bugs. See\n`docs/plan/userdto-refactor.md`.\n\nRequires the deployment administrator role; enforced by the compiled policy declared on the `/api/admin` nest.",
         "operationId": "list_users",
         "parameters": [
           {
@@ -4272,14 +4550,18 @@
             "bearerAuth": []
           }
         ],
-        "x-oxicloud-scope": "role:admin"
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": "admin",
+          "scope": null
+        }
       },
       "post": {
         "tags": [
           "admin"
         ],
         "summary": "POST /api/admin/users — create a new user (admin only)",
-        "description": "Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.",
+        "description": "Requires the deployment administrator role; enforced by the compiled policy declared on the `/api/admin` nest.",
         "operationId": "create_user",
         "requestBody": {
           "content": {
@@ -4338,7 +4620,11 @@
             "bearerAuth": []
           }
         ],
-        "x-oxicloud-scope": "role:admin"
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": "admin",
+          "scope": null
+        }
       }
     },
     "/api/admin/users/{id}": {
@@ -4347,7 +4633,7 @@
           "admin"
         ],
         "summary": "GET /api/admin/users/:id — get single user",
-        "description": "Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.",
+        "description": "Requires the deployment administrator role; enforced by the compiled policy declared on the `/api/admin` nest.",
         "operationId": "get_user",
         "parameters": [
           {
@@ -4407,14 +4693,18 @@
             "bearerAuth": []
           }
         ],
-        "x-oxicloud-scope": "role:admin"
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": "admin",
+          "scope": null
+        }
       },
       "delete": {
         "tags": [
           "admin"
         ],
         "summary": "DELETE /api/admin/users/:id — delete a user",
-        "description": "Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.",
+        "description": "Requires the deployment administrator role; enforced by the compiled policy declared on the `/api/admin` nest.",
         "operationId": "delete_user",
         "parameters": [
           {
@@ -4474,7 +4764,11 @@
             "bearerAuth": []
           }
         ],
-        "x-oxicloud-scope": "role:admin"
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": "admin",
+          "scope": null
+        }
       }
     },
     "/api/admin/users/{id}/active": {
@@ -4483,7 +4777,7 @@
           "admin"
         ],
         "summary": "PUT /api/admin/users/:id/active — activate/deactivate user",
-        "description": "Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.",
+        "description": "Requires the deployment administrator role; enforced by the compiled policy declared on the `/api/admin` nest.",
         "operationId": "update_user_active",
         "parameters": [
           {
@@ -4553,7 +4847,11 @@
             "bearerAuth": []
           }
         ],
-        "x-oxicloud-scope": "role:admin"
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": "admin",
+          "scope": null
+        }
       }
     },
     "/api/admin/users/{id}/password": {
@@ -4562,7 +4860,7 @@
           "admin"
         ],
         "summary": "PUT /api/admin/users/:id/password — reset a user's password (admin only)",
-        "description": "Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.",
+        "description": "Requires the deployment administrator role; enforced by the compiled policy declared on the `/api/admin` nest.",
         "operationId": "reset_user_password",
         "parameters": [
           {
@@ -4632,7 +4930,11 @@
             "bearerAuth": []
           }
         ],
-        "x-oxicloud-scope": "role:admin"
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": "admin",
+          "scope": null
+        }
       }
     },
     "/api/admin/users/{id}/promote-to-internal": {
@@ -4641,7 +4943,7 @@
           "admin"
         ],
         "summary": "POST /api/admin/users/{id}/promote-to-internal — flip an external\n(grant-only) account into a normal internal account, provisioning\nits personal drive on the way. The deployment MUST have magic-link\nlogin enabled (the admin doesn't set the user's password on their\nbehalf, so the promoted user needs some way to log in). Refuses\nOIDC-linked users and users who are already internal.",
-        "description": "Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.",
+        "description": "Requires the deployment administrator role; enforced by the compiled policy declared on the `/api/admin` nest.",
         "operationId": "admin_promote_external_to_internal",
         "parameters": [
           {
@@ -4721,7 +5023,11 @@
             "bearerAuth": []
           }
         ],
-        "x-oxicloud-scope": "role:admin"
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": "admin",
+          "scope": null
+        }
       }
     },
     "/api/admin/users/{id}/quota": {
@@ -4730,7 +5036,7 @@
           "admin"
         ],
         "summary": "PUT /api/admin/users/:id/quota — update user storage quota",
-        "description": "Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.",
+        "description": "Requires the deployment administrator role; enforced by the compiled policy declared on the `/api/admin` nest.",
         "operationId": "update_user_quota",
         "parameters": [
           {
@@ -4790,7 +5096,11 @@
             "bearerAuth": []
           }
         ],
-        "x-oxicloud-scope": "role:admin"
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": "admin",
+          "scope": null
+        }
       }
     },
     "/api/admin/users/{id}/role": {
@@ -4799,7 +5109,7 @@
           "admin"
         ],
         "summary": "PUT /api/admin/users/:id/role — change user role",
-        "description": "Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.",
+        "description": "Requires the deployment administrator role; enforced by the compiled policy declared on the `/api/admin` nest.",
         "operationId": "update_user_role",
         "parameters": [
           {
@@ -4869,7 +5179,11 @@
             "bearerAuth": []
           }
         ],
-        "x-oxicloud-scope": "role:admin"
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": "admin",
+          "scope": null
+        }
       }
     },
     "/api/admin/webhook/info": {
@@ -4878,7 +5192,7 @@
           "admin"
         ],
         "summary": "GET /api/admin/webhook/info — read-only view of the running webhook\nconfig, beside SMTP on the admin Notifications page.",
-        "description": "Reports the host but **never the full URL**: a Telegram endpoint carries\nthe bot token in its path, and a Slack or Discord webhook URL *is* the\ncredential. The host answers \"does this point where I think it does\"\nwithout putting a secret in a browser's network log.\n\nRequires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.",
+        "description": "Reports the host but **never the full URL**: a Telegram endpoint carries\nthe bot token in its path, and a Slack or Discord webhook URL *is* the\ncredential. The host answers \"does this point where I think it does\"\nwithout putting a secret in a browser's network log.\n\nRequires the deployment administrator role; enforced by the compiled policy declared on the `/api/admin` nest.",
         "operationId": "get_webhook_info",
         "responses": {
           "200": {
@@ -4917,7 +5231,11 @@
             "bearerAuth": []
           }
         ],
-        "x-oxicloud-scope": "role:admin"
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": "admin",
+          "scope": null
+        }
       }
     },
     "/api/admin/webhook/test": {
@@ -4926,7 +5244,7 @@
           "admin"
         ],
         "summary": "`POST /api/admin/webhook/test` — POST a synthetic alert to the\nconfigured webhook.",
-        "description": "Under `/webhook` rather than `/jobs`: the webhook is a transport, and\njob findings are its first consumer rather than its definition. What\nthis verifies is the URL, the format and the credentials — not anything\nabout jobs.\n\nSame shape as `POST /api/admin/smtp/test`, and for the same reason: 200\nregardless of the transport's verdict, with the detail in the body. A\nwebhook returning 404 is diagnostic data an operator needs to read, not\nan HTTP error for the panel to swallow.\n\nThe synthetic alert deliberately bypasses the severity threshold that\ngates real findings — testing with the default `data_loss` threshold\nwould otherwise deliver nothing and read as a broken webhook.\n\nRequires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.",
+        "description": "Under `/webhook` rather than `/jobs`: the webhook is a transport, and\njob findings are its first consumer rather than its definition. What\nthis verifies is the URL, the format and the credentials — not anything\nabout jobs.\n\nSame shape as `POST /api/admin/smtp/test`, and for the same reason: 200\nregardless of the transport's verdict, with the detail in the body. A\nwebhook returning 404 is diagnostic data an operator needs to read, not\nan HTTP error for the panel to swallow.\n\nThe synthetic alert deliberately bypasses the severity threshold that\ngates real findings — testing with the default `data_loss` threshold\nwould otherwise deliver nothing and read as a broken webhook.\n\nRequires the deployment administrator role; enforced by the compiled policy declared on the `/api/admin` nest.",
         "operationId": "send_webhook_test",
         "responses": {
           "200": {
@@ -4975,7 +5293,11 @@
             "bearerAuth": []
           }
         ],
-        "x-oxicloud-scope": "role:admin"
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": "admin",
+          "scope": null
+        }
       }
     },
     "/api/auth/app-passwords": {
@@ -5012,7 +5334,12 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": null,
+          "scope": null
+        }
       },
       "post": {
         "tags": [
@@ -5077,7 +5404,12 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": null,
+          "scope": null
+        }
       }
     },
     "/api/auth/app-passwords/{id}": {
@@ -5144,7 +5476,12 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": null,
+          "scope": null
+        }
       }
     },
     "/api/auth/change-password": {
@@ -5200,7 +5537,12 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": null,
+          "scope": null
+        }
       }
     },
     "/api/auth/device/authorize": {
@@ -5209,6 +5551,7 @@
           "device-auth"
         ],
         "summary": "Client sends: `{ \"client_name\": \"rclone\", \"scope\": \"webdav\" }`\nServer returns: device_code, user_code, verification_uri, etc.",
+        "description": "Reachable with NO credential at all.",
         "operationId": "device_authorize",
         "requestBody": {
           "content": {
@@ -5232,7 +5575,12 @@
             }
           }
         },
-        "security": []
+        "security": [],
+        "x-oxicloud-policy": {
+          "principal": "public",
+          "role": null,
+          "scope": null
+        }
       }
     },
     "/api/auth/device/devices": {
@@ -5270,7 +5618,12 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": null,
+          "scope": null
+        }
       }
     },
     "/api/auth/device/devices/{id}": {
@@ -5319,7 +5672,12 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": null,
+          "scope": null
+        }
       }
     },
     "/api/auth/device/token": {
@@ -5328,6 +5686,7 @@
           "device-auth"
         ],
         "summary": "Client sends: `{ \"device_code\": \"...\", \"grant_type\": \"urn:ietf:params:oauth:grant-type:device_code\" }`\nReturns tokens on success, or RFC 8628 error codes while pending.",
+        "description": "Reachable with NO credential at all.",
         "operationId": "device_token",
         "requestBody": {
           "content": {
@@ -5361,7 +5720,12 @@
             }
           }
         },
-        "security": []
+        "security": [],
+        "x-oxicloud-policy": {
+          "principal": "public",
+          "role": null,
+          "scope": null
+        }
       }
     },
     "/api/auth/device/verify": {
@@ -5407,7 +5771,12 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": null,
+          "scope": null
+        }
       },
       "post": {
         "tags": [
@@ -5460,7 +5829,12 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": null,
+          "scope": null
+        }
       }
     },
     "/api/auth/dpop/bind": {
@@ -5527,7 +5901,12 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": null,
+          "scope": null
+        }
       }
     },
     "/api/auth/login": {
@@ -5536,7 +5915,7 @@
           "auth"
         ],
         "summary": "Authenticate with username and password.",
-        "description": "On success, sets `oxicloud_access`, `oxicloud_refresh`, and `oxicloud_csrf`\nHttpOnly cookies in addition to returning the tokens in the JSON body.",
+        "description": "On success, sets `oxicloud_access`, `oxicloud_refresh`, and `oxicloud_csrf`\nHttpOnly cookies in addition to returning the tokens in the JSON body.\n\nReachable with NO credential at all.",
         "operationId": "login",
         "requestBody": {
           "content": {
@@ -5590,7 +5969,12 @@
             }
           }
         },
-        "security": []
+        "security": [],
+        "x-oxicloud-policy": {
+          "principal": "public",
+          "role": null,
+          "scope": null
+        }
       }
     },
     "/api/auth/logout": {
@@ -5646,7 +6030,12 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": null,
+          "scope": null
+        }
       }
     },
     "/api/auth/magic-link/send": {
@@ -5655,7 +6044,7 @@
           "auth"
         ],
         "summary": "POST /api/auth/magic-link/send — request a sign-in link by email.",
-        "description": "Always returns 200 with a uniform message regardless of outcome, so\nthe response shape doesn't leak account existence. The real outcome\n(sent / no-account / has-credential / account-deactivated /\nmalformed-email) is recorded in the `audit` channel via\n`MagicLinkInviteService::send_login_link`.\n\n503 only when the magic-link feature isn't configured at all\n(SMTP env missing) — operators need to know about misconfiguration;\nit's not a state an anonymous caller can probe via timing because\nthe absence of the entire feature is visible from any other\nendpoint touching `/api/auth/magic-link/*`.\n\nPR 12 rate limits:\n- **Per-source-IP**, 200/hour — bounds the cost of one attacker\n  spreading low per-email volumes over many target addresses.\n- **Per-target-email**, 5/hour, keyed on the normalised email —\n  stops the endpoint from being an email-bombing primitive against\n  a single known recipient.\nBoth caps return the uniform 200 (never 429 to anonymous callers,\notherwise the status itself becomes an enumeration oracle); the\nreal reason is recorded in the audit channel.\nAuthenticated callers (Authorization header or access cookie\npresent) bypass both limits.",
+        "description": "Always returns 200 with a uniform message regardless of outcome, so\nthe response shape doesn't leak account existence. The real outcome\n(sent / no-account / has-credential / account-deactivated /\nmalformed-email) is recorded in the `audit` channel via\n`MagicLinkInviteService::send_login_link`.\n\n503 only when the magic-link feature isn't configured at all\n(SMTP env missing) — operators need to know about misconfiguration;\nit's not a state an anonymous caller can probe via timing because\nthe absence of the entire feature is visible from any other\nendpoint touching `/api/auth/magic-link/*`.\n\nPR 12 rate limits:\n- **Per-source-IP**, 200/hour — bounds the cost of one attacker\n  spreading low per-email volumes over many target addresses.\n- **Per-target-email**, 5/hour, keyed on the normalised email —\n  stops the endpoint from being an email-bombing primitive against\n  a single known recipient.\nBoth caps return the uniform 200 (never 429 to anonymous callers,\notherwise the status itself becomes an enumeration oracle); the\nreal reason is recorded in the audit channel.\nAuthenticated callers (Authorization header or access cookie\npresent) bypass both limits.\n\nReachable with NO credential at all.",
         "operationId": "send_magic_link",
         "requestBody": {
           "content": {
@@ -5689,7 +6078,12 @@
             }
           }
         },
-        "security": []
+        "security": [],
+        "x-oxicloud-policy": {
+          "principal": "public",
+          "role": null,
+          "scope": null
+        }
       }
     },
     "/api/auth/me": {
@@ -5725,7 +6119,12 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": null,
+          "scope": null
+        }
       }
     },
     "/api/auth/me/image": {
@@ -5775,7 +6174,12 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": null,
+          "scope": null
+        }
       }
     },
     "/api/auth/me/profile": {
@@ -5852,7 +6256,12 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": null,
+          "scope": null
+        }
       }
     },
     "/api/auth/oidc/authorize": {
@@ -5861,7 +6270,7 @@
           "auth"
         ],
         "summary": "Initiate OIDC authorization — redirects to the configured identity provider.",
-        "description": "Generates PKCE, CSRF state, and nonce then issues a 302 redirect to the\nprovider's authorization endpoint.",
+        "description": "Generates PKCE, CSRF state, and nonce then issues a 302 redirect to the\nprovider's authorization endpoint.\n\nReachable with NO credential at all.",
         "operationId": "oidc_authorize",
         "responses": {
           "302": {
@@ -5888,7 +6297,12 @@
             }
           }
         },
-        "security": []
+        "security": [],
+        "x-oxicloud-policy": {
+          "principal": "public",
+          "role": null,
+          "scope": null
+        }
       }
     },
     "/api/auth/oidc/backchannel-logout": {
@@ -5897,7 +6311,7 @@
           "auth"
         ],
         "summary": "OIDC Back-Channel Logout 1.0 receiver.",
-        "description": "The IdP POSTs a signed `logout_token` JWT here when a user's SSO\nsession ends (they logged out elsewhere, admin revoked the session,\naccount was disabled). Body is `application/x-www-form-urlencoded`\nper spec §2.5 with a single `logout_token` field.\n\nResponse codes are constrained by the spec (§2.8):\n- 200 on successful processing (including a validated token that\n  matched no OxiCloud sessions — the notification is still \"handled\").\n- 400 on any validation failure (bad signature, expired, missing\n  required claims, replay). We do NOT return 200 with an error body.\n\nThis endpoint is public: no auth middleware, no CSRF, no cookie.\nThe `logout_token` signature IS the authentication — an unsigned or\nwrongly-signed token gets rejected by the OIDC service validator.",
+        "description": "The IdP POSTs a signed `logout_token` JWT here when a user's SSO\nsession ends (they logged out elsewhere, admin revoked the session,\naccount was disabled). Body is `application/x-www-form-urlencoded`\nper spec §2.5 with a single `logout_token` field.\n\nResponse codes are constrained by the spec (§2.8):\n- 200 on successful processing (including a validated token that\n  matched no OxiCloud sessions — the notification is still \"handled\").\n- 400 on any validation failure (bad signature, expired, missing\n  required claims, replay). We do NOT return 200 with an error body.\n\nThis endpoint is public: no auth middleware, no CSRF, no cookie.\nThe `logout_token` signature IS the authentication — an unsigned or\nwrongly-signed token gets rejected by the OIDC service validator.\n\nReachable with NO credential at all.",
         "operationId": "oidc_backchannel_logout",
         "requestBody": {
           "description": "Form-encoded body with a single `logout_token` field (the signed JWT from the IdP)",
@@ -5937,7 +6351,12 @@
             }
           }
         },
-        "security": []
+        "security": [],
+        "x-oxicloud-policy": {
+          "principal": "public",
+          "role": null,
+          "scope": null
+        }
       }
     },
     "/api/auth/oidc/callback": {
@@ -5946,7 +6365,7 @@
           "auth"
         ],
         "summary": "Handle the OIDC provider callback.",
-        "description": "Validates the `state` / PKCE / nonce, exchanges the code for tokens, then\nredirects the browser to the frontend login route with a short-lived\nexchange code (`/login?oidc_code=…`), which the SPA swaps for a session.",
+        "description": "Validates the `state` / PKCE / nonce, exchanges the code for tokens, then\nredirects the browser to the frontend login route with a short-lived\nexchange code (`/login?oidc_code=…`), which the SPA swaps for a session.\n\nReachable with NO credential at all.",
         "operationId": "oidc_callback",
         "parameters": [
           {
@@ -5993,7 +6412,12 @@
             }
           }
         },
-        "security": []
+        "security": [],
+        "x-oxicloud-policy": {
+          "principal": "public",
+          "role": null,
+          "scope": null
+        }
       }
     },
     "/api/auth/oidc/exchange": {
@@ -6002,7 +6426,7 @@
           "auth"
         ],
         "summary": "Exchange a one-time OIDC code for access + refresh tokens.",
-        "description": "The frontend calls this after being redirected back with `?oidc_code=…`.\nThe exchange code is valid for a single use and expires in 60 s.",
+        "description": "The frontend calls this after being redirected back with `?oidc_code=…`.\nThe exchange code is valid for a single use and expires in 60 s.\n\nReachable with NO credential at all.",
         "operationId": "oidc_exchange",
         "requestBody": {
           "content": {
@@ -6036,7 +6460,12 @@
             }
           }
         },
-        "security": []
+        "security": [],
+        "x-oxicloud-policy": {
+          "principal": "public",
+          "role": null,
+          "scope": null
+        }
       }
     },
     "/api/auth/oidc/link/start": {
@@ -6090,7 +6519,12 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": null,
+          "scope": null
+        }
       }
     },
     "/api/auth/oidc/unlink": {
@@ -6136,7 +6570,12 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": null,
+          "scope": null
+        }
       }
     },
     "/api/auth/opaque/login/ke1": {
@@ -6145,7 +6584,7 @@
           "auth"
         ],
         "summary": "KE1: user lookup → envelope fetch → `ServerLogin::start` → stash\nstate under a fresh exchange_id → return handle + response bytes.",
-        "description": "## Anti-enumeration\n\nA KE1 that CAN'T be honestly answered (unknown user, or user\nexists but has no OPAQUE envelope yet) MUST look identical to a\nKE1 that CAN. opaque-ke's `ServerLogin::start` supports a \"dummy\"\nbranch (`password_file = None`) that generates a well-formed\nKE2 response indistinguishable from the real branch. The\ndummy-branch KE3 will fail at the client-side `ClientLogin::finish`\n(wrong MAC), never reaching the server — so KE3 for the\nnon-existent user is symmetric with KE3 for a wrong passphrase.\n\nUser is NOT looked up via `_with_perms` — this is the auth\nbootstrap; there's no caller identity yet. We use the same\ndispatch as legacy `/api/auth/login`.",
+        "description": "## Anti-enumeration\n\nA KE1 that CAN'T be honestly answered (unknown user, or user\nexists but has no OPAQUE envelope yet) MUST look identical to a\nKE1 that CAN. opaque-ke's `ServerLogin::start` supports a \"dummy\"\nbranch (`password_file = None`) that generates a well-formed\nKE2 response indistinguishable from the real branch. The\ndummy-branch KE3 will fail at the client-side `ClientLogin::finish`\n(wrong MAC), never reaching the server — so KE3 for the\nnon-existent user is symmetric with KE3 for a wrong passphrase.\n\nUser is NOT looked up via `_with_perms` — this is the auth\nbootstrap; there's no caller identity yet. We use the same\ndispatch as legacy `/api/auth/login`.\n\nReachable with NO credential at all.",
         "operationId": "login_ke1",
         "requestBody": {
           "content": {
@@ -6189,7 +6628,12 @@
             }
           }
         },
-        "security": []
+        "security": [],
+        "x-oxicloud-policy": {
+          "principal": "public",
+          "role": null,
+          "scope": null
+        }
       }
     },
     "/api/auth/opaque/login/ke3": {
@@ -6198,7 +6642,7 @@
           "auth"
         ],
         "summary": "KE3: consume exchange state → `ServerLogin::finish` → mint session.",
-        "description": "On success:\n\n  * Stamp `opaque_migrated_at` (Phase 3 signal that this user\n    has completed at least one OPAQUE login — future legacy\n    login attempts will be refused once Phase 4 flips to\n    `opaque_only`).\n  * Mint access + refresh tokens under a fresh session family,\n    via `AuthApplicationService::mint_session_for_authenticated_user`.\n  * Return the shared `AuthResponseDto` shape identical to\n    `POST /api/auth/login` — the SPA consumes both paths through\n    one downstream handler.\n\nOn failure (bad passphrase, replay, expired exchange, unknown\nexchange_id): 401 `InvalidCredentials` — the SAME shape for every\nfailure branch so attackers can't distinguish \"expired\" from\n\"wrong password\" from \"id already consumed\".",
+        "description": "On success:\n\n  * Stamp `opaque_migrated_at` (Phase 3 signal that this user\n    has completed at least one OPAQUE login — future legacy\n    login attempts will be refused once Phase 4 flips to\n    `opaque_only`).\n  * Mint access + refresh tokens under a fresh session family,\n    via `AuthApplicationService::mint_session_for_authenticated_user`.\n  * Return the shared `AuthResponseDto` shape identical to\n    `POST /api/auth/login` — the SPA consumes both paths through\n    one downstream handler.\n\nOn failure (bad passphrase, replay, expired exchange, unknown\nexchange_id): 401 `InvalidCredentials` — the SAME shape for every\nfailure branch so attackers can't distinguish \"expired\" from\n\"wrong password\" from \"id already consumed\".\n\nReachable with NO credential at all.",
         "operationId": "login_ke3",
         "requestBody": {
           "content": {
@@ -6252,7 +6696,12 @@
             }
           }
         },
-        "security": []
+        "security": [],
+        "x-oxicloud-policy": {
+          "principal": "public",
+          "role": null,
+          "scope": null
+        }
       }
     },
     "/api/auth/opaque/login/lookup": {
@@ -6261,7 +6710,7 @@
           "auth"
         ],
         "summary": "Resolve `userIdentifier` → envelope-existence check. Used by the\nSPA login form to branch between OPAQUE and legacy on submit.",
-        "description": "Rate-limited via the shared `login_limiter` (mount layer in\n`main.rs`), so lookup can't be used as a cheap enumeration probe.",
+        "description": "Rate-limited via the shared `login_limiter` (mount layer in\n`main.rs`), so lookup can't be used as a cheap enumeration probe.\n\nReachable with NO credential at all.",
         "operationId": "login_lookup",
         "requestBody": {
           "content": {
@@ -6305,7 +6754,12 @@
             }
           }
         },
-        "security": []
+        "security": [],
+        "x-oxicloud-policy": {
+          "principal": "public",
+          "role": null,
+          "scope": null
+        }
       }
     },
     "/api/auth/opaque/params": {
@@ -6314,7 +6768,7 @@
           "auth"
         ],
         "summary": "Publish the OPAQUE client config. Safe to call unauthenticated\n(nothing about individual users is returned) and cache-friendly\n(the response only changes when the operator rotates env vars).",
-        "description": "Note: `Cache-Control` is deliberately unset — the SPA fetches\nthis once at page load, and if the operator rotates the KSF\nparams mid-flight, we want the change to be picked up on the\nnext SPA reload rather than lingering behind an intermediary\ncache.",
+        "description": "Note: `Cache-Control` is deliberately unset — the SPA fetches\nthis once at page load, and if the operator rotates the KSF\nparams mid-flight, we want the change to be picked up on the\nnext SPA reload rather than lingering behind an intermediary\ncache.\n\nReachable with NO credential at all.",
         "operationId": "opaque_params",
         "responses": {
           "200": {
@@ -6328,7 +6782,12 @@
             }
           }
         },
-        "security": []
+        "security": [],
+        "x-oxicloud-policy": {
+          "principal": "public",
+          "role": null,
+          "scope": null
+        }
       }
     },
     "/api/auth/opaque/register/finish": {
@@ -6387,7 +6846,12 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": null,
+          "scope": null
+        }
       }
     },
     "/api/auth/opaque/register/start": {
@@ -6454,7 +6918,12 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": null,
+          "scope": null
+        }
       }
     },
     "/api/auth/refresh": {
@@ -6463,7 +6932,7 @@
           "auth"
         ],
         "summary": "Refresh an access token.",
-        "description": "Accepts the refresh token from **either**:\n1. JSON body `{ \"refresh_token\": \"...\" }` (API clients / backward compat)\n2. HttpOnly `oxicloud_refresh` cookie (browsers)\n\nIssues new access + refresh tokens and rotates all three auth cookies.",
+        "description": "Accepts the refresh token from **either**:\n1. JSON body `{ \"refresh_token\": \"...\" }` (API clients / backward compat)\n2. HttpOnly `oxicloud_refresh` cookie (browsers)\n\nIssues new access + refresh tokens and rotates all three auth cookies.\n\nReachable with NO credential at all.",
         "operationId": "refresh_token",
         "requestBody": {
           "description": "Optional — omit when using the HttpOnly cookie",
@@ -6506,7 +6975,12 @@
             }
           }
         },
-        "security": []
+        "security": [],
+        "x-oxicloud-policy": {
+          "principal": "public",
+          "role": null,
+          "scope": null
+        }
       }
     },
     "/api/auth/register": {
@@ -6515,7 +6989,7 @@
           "auth"
         ],
         "summary": "Register a new user account.",
-        "description": "**Response shape depends on SMTP availability**:\n\n- **SMTP configured** (`magic_link_invite_service` is wired): the\n  endpoint returns a **uniform 200** for both success and collision\n  (anti-enumeration). The \"Registration request received\" message\n  covers both branches honestly because successful email-only\n  signups receive a welcome magic-link. Real outcome recorded in\n  the `audit` channel as `auth.register` with `reason` one of\n  `created`, `email_taken`, `username_taken`.\n- **SMTP not configured**: there is no welcome-mail cover story, so\n  the classic `201 + PublicUserDto` on success and `409` on collision\n  apply. Anti-enumeration would just be misleading UX (telling the\n  user to check an email that will never arrive). Email-only\n  signup is **503** in this mode because the user would otherwise\n  be stranded with an account they can't log into.\n\n**Instance-wide policy stays visible** in both modes: when\nregistration is disabled by the admin or password registration is\ndisabled in OIDC-only mode, the endpoint returns **403** with a\nclear message. These are instance-wide settings, not per-user\noracles — legitimate users deserve an actionable error.",
+        "description": "**Response shape depends on SMTP availability**:\n\n- **SMTP configured** (`magic_link_invite_service` is wired): the\n  endpoint returns a **uniform 200** for both success and collision\n  (anti-enumeration). The \"Registration request received\" message\n  covers both branches honestly because successful email-only\n  signups receive a welcome magic-link. Real outcome recorded in\n  the `audit` channel as `auth.register` with `reason` one of\n  `created`, `email_taken`, `username_taken`.\n- **SMTP not configured**: there is no welcome-mail cover story, so\n  the classic `201 + PublicUserDto` on success and `409` on collision\n  apply. Anti-enumeration would just be misleading UX (telling the\n  user to check an email that will never arrive). Email-only\n  signup is **503** in this mode because the user would otherwise\n  be stranded with an account they can't log into.\n\n**Instance-wide policy stays visible** in both modes: when\nregistration is disabled by the admin or password registration is\ndisabled in OIDC-only mode, the endpoint returns **403** with a\nclear message. These are instance-wide settings, not per-user\noracles — legitimate users deserve an actionable error.\n\nReachable with NO credential at all.",
         "operationId": "register",
         "requestBody": {
           "content": {
@@ -6589,7 +7063,12 @@
             }
           }
         },
-        "security": []
+        "security": [],
+        "x-oxicloud-policy": {
+          "principal": "public",
+          "role": null,
+          "scope": null
+        }
       }
     },
     "/api/auth/sessions": {
@@ -6626,7 +7105,12 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": null,
+          "scope": null
+        }
       }
     },
     "/api/auth/sessions/{id}": {
@@ -6694,7 +7178,12 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": null,
+          "scope": null
+        }
       }
     },
     "/api/auth/upgrade-to-internal": {
@@ -6771,7 +7260,12 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": null,
+          "scope": null
+        }
       }
     },
     "/api/batch/download": {
@@ -6872,7 +7366,12 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": null,
+          "scope": null
+        }
       },
       "post": {
         "tags": [
@@ -6963,7 +7462,12 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": null,
+          "scope": null
+        }
       }
     },
     "/api/batch/files/copy": {
@@ -7059,7 +7563,12 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": null,
+          "scope": null
+        }
       }
     },
     "/api/batch/files/delete": {
@@ -7155,7 +7664,12 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": null,
+          "scope": null
+        }
       }
     },
     "/api/batch/files/get": {
@@ -7251,7 +7765,12 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": null,
+          "scope": null
+        }
       }
     },
     "/api/batch/files/move": {
@@ -7347,7 +7866,12 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": null,
+          "scope": null
+        }
       }
     },
     "/api/batch/folders/copy": {
@@ -7443,7 +7967,12 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": null,
+          "scope": null
+        }
       }
     },
     "/api/batch/folders/create": {
@@ -7539,7 +8068,12 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": null,
+          "scope": null
+        }
       }
     },
     "/api/batch/folders/delete": {
@@ -7635,7 +8169,12 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": null,
+          "scope": null
+        }
       }
     },
     "/api/batch/folders/get": {
@@ -7731,7 +8270,12 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": null,
+          "scope": null
+        }
       }
     },
     "/api/batch/folders/move": {
@@ -7827,7 +8371,12 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": null,
+          "scope": null
+        }
       }
     },
     "/api/batch/trash": {
@@ -7923,7 +8472,12 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": null,
+          "scope": null
+        }
       }
     },
     "/api/calendars": {
@@ -7952,7 +8506,12 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": null,
+          "scope": null
+        }
       },
       "post": {
         "tags": [
@@ -7989,7 +8548,12 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": null,
+          "scope": null
+        }
       }
     },
     "/api/calendars/{calendar_id}": {
@@ -8042,7 +8606,12 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": null,
+          "scope": null
+        }
       },
       "delete": {
         "tags": [
@@ -8076,7 +8645,12 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": null,
+          "scope": null
+        }
       }
     },
     "/api/calendars/{calendar_id}/events": {
@@ -8142,7 +8716,12 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": null,
+          "scope": null
+        }
       },
       "post": {
         "tags": [
@@ -8196,7 +8775,12 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": null,
+          "scope": null
+        }
       }
     },
     "/api/calendars/{calendar_id}/events/{event_id}": {
@@ -8261,7 +8845,12 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": null,
+          "scope": null
+        }
       },
       "delete": {
         "tags": [
@@ -8304,7 +8893,12 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": null,
+          "scope": null
+        }
       }
     },
     "/api/config": {
@@ -8313,6 +8907,7 @@
           "config"
         ],
         "summary": "`GET /api/config` — return the public server-configuration\nsnapshot. Unauthenticated. No cache header — values change on\nserver-restart / feature-toggle / status flip, and the endpoint\nis called at most once per SPA boot per client. Adding a short\n`Cache-Control` TTL later is safe if load ever becomes a concern.",
+        "description": "Reachable with NO credential at all.",
         "operationId": "get_config",
         "responses": {
           "200": {
@@ -8326,7 +8921,12 @@
             }
           }
         },
-        "security": []
+        "security": [],
+        "x-oxicloud-policy": {
+          "principal": "public",
+          "role": null,
+          "scope": null
+        }
       }
     },
     "/api/dedup/blob/{hash}": {
@@ -8378,7 +8978,12 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": null,
+          "scope": null
+        }
       }
     },
     "/api/dedup/check-batch": {
@@ -8423,7 +9028,12 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": null,
+          "scope": null
+        }
       }
     },
     "/api/dedup/check/{hash}": {
@@ -8469,7 +9079,12 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": null,
+          "scope": null
+        }
       }
     },
     "/api/drives": {
@@ -8507,7 +9122,12 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": null,
+          "scope": null
+        }
       }
     },
     "/api/drives/{id}": {
@@ -8569,7 +9189,12 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": null,
+          "scope": null
+        }
       }
     },
     "/api/drives/{id}/members": {
@@ -8619,7 +9244,12 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": null,
+          "scope": null
+        }
       },
       "post": {
         "tags": [
@@ -8694,7 +9324,12 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": null,
+          "scope": null
+        }
       }
     },
     "/api/drives/{id}/members/{kind}/{sid}": {
@@ -8773,7 +9408,12 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": null,
+          "scope": null
+        }
       },
       "patch": {
         "tags": [
@@ -8867,7 +9507,12 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": null,
+          "scope": null
+        }
       }
     },
     "/api/drives/{id}/policies": {
@@ -8926,7 +9571,12 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": null,
+          "scope": null
+        }
       }
     },
     "/api/drives/{id}/quota": {
@@ -8995,7 +9645,12 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": null,
+          "scope": null
+        }
       }
     },
     "/api/favorites/batch": {
@@ -9041,7 +9696,12 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": null,
+          "scope": null
+        }
       }
     },
     "/api/favorites/resources": {
@@ -9140,7 +9800,12 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": null,
+          "scope": null
+        }
       }
     },
     "/api/favorites/{item_type}/{item_id}": {
@@ -9196,7 +9861,12 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": null,
+          "scope": null
+        }
       },
       "delete": {
         "tags": [
@@ -9250,7 +9920,12 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": null,
+          "scope": null
+        }
       }
     },
     "/api/files": {
@@ -9292,7 +9967,12 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": null,
+          "scope": null
+        }
       }
     },
     "/api/files/by-hash": {
@@ -9387,7 +10067,12 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": null,
+          "scope": null
+        }
       }
     },
     "/api/files/delta/chunks": {
@@ -9438,7 +10123,12 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": null,
+          "scope": null
+        }
       }
     },
     "/api/files/delta/commit": {
@@ -9543,7 +10233,12 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": null,
+          "scope": null
+        }
       }
     },
     "/api/files/delta/download": {
@@ -9604,7 +10299,12 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": null,
+          "scope": null
+        }
       }
     },
     "/api/files/delta/negotiate": {
@@ -9659,7 +10359,12 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": null,
+          "scope": null
+        }
       }
     },
     "/api/files/recent-changes": {
@@ -9668,7 +10373,7 @@
           "files"
         ],
         "summary": "`GET /api/files/recent-changes`",
-        "description": "Returns the standard `CursorListResponse` envelope. A file may appear more\nthan once in a page — once per lane that touched it — which is why\n`changed_at` and `modifier` are per-row rather than per-file.",
+        "description": "Returns the standard `CursorListResponse` envelope. A file may appear more\nthan once in a page — once per lane that touched it — which is why\n`changed_at` and `modifier` are per-row rather than per-file.\n\nRequires an INTERNAL user. An external (grant-only) account is refused: it is a guest invited to specific resources, and this surface aggregates more than that invitation implied.",
         "operationId": "list_recent_changes",
         "parameters": [
           {
@@ -9808,7 +10513,12 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": "internal",
+          "scope": null
+        }
       }
     },
     "/api/files/upload": {
@@ -9869,7 +10579,12 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": null,
+          "scope": null
+        }
       }
     },
     "/api/files/{id}": {
@@ -9877,7 +10592,7 @@
         "tags": [
           "files"
         ],
-        "description": "Reachable with a public-share token (`share:read`): a visitor holding an unlocked share link may call this, scoped to what that share grants.",
+        "description": "Reachable by a public-share VISITOR: someone holding an unlocked share link may call this, scoped to what that share grants. No account is required, but a share ring is.",
         "operationId": "download_file",
         "parameters": [
           {
@@ -9949,7 +10664,11 @@
             "bearerAuth": []
           }
         ],
-        "x-oxicloud-scope": "share:read"
+        "x-oxicloud-policy": {
+          "principal": "visitor",
+          "role": null,
+          "scope": null
+        }
       },
       "delete": {
         "tags": [
@@ -9986,7 +10705,12 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": null,
+          "scope": null
+        }
       }
     },
     "/api/files/{id}/content": {
@@ -10068,7 +10792,12 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": null,
+          "scope": null
+        }
       }
     },
     "/api/files/{id}/manifest": {
@@ -10127,7 +10856,12 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": null,
+          "scope": null
+        }
       }
     },
     "/api/files/{id}/metadata": {
@@ -10135,7 +10869,7 @@
         "tags": [
           "files"
         ],
-        "description": "Reachable with a public-share token (`share:read`): a visitor holding an unlocked share link may call this, scoped to what that share grants.",
+        "description": "Reachable by a public-share VISITOR: someone holding an unlocked share link may call this, scoped to what that share grants. No account is required, but a share ring is.",
         "operationId": "get_file_metadata",
         "parameters": [
           {
@@ -10175,7 +10909,11 @@
             "bearerAuth": []
           }
         ],
-        "x-oxicloud-scope": "share:read"
+        "x-oxicloud-policy": {
+          "principal": "visitor",
+          "role": null,
+          "scope": null
+        }
       }
     },
     "/api/files/{id}/move": {
@@ -10232,7 +10970,12 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": null,
+          "scope": null
+        }
       }
     },
     "/api/files/{id}/rename": {
@@ -10284,7 +11027,12 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": null,
+          "scope": null
+        }
       }
     },
     "/api/files/{id}/thumbnail/{size}": {
@@ -10292,7 +11040,7 @@
         "tags": [
           "files"
         ],
-        "description": "Reachable with a public-share token (`share:read`): a visitor holding an unlocked share link may call this, scoped to what that share grants.",
+        "description": "Reachable by a public-share VISITOR: someone holding an unlocked share link may call this, scoped to what that share grants. No account is required, but a share ring is.",
         "operationId": "get_thumbnail",
         "parameters": [
           {
@@ -10343,7 +11091,11 @@
             "bearerAuth": []
           }
         ],
-        "x-oxicloud-scope": "share:read"
+        "x-oxicloud-policy": {
+          "principal": "visitor",
+          "role": null,
+          "scope": null
+        }
       },
       "put": {
         "tags": [
@@ -10412,7 +11164,12 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": null,
+          "scope": null
+        }
       }
     },
     "/api/folders": {
@@ -10440,7 +11197,12 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": null,
+          "scope": null
+        }
       },
       "post": {
         "tags": [
@@ -10484,7 +11246,12 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": null,
+          "scope": null
+        }
       }
     },
     "/api/folders/{id}": {
@@ -10492,7 +11259,7 @@
         "tags": [
           "folders"
         ],
-        "description": "Reachable with a public-share token (`share:read`): a visitor holding an unlocked share link may call this, scoped to what that share grants.",
+        "description": "Reachable by a public-share VISITOR: someone holding an unlocked share link may call this, scoped to what that share grants. No account is required, but a share ring is.",
         "operationId": "get_folder",
         "parameters": [
           {
@@ -10532,7 +11299,11 @@
             "bearerAuth": []
           }
         ],
-        "x-oxicloud-scope": "share:read"
+        "x-oxicloud-policy": {
+          "principal": "visitor",
+          "role": null,
+          "scope": null
+        }
       },
       "delete": {
         "tags": [
@@ -10569,7 +11340,12 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": null,
+          "scope": null
+        }
       }
     },
     "/api/folders/{id}/ancestors": {
@@ -10577,7 +11353,7 @@
         "tags": [
           "folders"
         ],
-        "description": "Reachable with a public-share token (`share:read`): a visitor holding an unlocked share link may call this, scoped to what that share grants.",
+        "description": "Reachable by a public-share VISITOR: someone holding an unlocked share link may call this, scoped to what that share grants. No account is required, but a share ring is.",
         "operationId": "get_folder_ancestors",
         "parameters": [
           {
@@ -10636,7 +11412,11 @@
             "bearerAuth": []
           }
         ],
-        "x-oxicloud-scope": "share:read"
+        "x-oxicloud-policy": {
+          "principal": "visitor",
+          "role": null,
+          "scope": null
+        }
       }
     },
     "/api/folders/{id}/download": {
@@ -10644,7 +11424,7 @@
         "tags": [
           "folders"
         ],
-        "description": "Reachable with a public-share token (`share:read`): a visitor holding an unlocked share link may call this, scoped to what that share grants.",
+        "description": "Reachable by a public-share VISITOR: someone holding an unlocked share link may call this, scoped to what that share grants. No account is required, but a share ring is.",
         "operationId": "download_folder_zip",
         "parameters": [
           {
@@ -10690,7 +11470,11 @@
             "bearerAuth": []
           }
         ],
-        "x-oxicloud-scope": "share:read"
+        "x-oxicloud-policy": {
+          "principal": "visitor",
+          "role": null,
+          "scope": null
+        }
       }
     },
     "/api/folders/{id}/move": {
@@ -10747,7 +11531,12 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": null,
+          "scope": null
+        }
       }
     },
     "/api/folders/{id}/rename": {
@@ -10804,7 +11593,12 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": null,
+          "scope": null
+        }
       }
     },
     "/api/folders/{id}/resources": {
@@ -10812,7 +11606,7 @@
         "tags": [
           "folders"
         ],
-        "description": "Reachable with a public-share token (`share:read`): a visitor holding an unlocked share link may call this, scoped to what that share grants.",
+        "description": "Reachable by a public-share VISITOR: someone holding an unlocked share link may call this, scoped to what that share grants. No account is required, but a share ring is.",
         "operationId": "list_folder_resources",
         "parameters": [
           {
@@ -10912,7 +11706,11 @@
             "bearerAuth": []
           }
         ],
-        "x-oxicloud-scope": "share:read"
+        "x-oxicloud-policy": {
+          "principal": "visitor",
+          "role": null,
+          "scope": null
+        }
       }
     },
     "/api/folders/{id}/upload-preflight": {
@@ -10978,7 +11776,12 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": null,
+          "scope": null
+        }
       }
     },
     "/api/grants": {
@@ -11035,7 +11838,12 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": null,
+          "scope": null
+        }
       },
       "post": {
         "tags": [
@@ -11100,7 +11908,12 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": null,
+          "scope": null
+        }
       }
     },
     "/api/grants/incoming": {
@@ -11128,7 +11941,12 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": null,
+          "scope": null
+        }
       }
     },
     "/api/grants/incoming/resources": {
@@ -11215,7 +12033,12 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": null,
+          "scope": null
+        }
       }
     },
     "/api/grants/outgoing": {
@@ -11243,7 +12066,12 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": null,
+          "scope": null
+        }
       }
     },
     "/api/grants/outgoing/resources": {
@@ -11330,7 +12158,12 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": null,
+          "scope": null
+        }
       }
     },
     "/api/grants/role": {
@@ -11400,7 +12233,12 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": null,
+          "scope": null
+        }
       }
     },
     "/api/grants/{id}": {
@@ -11439,7 +12277,12 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": null,
+          "scope": null
+        }
       }
     },
     "/api/grants/{id}/notify": {
@@ -11508,7 +12351,12 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": null,
+          "scope": null
+        }
       }
     },
     "/api/groups": {
@@ -11588,7 +12436,12 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": null,
+          "scope": null
+        }
       },
       "post": {
         "tags": [
@@ -11662,7 +12515,12 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": null,
+          "scope": null
+        }
       }
     },
     "/api/groups/search": {
@@ -11721,7 +12579,12 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": null,
+          "scope": null
+        }
       }
     },
     "/api/groups/{id}": {
@@ -11789,7 +12652,12 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": null,
+          "scope": null
+        }
       },
       "delete": {
         "tags": [
@@ -11848,7 +12716,12 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": null,
+          "scope": null
+        }
       },
       "patch": {
         "tags": [
@@ -11944,7 +12817,12 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": null,
+          "scope": null
+        }
       }
     },
     "/api/groups/{id}/effective-members": {
@@ -12016,7 +12894,12 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": null,
+          "scope": null
+        }
       }
     },
     "/api/groups/{id}/members": {
@@ -12087,7 +12970,12 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": null,
+          "scope": null
+        }
       },
       "post": {
         "tags": [
@@ -12183,7 +13071,12 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": null,
+          "scope": null
+        }
       }
     },
     "/api/groups/{id}/members/group/{gid}": {
@@ -12254,7 +13147,12 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": null,
+          "scope": null
+        }
       }
     },
     "/api/groups/{id}/members/user/{uid}": {
@@ -12325,7 +13223,12 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": null,
+          "scope": null
+        }
       }
     },
     "/api/i18n/locales": {
@@ -12333,6 +13236,7 @@
         "tags": [
           "i18n"
         ],
+        "description": "Reachable with NO credential at all.",
         "operationId": "get_locales",
         "responses": {
           "200": {
@@ -12349,7 +13253,12 @@
             }
           }
         },
-        "security": []
+        "security": [],
+        "x-oxicloud-policy": {
+          "principal": "public",
+          "role": null,
+          "scope": null
+        }
       }
     },
     "/api/i18n/locales/{locale_code}": {
@@ -12357,6 +13266,7 @@
         "tags": [
           "i18n"
         ],
+        "description": "Reachable with NO credential at all.",
         "operationId": "get_translations_by_locale",
         "parameters": [
           {
@@ -12391,7 +13301,12 @@
             }
           }
         },
-        "security": []
+        "security": [],
+        "x-oxicloud-policy": {
+          "principal": "public",
+          "role": null,
+          "scope": null
+        }
       }
     },
     "/api/i18n/translate": {
@@ -12399,6 +13314,7 @@
         "tags": [
           "i18n"
         ],
+        "description": "Reachable with NO credential at all.",
         "operationId": "translate",
         "parameters": [
           {
@@ -12452,7 +13368,12 @@
             }
           }
         },
-        "security": []
+        "security": [],
+        "x-oxicloud-policy": {
+          "principal": "public",
+          "role": null,
+          "scope": null
+        }
       }
     },
     "/api/notifications": {
@@ -12520,7 +13441,12 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": null,
+          "scope": null
+        }
       }
     },
     "/api/notifications/read-all": {
@@ -12546,7 +13472,12 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": null,
+          "scope": null
+        }
       }
     },
     "/api/notifications/unread": {
@@ -12572,7 +13503,12 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": null,
+          "scope": null
+        }
       }
     },
     "/api/notifications/{id}": {
@@ -12604,7 +13540,12 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": null,
+          "scope": null
+        }
       }
     },
     "/api/notifications/{id}/read": {
@@ -12636,7 +13577,12 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": null,
+          "scope": null
+        }
       }
     },
     "/api/people": {
@@ -12675,7 +13621,12 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": null,
+          "scope": null
+        }
       }
     },
     "/api/people/data": {
@@ -12704,7 +13655,12 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": null,
+          "scope": null
+        }
       }
     },
     "/api/people/faces/{file_id}": {
@@ -12764,7 +13720,12 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": null,
+          "scope": null
+        }
       }
     },
     "/api/people/merge": {
@@ -12813,7 +13774,12 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": null,
+          "scope": null
+        }
       }
     },
     "/api/people/recluster": {
@@ -12847,7 +13813,12 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": null,
+          "scope": null
+        }
       }
     },
     "/api/people/{id}": {
@@ -12907,7 +13878,12 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": null,
+          "scope": null
+        }
       }
     },
     "/api/people/{id}/photos": {
@@ -12967,7 +13943,12 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": null,
+          "scope": null
+        }
       }
     },
     "/api/photos/geo": {
@@ -13038,7 +14019,12 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": null,
+          "scope": null
+        }
       }
     },
     "/api/photos/resources": {
@@ -13186,7 +14172,12 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": null,
+          "scope": null
+        }
       }
     },
     "/api/playlists": {
@@ -13255,12 +14246,18 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": null,
+          "scope": null
+        }
       },
       "post": {
         "tags": [
           "playlists"
         ],
+        "description": "Requires an INTERNAL user. An external (grant-only) account is refused: it is a guest invited to specific resources, and this surface aggregates more than that invitation implied.",
         "operationId": "create_playlist",
         "requestBody": {
           "content": {
@@ -13308,7 +14305,12 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": "internal",
+          "scope": null
+        }
       }
     },
     "/api/playlists/audio-metadata/{file_id}": {
@@ -13364,7 +14366,12 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": null,
+          "scope": null
+        }
       }
     },
     "/api/playlists/{playlist_id}": {
@@ -13420,7 +14427,12 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": null,
+          "scope": null
+        }
       },
       "put": {
         "tags": [
@@ -13484,7 +14496,12 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": null,
+          "scope": null
+        }
       },
       "delete": {
         "tags": [
@@ -13531,7 +14548,12 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": null,
+          "scope": null
+        }
       }
     },
     "/api/playlists/{playlist_id}/reorder": {
@@ -13590,7 +14612,12 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": null,
+          "scope": null
+        }
       }
     },
     "/api/playlists/{playlist_id}/share": {
@@ -13649,7 +14676,12 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": null,
+          "scope": null
+        }
       }
     },
     "/api/playlists/{playlist_id}/share/{user_id}": {
@@ -13707,7 +14739,12 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": null,
+          "scope": null
+        }
       }
     },
     "/api/playlists/{playlist_id}/shares": {
@@ -13766,7 +14803,12 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": null,
+          "scope": null
+        }
       }
     },
     "/api/playlists/{playlist_id}/tracks": {
@@ -13825,7 +14867,12 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": null,
+          "scope": null
+        }
       },
       "post": {
         "tags": [
@@ -13892,7 +14939,12 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": null,
+          "scope": null
+        }
       }
     },
     "/api/playlists/{playlist_id}/tracks/{file_id}": {
@@ -13950,7 +15002,12 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": null,
+          "scope": null
+        }
       }
     },
     "/api/recent/clear": {
@@ -13976,7 +15033,12 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": null,
+          "scope": null
+        }
       }
     },
     "/api/recent/resources": {
@@ -14075,7 +15137,12 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": null,
+          "scope": null
+        }
       }
     },
     "/api/recent/{item_type}/{item_id}": {
@@ -14131,7 +15198,12 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": null,
+          "scope": null
+        }
       },
       "delete": {
         "tags": [
@@ -14185,7 +15257,12 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": null,
+          "scope": null
+        }
       }
     },
     "/api/s/{token}": {
@@ -14194,6 +15271,7 @@
           "shares"
         ],
         "summary": "Access a shared item via its token",
+        "description": "Reachable with NO credential at all.",
         "operationId": "access_shared_item",
         "parameters": [
           {
@@ -14238,7 +15316,12 @@
             }
           }
         },
-        "security": []
+        "security": [],
+        "x-oxicloud-policy": {
+          "principal": "public",
+          "role": null,
+          "scope": null
+        }
       }
     },
     "/api/s/{token}/verify": {
@@ -14247,6 +15330,7 @@
           "shares"
         ],
         "summary": "Verify password for a password-protected shared item",
+        "description": "Reachable with NO credential at all.",
         "operationId": "verify_shared_item_password",
         "parameters": [
           {
@@ -14301,7 +15385,12 @@
             }
           }
         },
-        "security": []
+        "security": [],
+        "x-oxicloud-policy": {
+          "principal": "public",
+          "role": null,
+          "scope": null
+        }
       }
     },
     "/api/search": {
@@ -14487,7 +15576,12 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": null,
+          "scope": null
+        }
       }
     },
     "/api/search/suggest": {
@@ -14553,7 +15647,12 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": null,
+          "scope": null
+        }
       }
     },
     "/api/setup": {
@@ -14562,7 +15661,7 @@
           "auth"
         ],
         "summary": "One-time endpoint to create the first admin user.",
-        "description": "Available only when the system is not yet initialized (no admin exists)\nand password login is allowed.\nOnce the admin is created the endpoint permanently returns 403.\nUses an atomic \"claim\" operation so concurrent requests cannot both succeed.",
+        "description": "Available only when the system is not yet initialized (no admin exists)\nand password login is allowed.\nOnce the admin is created the endpoint permanently returns 403.\nUses an atomic \"claim\" operation so concurrent requests cannot both succeed.\n\nReachable with NO credential at all.",
         "operationId": "setup_admin",
         "requestBody": {
           "content": {
@@ -14626,7 +15725,12 @@
             }
           }
         },
-        "security": []
+        "security": [],
+        "x-oxicloud-policy": {
+          "principal": "public",
+          "role": null,
+          "scope": null
+        }
       }
     },
     "/api/shares": {
@@ -14695,7 +15799,12 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": null,
+          "scope": null
+        }
       },
       "post": {
         "tags": [
@@ -14739,7 +15848,12 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": null,
+          "scope": null
+        }
       }
     },
     "/api/shares/{id}": {
@@ -14786,7 +15900,12 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": null,
+          "scope": null
+        }
       },
       "put": {
         "tags": [
@@ -14841,7 +15960,12 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": null,
+          "scope": null
+        }
       },
       "delete": {
         "tags": [
@@ -14879,7 +16003,12 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": null,
+          "scope": null
+        }
       }
     },
     "/api/status": {
@@ -14915,7 +16044,12 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": null,
+          "scope": null
+        }
       }
     },
     "/api/trash/drive/{drive_id}": {
@@ -14974,7 +16108,12 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": null,
+          "scope": null
+        }
       }
     },
     "/api/trash/empty": {
@@ -15010,7 +16149,12 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": null,
+          "scope": null
+        }
       }
     },
     "/api/trash/files/{id}": {
@@ -15057,7 +16201,12 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": null,
+          "scope": null
+        }
       }
     },
     "/api/trash/folders/{id}": {
@@ -15104,7 +16253,12 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": null,
+          "scope": null
+        }
       }
     },
     "/api/trash/resources": {
@@ -15213,7 +16367,12 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": null,
+          "scope": null
+        }
       }
     },
     "/api/trash/{id}": {
@@ -15260,7 +16419,12 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": null,
+          "scope": null
+        }
       }
     },
     "/api/trash/{id}/restore": {
@@ -15307,7 +16471,12 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": null,
+          "scope": null
+        }
       }
     },
     "/api/uploads": {
@@ -15366,7 +16535,12 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": null,
+          "scope": null
+        }
       }
     },
     "/api/uploads/{upload_id}": {
@@ -15408,7 +16582,12 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": null,
+          "scope": null
+        }
       },
       "head": {
         "tags": [
@@ -15455,7 +16634,12 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": null,
+          "scope": null
+        }
       },
       "patch": {
         "tags": [
@@ -15556,7 +16740,12 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": null,
+          "scope": null
+        }
       }
     },
     "/api/uploads/{upload_id}/complete": {
@@ -15636,7 +16825,12 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": null,
+          "scope": null
+        }
       }
     },
     "/api/users/{id}": {
@@ -15692,7 +16886,94 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": null,
+          "scope": null
+        }
+      }
+    },
+    "/api/wopi/editor-url": {
+      "get": {
+        "tags": [
+          "wopi"
+        ],
+        "summary": "GET /api/wopi/editor-url — Returns the editor iframe URL + WOPI token.",
+        "description": "This endpoint is behind normal auth middleware. The authenticated user\nrequests a WOPI session for a specific file.",
+        "operationId": "get_editor_url",
+        "parameters": [
+          {
+            "name": "file_id",
+            "in": "query",
+            "description": "The file to open (UUID)",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "action",
+            "in": "query",
+            "description": "`edit` (default) or `view`. It is a REQUEST, not a grant: the minted token's write capability comes from the caller's real Update permission.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "A host-page URL and a freshly minted WOPI token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EditorUrlResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or a share visitor — `AuthUser` requires role >= User and `CallerKind::Visitor` reports `Anonymous`, so a ring cannot open an editor. A visitor downloads the file instead.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "No Read permission on the file",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No WOPI client is configured for this file's extension",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-oxicloud-policy": {
+          "principal": "user",
+          "role": null,
+          "scope": null
+        }
       }
     }
   },
@@ -19008,6 +20289,30 @@
             "type": "boolean",
             "description": "Requires every anonymous link in this drive to carry a password.\nEnforced at `share_service::create_shared_link`; the corresponding\nstate is `storage.shares.password_hash IS NOT NULL`.",
             "default": false
+          }
+        }
+      },
+      "EditorUrlResponse": {
+        "type": "object",
+        "description": "Response from the editor URL API endpoint.",
+        "required": [
+          "editor_url",
+          "access_token",
+          "access_token_ttl"
+        ],
+        "properties": {
+          "access_token": {
+            "type": "string",
+            "description": "A WOPI access token scoped to this file and this caller's ACTUAL\nrights — `resolve_mint_target` derives `can_write` from the\ncaller's Update permission, not from the requested action."
+          },
+          "access_token_ttl": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Seconds until `access_token` expires."
+          },
+          "editor_url": {
+            "type": "string",
+            "description": "The host page to load in an iframe, on OUR origin."
           }
         }
       },

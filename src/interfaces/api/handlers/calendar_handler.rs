@@ -629,7 +629,6 @@ fn resolve_range(query: EventRangeQuery) -> Result<(DateTime<Utc>, DateTime<Utc>
     responses(
         (status = 200, body = Vec<CalendarResponse>, description = "List of accessible calendars"),
     ),
-    security(("bearerAuth" = [])),
     tag = "calendars"
 )]
 pub async fn list_calendars(
@@ -661,7 +660,6 @@ pub async fn list_calendars(
         (status = 201, body = CalendarResponse, description = "Calendar created"),
         (status = 400, description = "Invalid input"),
     ),
-    security(("bearerAuth" = [])),
     tag = "calendars"
 )]
 pub async fn create_calendar(
@@ -696,7 +694,6 @@ pub async fn create_calendar(
         (status = 403, description = "Not the owner"),
         (status = 404, description = "Calendar not found"),
     ),
-    security(("bearerAuth" = [])),
     tag = "calendars"
 )]
 pub async fn update_calendar(
@@ -731,7 +728,6 @@ pub async fn update_calendar(
         (status = 403, description = "Not the owner"),
         (status = 404, description = "Calendar not found"),
     ),
-    security(("bearerAuth" = [])),
     tag = "calendars"
 )]
 pub async fn delete_calendar(
@@ -762,7 +758,6 @@ pub async fn delete_calendar(
         (status = 400, description = "Invalid range"),
         (status = 404, description = "Calendar not found"),
     ),
-    security(("bearerAuth" = [])),
     tag = "calendars"
 )]
 pub async fn list_events(
@@ -801,7 +796,6 @@ pub async fn list_events(
         (status = 403, description = "No create permission"),
         (status = 404, description = "Calendar not found"),
     ),
-    security(("bearerAuth" = [])),
     tag = "calendars"
 )]
 pub async fn create_event(
@@ -848,7 +842,6 @@ pub async fn create_event(
         (status = 403, description = "No update permission"),
         (status = 404, description = "Event not found"),
     ),
-    security(("bearerAuth" = [])),
     tag = "calendars"
 )]
 pub async fn update_event(
@@ -943,7 +936,6 @@ pub async fn update_event(
         (status = 403, description = "No delete permission"),
         (status = 404, description = "Event not found"),
     ),
-    security(("bearerAuth" = [])),
     tag = "calendars"
 )]
 pub async fn delete_event(

@@ -259,7 +259,6 @@ pub struct SuggestParams {
         (status = 200, description = "Search results (cursor-paginated envelope shared with /*/resources)", body = SearchResourcesDto),
         (status = 503, description = "Search service unavailable", body = crate::interfaces::errors::ApiErrorBody),
     ),
-    security(("bearerAuth" = [])),
     tag = "search"
 )]
 pub async fn search_resources(
@@ -282,7 +281,6 @@ pub async fn search_resources(
         (status = 200, description = "Suggestions", body = SearchSuggestionsDto),
         (status = 503, description = "Search service unavailable", body = crate::interfaces::errors::ApiErrorBody),
     ),
-    security(("bearerAuth" = [])),
     tag = "search"
 )]
 pub async fn suggest_files(
@@ -302,7 +300,6 @@ pub async fn suggest_files(
         (status = 403, description = "Caller is not an admin", body = crate::interfaces::errors::ApiErrorBody),
         (status = 503, description = "Search service unavailable", body = crate::interfaces::errors::ApiErrorBody),
     ),
-    security(("bearerAuth" = [])),
     tag = "admin"
 )]
 pub async fn clear_search_cache(

@@ -2,7 +2,7 @@
 
 import { type Client, type ClientMeta, formDataBodySerializer, type Options as Options2, type RequestResult, type TDataShape, urlSearchParamsBodySerializer } from './client';
 import { client } from './client.gen';
-import type { AccessSharedItemData, AccessSharedItemErrors, AccessSharedItemResponses, AcquireBackendWriteLockData, AcquireBackendWriteLockErrors, AcquireBackendWriteLockResponses, AddContactToGroupData, AddContactToGroupErrors, AddContactToGroupResponses, AddDriveMemberAdminData, AddDriveMemberAdminErrors, AddDriveMemberAdminResponses, AddDriveMemberData, AddDriveMemberErrors, AddDriveMemberResponses, AddFavoriteData, AddFavoriteErrors, AddFavoriteResponses, AddTracksData, AddTracksErrors, AddTracksResponses, AdminCheckHashData, AdminCheckHashErrors, AdminCheckHashResponses, AdminPromoteExternalToInternalData, AdminPromoteExternalToInternalErrors, AdminPromoteExternalToInternalResponses, BatchAddFavoritesData, BatchAddFavoritesErrors, BatchAddFavoritesResponses, CancelJobData, CancelJobErrors, CancelJobResponses, CancelUploadData, CancelUploadErrors, CancelUploadResponses, ChangePasswordData, ChangePasswordErrors, ChangePasswordResponses, CheckHashData, CheckHashErrors, CheckHashesBatchData, CheckHashesBatchErrors, CheckHashesBatchResponses, CheckHashResponses, ClearRecentItemsData, ClearRecentItemsResponses, ClearSearchCacheData, ClearSearchCacheErrors, ClearSearchCacheResponses, CompleteUploadData, CompleteUploadErrors, CompleteUploadResponses, CopyFilesBatchData, CopyFilesBatchErrors, CopyFilesBatchResponses, CopyFoldersBatchData, CopyFoldersBatchErrors, CopyFoldersBatchResponses, CreateAddressBookData, CreateAddressBookErrors, CreateAddressBookResponses, CreateAppPasswordData, CreateAppPasswordErrors, CreateAppPasswordResponses, CreateCalendarData, CreateCalendarErrors, CreateCalendarResponses, CreateContactData, CreateContactErrors, CreateContactResponses, CreateEventData, CreateEventErrors, CreateEventResponses, CreateFileByHashData, CreateFileByHashErrors, CreateFileByHashResponses, CreateFolderData, CreateFolderErrors, CreateFolderResponses, CreateFoldersBatchData, CreateFoldersBatchErrors, CreateFoldersBatchResponses, CreateGrantData, CreateGrantErrors, CreateGrantResponses, CreateGroupData, CreateGroupErrors, CreateGroupResponses, CreateOpsBannerData, CreateOpsBannerErrors, CreateOpsBannerResponses, CreatePlaylistData, CreatePlaylistErrors, CreatePlaylistResponses, CreateSharedLinkData, CreateSharedLinkErrors, CreateSharedLinkResponses, CreateUploadData, CreateUploadErrors, CreateUploadResponses, CreateUserData, CreateUserErrors, CreateUserResponses, DeleteAddressBookData, DeleteAddressBookErrors, DeleteAddressBookResponses, DeleteAllData, DeleteAllErrors, DeleteAllResponses, DeleteCalendarData, DeleteCalendarErrors, DeleteCalendarResponses, DeleteContactData, DeleteContactErrors, DeleteContactResponses, DeleteDriveAdminData, DeleteDriveAdminErrors, DeleteDriveAdminResponses, DeleteDriveData, DeleteDriveErrors, DeleteDriveResponses, DeleteEventData, DeleteEventErrors, DeleteEventResponses, DeleteFileData, DeleteFileErrors, DeleteFileResponses, DeleteFilesBatchData, DeleteFilesBatchErrors, DeleteFilesBatchResponses, DeleteFoldersBatchData, DeleteFoldersBatchErrors, DeleteFoldersBatchResponses, DeleteFolderWithTrashData, DeleteFolderWithTrashErrors, DeleteFolderWithTrashResponses, DeleteGroupData, DeleteGroupErrors, DeleteGroupResponses, DeleteNotificationData, DeleteNotificationResponses, DeleteOpsBannerData, DeleteOpsBannerErrors, DeleteOpsBannerResponses, DeletePermanentlyData, DeletePermanentlyErrors, DeletePermanentlyResponses, DeletePlaylistData, DeletePlaylistErrors, DeletePlaylistResponses, DeleteSharedLinkData, DeleteSharedLinkErrors, DeleteSharedLinkResponses, DeleteUserData, DeleteUserErrors, DeleteUserResponses, DeltaCommitData, DeltaCommitErrors, DeltaCommitResponses, DeltaDownloadChunksData, DeltaDownloadChunksErrors, DeltaDownloadChunksResponses, DeltaFileManifestData, DeltaFileManifestErrors, DeltaFileManifestResponses, DeltaNegotiateData, DeltaNegotiateErrors, DeltaNegotiateResponses, DeltaUploadChunksData, DeltaUploadChunksErrors, DeltaUploadChunksResponses, DeviceAuthorizeData, DeviceAuthorizeResponses, DeviceTokenData, DeviceTokenErrors, DeviceTokenResponses, DeviceVerifyActionData, DeviceVerifyActionErrors, DeviceVerifyActionResponses, DeviceVerifyInfoData, DeviceVerifyInfoErrors, DeviceVerifyInfoResponses, DownloadBatchPostData, DownloadBatchPostErrors, DownloadBatchPostResponses, DownloadBatchQuerystringData, DownloadBatchQuerystringErrors, DownloadBatchQuerystringResponses, DownloadFileData, DownloadFileErrors, DownloadFileResponses, DownloadFolderZipData, DownloadFolderZipErrors, DownloadFolderZipResponses, DpopBindData, DpopBindErrors, DpopBindResponses, EmptyTrashData, EmptyTrashErrors, EmptyTrashForDriveData, EmptyTrashForDriveErrors, EmptyTrashForDriveResponses, EmptyTrashResponses, FacesForFileData, FacesForFileErrors, FacesForFileResponses, GenerateEncryptionKeyData, GenerateEncryptionKeyErrors, GenerateEncryptionKeyResponses, GetAppearanceData, GetAppearanceErrors, GetAppearanceResponses, GetAudioMetadataData, GetAudioMetadataErrors, GetAudioMetadataResponses, GetBackendWriteLockData, GetBackendWriteLockErrors, GetBackendWriteLockResponses, GetBlobData, GetBlobErrors, GetBlobResponses, GetConfigData, GetConfigResponses, GetContactData, GetContactErrors, GetContactResponses, GetCurrentUserData, GetCurrentUserErrors, GetCurrentUserResponses, GetDashboardStatsData, GetDashboardStatsErrors, GetDashboardStatsResponses, GetDrivePolicyDefaultsData, GetDrivePolicyDefaultsErrors, GetDrivePolicyDefaultsResponses, GetDrivePolicyDriftData, GetDrivePolicyDriftErrors, GetDrivePolicyDriftResponses, GetFileMetadataData, GetFileMetadataErrors, GetFileMetadataResponses, GetFilesBatchData, GetFilesBatchErrors, GetFilesBatchResponses, GetFolderAncestorsData, GetFolderAncestorsErrors, GetFolderAncestorsResponses, GetFolderData, GetFolderErrors, GetFolderResponses, GetFoldersBatchData, GetFoldersBatchErrors, GetFoldersBatchResponses, GetGroupData, GetGroupErrors, GetGroupResponses, GetJobRunData, GetJobRunErrors, GetJobRunResponses, GetLocalesData, GetLocalesResponses, GetMigrationStatusData, GetMigrationStatusErrors, GetMigrationStatusResponses, GetNotifyInfoData, GetNotifyInfoErrors, GetNotifyInfoResponses, GetOidcSettingsData, GetOidcSettingsErrors, GetOidcSettingsResponses, GetPlaylistData, GetPlaylistErrors, GetPlaylistResponses, GetPlaylistSharesData, GetPlaylistSharesErrors, GetPlaylistSharesResponses, GetServerStatusData, GetServerStatusErrors, GetServerStatusResponses, GetSharedLinkData, GetSharedLinkErrors, GetSharedLinkResponses, GetSmtpInfoData, GetSmtpInfoErrors, GetSmtpInfoResponses, GetStatsData, GetStatsErrors, GetStatsResponses, GetStorageSettingsData, GetStorageSettingsErrors, GetStorageSettingsResponses, GetThumbnailData, GetThumbnailErrors, GetThumbnailResponses, GetTranslationsByLocaleData, GetTranslationsByLocaleErrors, GetTranslationsByLocaleResponses, GetTrashResourcesData, GetTrashResourcesErrors, GetTrashResourcesResponses, GetUploadStatusData, GetUploadStatusErrors, GetUploadStatusResponses, GetUserData, GetUserErrors, GetUserProfileData, GetUserProfileErrors, GetUserProfileResponses, GetUserResponses, GetUserSharesData, GetUserSharesResponses, GetWebhookInfoData, GetWebhookInfoErrors, GetWebhookInfoResponses, ListAddressBooksData, ListAddressBooksErrors, ListAddressBooksResponses, ListAllDrivesData, ListAllDrivesErrors, ListAllDrivesResponses, ListAppPasswordsData, ListAppPasswordsErrors, ListAppPasswordsResponses, ListCalendarsData, ListCalendarsResponses, ListContactsData, ListContactsErrors, ListContactsInGroupData, ListContactsInGroupErrors, ListContactsInGroupResponses, ListContactsResponses, ListDevicesData, ListDevicesErrors, ListDevicesResponses, ListDriveMembersAdminData, ListDriveMembersAdminErrors, ListDriveMembersAdminResponses, ListDriveMembersData, ListDriveMembersErrors, ListDriveMembersResponses, ListDrivesData, ListDrivesErrors, ListDrivesResponses, ListEventsData, ListEventsErrors, ListEventsResponses, ListFavoritesResourcesData, ListFavoritesResourcesErrors, ListFavoritesResourcesResponses, ListFilesQueryData, ListFilesQueryResponses, ListFolderResourcesData, ListFolderResourcesErrors, ListFolderResourcesResponses, ListGroupsData, ListGroupsErrors, ListGroupsResponses, ListIncomingData, ListIncomingResponses, ListJobRunFindingsData, ListJobRunFindingsErrors, ListJobRunFindingsResponses, ListJobRunsData, ListJobRunsErrors, ListJobRunsResponses, ListJobsData, ListJobsErrors, ListJobsResponses, ListMySharesData, ListMySharesResponses, ListNotificationsData, ListNotificationsResponses, ListOnResourceData, ListOnResourceErrors, ListOnResourceResponses, ListOpsBannersData, ListOpsBannersErrors, ListOpsBannersResponses, ListOutgoingData, ListOutgoingResponses, ListOwnSessionsData, ListOwnSessionsErrors, ListOwnSessionsResponses, ListPeopleData, ListPeopleErrors, ListPeopleResponses, ListPhotosGeoData, ListPhotosGeoErrors, ListPhotosGeoResponses, ListPhotosResourcesData, ListPhotosResourcesErrors, ListPhotosResourcesResponses, ListPlaylistsData, ListPlaylistsErrors, ListPlaylistsResponses, ListPlaylistTracksData, ListPlaylistTracksErrors, ListPlaylistTracksResponses, ListRecentChangesData, ListRecentChangesErrors, ListRecentChangesResponses, ListRecentResourcesData, ListRecentResourcesErrors, ListRecentResourcesResponses, ListRootFoldersData, ListRootFoldersResponses, ListSessionsData, ListSessionsErrors, ListSessionsResponses, ListSharedWithMeData, ListSharedWithMeResponses, ListUsersData, ListUsersErrors, ListUsersResponses, LoginData, LoginErrors, LoginKe1Data, LoginKe1Errors, LoginKe1Responses, LoginKe3Data, LoginKe3Errors, LoginKe3Responses, LoginLookupData, LoginLookupErrors, LoginLookupResponses, LoginResponses, LogoutData, LogoutErrors, LogoutResponses, MarkAllReadData, MarkAllReadResponses, MarkReadData, MarkReadResponses, MergePeopleData, MergePeopleErrors, MergePeopleResponses, MoveFilesBatchData, MoveFilesBatchErrors, MoveFilesBatchResponses, MoveFileSimpleData, MoveFileSimpleErrors, MoveFileSimpleResponses, MoveFileToTrashData, MoveFileToTrashErrors, MoveFileToTrashResponses, MoveFolderData, MoveFolderErrors, MoveFolderResponses, MoveFoldersBatchData, MoveFoldersBatchErrors, MoveFoldersBatchResponses, MoveFolderToTrashData, MoveFolderToTrashErrors, MoveFolderToTrashResponses, NotifyGrantRecipientData, NotifyGrantRecipientErrors, NotifyGrantRecipientResponses, OidcAuthorizeData, OidcAuthorizeErrors, OidcBackchannelLogoutData, OidcBackchannelLogoutErrors, OidcBackchannelLogoutResponses, OidcCallbackData, OidcCallbackErrors, OidcExchangeData, OidcExchangeErrors, OidcExchangeResponses, OidcLinkStartData, OidcLinkStartErrors, OidcLinkStartResponses, OidcUnlinkData, OidcUnlinkErrors, OidcUnlinkResponses, OpaqueParamsData, OpaqueParamsResponses, PauseJobData, PauseJobErrors, PauseJobResponses, PauseMigrationData, PauseMigrationErrors, PauseMigrationResponses, PersonPhotosData, PersonPhotosErrors, PersonPhotosResponses, RecalculateStatsData, RecalculateStatsErrors, RecalculateStatsResponses, ReclusterData, ReclusterErrors, ReclusterResponses, RecordItemAccessData, RecordItemAccessErrors, RecordItemAccessResponses, RefreshTokenData, RefreshTokenErrors, RefreshTokenResponses, RegisterData, RegisterErrors, RegisterFinishData, RegisterFinishErrors, RegisterFinishResponses, RegisterResponses, RegisterStartData, RegisterStartErrors, RegisterStartResponses, ReleaseBackendWriteLockData, ReleaseBackendWriteLockErrors, ReleaseBackendWriteLockResponses, ReloadThemesData, ReloadThemesErrors, ReloadThemesResponses, RemoveContactFromGroupData, RemoveContactFromGroupErrors, RemoveContactFromGroupResponses, RemoveDriveMemberAdminData, RemoveDriveMemberAdminErrors, RemoveDriveMemberAdminResponses, RemoveDriveMemberData, RemoveDriveMemberErrors, RemoveDriveMemberResponses, RemoveFavoriteData, RemoveFavoriteErrors, RemoveFavoriteResponses, RemoveFromRecentData, RemoveFromRecentErrors, RemoveFromRecentResponses, RemoveShareData, RemoveShareErrors, RemoveShareResponses, RemoveTrackData, RemoveTrackErrors, RemoveTrackResponses, RenameFileData, RenameFileErrors, RenameFileResponses, RenameFolderData, RenameFolderErrors, RenameFolderResponses, RenamePersonData, RenamePersonErrors, RenamePersonResponses, ReorderTracksData, ReorderTracksErrors, ReorderTracksResponses, ReplaceFileContentData, ReplaceFileContentErrors, ReplaceFileContentResponses, ResetUserPasswordData, ResetUserPasswordErrors, ResetUserPasswordResponses, RestoreFromTrashData, RestoreFromTrashErrors, RestoreFromTrashResponses, ResumeMigrationData, ResumeMigrationErrors, ResumeMigrationResponses, RevokeAppPasswordData, RevokeAppPasswordErrors, RevokeAppPasswordResponses, RevokeDeviceData, RevokeDeviceErrors, RevokeDeviceResponses, RevokeGrantData, RevokeGrantErrors, RevokeGrantResponses, RevokeOwnSessionData, RevokeOwnSessionErrors, RevokeOwnSessionResponses, RevokeSessionData, RevokeSessionErrors, RevokeSessionResponses, SaveOidcSettingsData, SaveOidcSettingsErrors, SaveOidcSettingsResponses, SaveStorageSettingsData, SaveStorageSettingsErrors, SaveStorageSettingsResponses, SearchResourcesData, SearchResourcesErrors, SearchResourcesResponses, SelectThemeData, SelectThemeErrors, SelectThemeResponses, SendMagicLinkData, SendMagicLinkErrors, SendMagicLinkResponses, SendSmtpTestData, SendSmtpTestErrors, SendSmtpTestResponses, SendWebhookTestData, SendWebhookTestErrors, SendWebhookTestResponses, SetDrivePolicyDefaultsData, SetDrivePolicyDefaultsErrors, SetDrivePolicyDefaultsResponses, SetRegistrationSettingData, SetRegistrationSettingErrors, SetRegistrationSettingResponses, SetRoleData, SetRoleErrors, SetRoleResponses, SetupAdminData, SetupAdminErrors, SetupAdminResponses, SharePlaylistData, SharePlaylistErrors, SharePlaylistResponses, StartMigrationData, StartMigrationErrors, StartMigrationResponses, SubjectGroupAddMemberData, SubjectGroupAddMemberErrors, SubjectGroupAddMemberResponses, SubjectGroupCreateData, SubjectGroupCreateErrors, SubjectGroupCreateResponses, SubjectGroupDeleteData, SubjectGroupDeleteErrors, SubjectGroupDeleteResponses, SubjectGroupEffectiveMembersData, SubjectGroupEffectiveMembersErrors, SubjectGroupEffectiveMembersResponses, SubjectGroupGetData, SubjectGroupGetErrors, SubjectGroupGetResponses, SubjectGroupListData, SubjectGroupListErrors, SubjectGroupListMembersData, SubjectGroupListMembersErrors, SubjectGroupListMembersResponses, SubjectGroupListResponses, SubjectGroupRemoveGroupMemberData, SubjectGroupRemoveGroupMemberErrors, SubjectGroupRemoveGroupMemberResponses, SubjectGroupRemoveUserMemberData, SubjectGroupRemoveUserMemberErrors, SubjectGroupRemoveUserMemberResponses, SubjectGroupSearchData, SubjectGroupSearchErrors, SubjectGroupSearchResponses, SubjectGroupUpdateData, SubjectGroupUpdateErrors, SubjectGroupUpdateResponses, SuggestFilesData, SuggestFilesErrors, SuggestFilesResponses, TransferOwnershipData, TransferOwnershipErrors, TransferOwnershipResponses, TranslateData, TranslateErrors, TranslateResponses, TrashBatchData, TrashBatchErrors, TrashBatchResponses, TriggerBackendRotateData, TriggerBackendRotateErrors, TriggerBackendRotateResponses, TriggerJobData, TriggerJobErrors, TriggerJobResponses, UnreadCountData, UnreadCountResponses, UpdateAddressBookData, UpdateAddressBookErrors, UpdateAddressBookResponses, UpdateCalendarData, UpdateCalendarErrors, UpdateCalendarResponses, UpdateContactData, UpdateContactErrors, UpdateContactResponses, UpdateDriveMemberAdminData, UpdateDriveMemberAdminErrors, UpdateDriveMemberAdminResponses, UpdateDriveMemberData, UpdateDriveMemberErrors, UpdateDriveMemberResponses, UpdateDrivePoliciesData, UpdateDrivePoliciesErrors, UpdateDrivePoliciesResponses, UpdateDriveQuotaData, UpdateDriveQuotaErrors, UpdateDriveQuotaResponses, UpdateEventData, UpdateEventErrors, UpdateEventResponses, UpdateGroupData, UpdateGroupErrors, UpdateGroupResponses, UpdateOpsBannerData, UpdateOpsBannerErrors, UpdateOpsBannerResponses, UpdatePlaylistData, UpdatePlaylistErrors, UpdatePlaylistResponses, UpdateProfileData, UpdateProfileErrors, UpdateProfileResponses, UpdateSharedLinkData, UpdateSharedLinkErrors, UpdateSharedLinkResponses, UpdateUserActiveData, UpdateUserActiveErrors, UpdateUserActiveResponses, UpdateUserImageData, UpdateUserImageErrors, UpdateUserImageResponses, UpdateUserQuotaData, UpdateUserQuotaErrors, UpdateUserQuotaResponses, UpdateUserRoleData, UpdateUserRoleErrors, UpdateUserRoleResponses, UpgradeToInternalData, UpgradeToInternalErrors, UpgradeToInternalResponses, UploadChunkData, UploadChunkErrors, UploadChunkResponses, UploadFileWithThumbnailsData, UploadFileWithThumbnailsErrors, UploadFileWithThumbnailsResponses, UploadPreflightData, UploadPreflightErrors, UploadPreflightResponses, UploadThumbnailData, UploadThumbnailErrors, UploadThumbnailResponses, VerifySharedItemPasswordData, VerifySharedItemPasswordErrors, VerifySharedItemPasswordResponses } from './types.gen';
+import type { AccessSharedItemData, AccessSharedItemErrors, AccessSharedItemResponses, AcquireBackendWriteLockData, AcquireBackendWriteLockErrors, AcquireBackendWriteLockResponses, AddContactToGroupData, AddContactToGroupErrors, AddContactToGroupResponses, AddDriveMemberAdminData, AddDriveMemberAdminErrors, AddDriveMemberAdminResponses, AddDriveMemberData, AddDriveMemberErrors, AddDriveMemberResponses, AddFavoriteData, AddFavoriteErrors, AddFavoriteResponses, AddTracksData, AddTracksErrors, AddTracksResponses, AdminCheckHashData, AdminCheckHashErrors, AdminCheckHashResponses, AdminPromoteExternalToInternalData, AdminPromoteExternalToInternalErrors, AdminPromoteExternalToInternalResponses, BatchAddFavoritesData, BatchAddFavoritesErrors, BatchAddFavoritesResponses, CancelJobData, CancelJobErrors, CancelJobResponses, CancelUploadData, CancelUploadErrors, CancelUploadResponses, ChangePasswordData, ChangePasswordErrors, ChangePasswordResponses, CheckHashData, CheckHashErrors, CheckHashesBatchData, CheckHashesBatchErrors, CheckHashesBatchResponses, CheckHashResponses, ClearRecentItemsData, ClearRecentItemsResponses, ClearSearchCacheData, ClearSearchCacheErrors, ClearSearchCacheResponses, CompleteUploadData, CompleteUploadErrors, CompleteUploadResponses, CopyFilesBatchData, CopyFilesBatchErrors, CopyFilesBatchResponses, CopyFoldersBatchData, CopyFoldersBatchErrors, CopyFoldersBatchResponses, CreateAddressBookData, CreateAddressBookErrors, CreateAddressBookResponses, CreateAppPasswordData, CreateAppPasswordErrors, CreateAppPasswordResponses, CreateCalendarData, CreateCalendarErrors, CreateCalendarResponses, CreateContactData, CreateContactErrors, CreateContactResponses, CreateEventData, CreateEventErrors, CreateEventResponses, CreateFileByHashData, CreateFileByHashErrors, CreateFileByHashResponses, CreateFolderData, CreateFolderErrors, CreateFolderResponses, CreateFoldersBatchData, CreateFoldersBatchErrors, CreateFoldersBatchResponses, CreateGrantData, CreateGrantErrors, CreateGrantResponses, CreateGroupData, CreateGroupErrors, CreateGroupResponses, CreateOpsBannerData, CreateOpsBannerErrors, CreateOpsBannerResponses, CreatePlaylistData, CreatePlaylistErrors, CreatePlaylistResponses, CreateSharedLinkData, CreateSharedLinkErrors, CreateSharedLinkResponses, CreateUploadData, CreateUploadErrors, CreateUploadResponses, CreateUserData, CreateUserErrors, CreateUserResponses, DeleteAddressBookData, DeleteAddressBookErrors, DeleteAddressBookResponses, DeleteAllData, DeleteAllErrors, DeleteAllResponses, DeleteCalendarData, DeleteCalendarErrors, DeleteCalendarResponses, DeleteContactData, DeleteContactErrors, DeleteContactResponses, DeleteDriveAdminData, DeleteDriveAdminErrors, DeleteDriveAdminResponses, DeleteDriveData, DeleteDriveErrors, DeleteDriveResponses, DeleteEventData, DeleteEventErrors, DeleteEventResponses, DeleteFileData, DeleteFileErrors, DeleteFileResponses, DeleteFilesBatchData, DeleteFilesBatchErrors, DeleteFilesBatchResponses, DeleteFoldersBatchData, DeleteFoldersBatchErrors, DeleteFoldersBatchResponses, DeleteFolderWithTrashData, DeleteFolderWithTrashErrors, DeleteFolderWithTrashResponses, DeleteGroupData, DeleteGroupErrors, DeleteGroupResponses, DeleteNotificationData, DeleteNotificationResponses, DeleteOpsBannerData, DeleteOpsBannerErrors, DeleteOpsBannerResponses, DeletePermanentlyData, DeletePermanentlyErrors, DeletePermanentlyResponses, DeletePlaylistData, DeletePlaylistErrors, DeletePlaylistResponses, DeleteSharedLinkData, DeleteSharedLinkErrors, DeleteSharedLinkResponses, DeleteUserData, DeleteUserErrors, DeleteUserResponses, DeltaCommitData, DeltaCommitErrors, DeltaCommitResponses, DeltaDownloadChunksData, DeltaDownloadChunksErrors, DeltaDownloadChunksResponses, DeltaFileManifestData, DeltaFileManifestErrors, DeltaFileManifestResponses, DeltaNegotiateData, DeltaNegotiateErrors, DeltaNegotiateResponses, DeltaUploadChunksData, DeltaUploadChunksErrors, DeltaUploadChunksResponses, DeviceAuthorizeData, DeviceAuthorizeResponses, DeviceTokenData, DeviceTokenErrors, DeviceTokenResponses, DeviceVerifyActionData, DeviceVerifyActionErrors, DeviceVerifyActionResponses, DeviceVerifyInfoData, DeviceVerifyInfoErrors, DeviceVerifyInfoResponses, DownloadBatchPostData, DownloadBatchPostErrors, DownloadBatchPostResponses, DownloadBatchQuerystringData, DownloadBatchQuerystringErrors, DownloadBatchQuerystringResponses, DownloadFileData, DownloadFileErrors, DownloadFileResponses, DownloadFolderZipData, DownloadFolderZipErrors, DownloadFolderZipResponses, DpopBindData, DpopBindErrors, DpopBindResponses, EmptyTrashData, EmptyTrashErrors, EmptyTrashForDriveData, EmptyTrashForDriveErrors, EmptyTrashForDriveResponses, EmptyTrashResponses, FacesForFileData, FacesForFileErrors, FacesForFileResponses, GenerateEncryptionKeyData, GenerateEncryptionKeyErrors, GenerateEncryptionKeyResponses, GetAppearanceData, GetAppearanceErrors, GetAppearanceResponses, GetAudioMetadataData, GetAudioMetadataErrors, GetAudioMetadataResponses, GetBackendWriteLockData, GetBackendWriteLockErrors, GetBackendWriteLockResponses, GetBlobData, GetBlobErrors, GetBlobResponses, GetConfigData, GetConfigResponses, GetContactData, GetContactErrors, GetContactResponses, GetCurrentUserData, GetCurrentUserErrors, GetCurrentUserResponses, GetDashboardStatsData, GetDashboardStatsErrors, GetDashboardStatsResponses, GetDrivePolicyDefaultsData, GetDrivePolicyDefaultsErrors, GetDrivePolicyDefaultsResponses, GetDrivePolicyDriftData, GetDrivePolicyDriftErrors, GetDrivePolicyDriftResponses, GetEditorUrlData, GetEditorUrlErrors, GetEditorUrlResponses, GetFileMetadataData, GetFileMetadataErrors, GetFileMetadataResponses, GetFilesBatchData, GetFilesBatchErrors, GetFilesBatchResponses, GetFolderAncestorsData, GetFolderAncestorsErrors, GetFolderAncestorsResponses, GetFolderData, GetFolderErrors, GetFolderResponses, GetFoldersBatchData, GetFoldersBatchErrors, GetFoldersBatchResponses, GetGroupData, GetGroupErrors, GetGroupResponses, GetJobRunData, GetJobRunErrors, GetJobRunResponses, GetLocalesData, GetLocalesResponses, GetMigrationStatusData, GetMigrationStatusErrors, GetMigrationStatusResponses, GetNotifyInfoData, GetNotifyInfoErrors, GetNotifyInfoResponses, GetOidcSettingsData, GetOidcSettingsErrors, GetOidcSettingsResponses, GetPlaylistData, GetPlaylistErrors, GetPlaylistResponses, GetPlaylistSharesData, GetPlaylistSharesErrors, GetPlaylistSharesResponses, GetServerStatusData, GetServerStatusErrors, GetServerStatusResponses, GetSharedLinkData, GetSharedLinkErrors, GetSharedLinkResponses, GetSmtpInfoData, GetSmtpInfoErrors, GetSmtpInfoResponses, GetStatsData, GetStatsErrors, GetStatsResponses, GetStorageSettingsData, GetStorageSettingsErrors, GetStorageSettingsResponses, GetThumbnailData, GetThumbnailErrors, GetThumbnailResponses, GetTranslationsByLocaleData, GetTranslationsByLocaleErrors, GetTranslationsByLocaleResponses, GetTrashResourcesData, GetTrashResourcesErrors, GetTrashResourcesResponses, GetUploadStatusData, GetUploadStatusErrors, GetUploadStatusResponses, GetUserData, GetUserErrors, GetUserProfileData, GetUserProfileErrors, GetUserProfileResponses, GetUserResponses, GetUserSharesData, GetUserSharesResponses, GetWebhookInfoData, GetWebhookInfoErrors, GetWebhookInfoResponses, ListAddressBooksData, ListAddressBooksErrors, ListAddressBooksResponses, ListAllDrivesData, ListAllDrivesErrors, ListAllDrivesResponses, ListAppPasswordsData, ListAppPasswordsErrors, ListAppPasswordsResponses, ListCalendarsData, ListCalendarsResponses, ListContactsData, ListContactsErrors, ListContactsInGroupData, ListContactsInGroupErrors, ListContactsInGroupResponses, ListContactsResponses, ListDevicesData, ListDevicesErrors, ListDevicesResponses, ListDriveMembersAdminData, ListDriveMembersAdminErrors, ListDriveMembersAdminResponses, ListDriveMembersData, ListDriveMembersErrors, ListDriveMembersResponses, ListDrivesData, ListDrivesErrors, ListDrivesResponses, ListEventsData, ListEventsErrors, ListEventsResponses, ListFavoritesResourcesData, ListFavoritesResourcesErrors, ListFavoritesResourcesResponses, ListFilesQueryData, ListFilesQueryResponses, ListFolderResourcesData, ListFolderResourcesErrors, ListFolderResourcesResponses, ListGroupsData, ListGroupsErrors, ListGroupsResponses, ListIncomingData, ListIncomingResponses, ListJobRunFindingsData, ListJobRunFindingsErrors, ListJobRunFindingsResponses, ListJobRunsData, ListJobRunsErrors, ListJobRunsResponses, ListJobsData, ListJobsErrors, ListJobsResponses, ListMySharesData, ListMySharesResponses, ListNotificationsData, ListNotificationsResponses, ListOnResourceData, ListOnResourceErrors, ListOnResourceResponses, ListOpsBannersData, ListOpsBannersErrors, ListOpsBannersResponses, ListOutgoingData, ListOutgoingResponses, ListOwnSessionsData, ListOwnSessionsErrors, ListOwnSessionsResponses, ListPeopleData, ListPeopleErrors, ListPeopleResponses, ListPhotosGeoData, ListPhotosGeoErrors, ListPhotosGeoResponses, ListPhotosResourcesData, ListPhotosResourcesErrors, ListPhotosResourcesResponses, ListPlaylistsData, ListPlaylistsErrors, ListPlaylistsResponses, ListPlaylistTracksData, ListPlaylistTracksErrors, ListPlaylistTracksResponses, ListRecentChangesData, ListRecentChangesErrors, ListRecentChangesResponses, ListRecentResourcesData, ListRecentResourcesErrors, ListRecentResourcesResponses, ListRootFoldersData, ListRootFoldersResponses, ListSessionsData, ListSessionsErrors, ListSessionsResponses, ListSharedWithMeData, ListSharedWithMeResponses, ListUsersData, ListUsersErrors, ListUsersResponses, LoginData, LoginErrors, LoginKe1Data, LoginKe1Errors, LoginKe1Responses, LoginKe3Data, LoginKe3Errors, LoginKe3Responses, LoginLookupData, LoginLookupErrors, LoginLookupResponses, LoginResponses, LogoutData, LogoutErrors, LogoutResponses, MarkAllReadData, MarkAllReadResponses, MarkReadData, MarkReadResponses, MergePeopleData, MergePeopleErrors, MergePeopleResponses, MoveFilesBatchData, MoveFilesBatchErrors, MoveFilesBatchResponses, MoveFileSimpleData, MoveFileSimpleErrors, MoveFileSimpleResponses, MoveFileToTrashData, MoveFileToTrashErrors, MoveFileToTrashResponses, MoveFolderData, MoveFolderErrors, MoveFolderResponses, MoveFoldersBatchData, MoveFoldersBatchErrors, MoveFoldersBatchResponses, MoveFolderToTrashData, MoveFolderToTrashErrors, MoveFolderToTrashResponses, NotifyGrantRecipientData, NotifyGrantRecipientErrors, NotifyGrantRecipientResponses, OidcAuthorizeData, OidcAuthorizeErrors, OidcBackchannelLogoutData, OidcBackchannelLogoutErrors, OidcBackchannelLogoutResponses, OidcCallbackData, OidcCallbackErrors, OidcExchangeData, OidcExchangeErrors, OidcExchangeResponses, OidcLinkStartData, OidcLinkStartErrors, OidcLinkStartResponses, OidcUnlinkData, OidcUnlinkErrors, OidcUnlinkResponses, OpaqueParamsData, OpaqueParamsResponses, PauseJobData, PauseJobErrors, PauseJobResponses, PauseMigrationData, PauseMigrationErrors, PauseMigrationResponses, PersonPhotosData, PersonPhotosErrors, PersonPhotosResponses, RecalculateStatsData, RecalculateStatsErrors, RecalculateStatsResponses, ReclusterData, ReclusterErrors, ReclusterResponses, RecordItemAccessData, RecordItemAccessErrors, RecordItemAccessResponses, RefreshTokenData, RefreshTokenErrors, RefreshTokenResponses, RegisterData, RegisterErrors, RegisterFinishData, RegisterFinishErrors, RegisterFinishResponses, RegisterResponses, RegisterStartData, RegisterStartErrors, RegisterStartResponses, ReleaseBackendWriteLockData, ReleaseBackendWriteLockErrors, ReleaseBackendWriteLockResponses, ReloadThemesData, ReloadThemesErrors, ReloadThemesResponses, RemoveContactFromGroupData, RemoveContactFromGroupErrors, RemoveContactFromGroupResponses, RemoveDriveMemberAdminData, RemoveDriveMemberAdminErrors, RemoveDriveMemberAdminResponses, RemoveDriveMemberData, RemoveDriveMemberErrors, RemoveDriveMemberResponses, RemoveFavoriteData, RemoveFavoriteErrors, RemoveFavoriteResponses, RemoveFromRecentData, RemoveFromRecentErrors, RemoveFromRecentResponses, RemoveShareData, RemoveShareErrors, RemoveShareResponses, RemoveTrackData, RemoveTrackErrors, RemoveTrackResponses, RenameFileData, RenameFileErrors, RenameFileResponses, RenameFolderData, RenameFolderErrors, RenameFolderResponses, RenamePersonData, RenamePersonErrors, RenamePersonResponses, ReorderTracksData, ReorderTracksErrors, ReorderTracksResponses, ReplaceFileContentData, ReplaceFileContentErrors, ReplaceFileContentResponses, ResetUserPasswordData, ResetUserPasswordErrors, ResetUserPasswordResponses, RestoreFromTrashData, RestoreFromTrashErrors, RestoreFromTrashResponses, ResumeMigrationData, ResumeMigrationErrors, ResumeMigrationResponses, RevokeAppPasswordData, RevokeAppPasswordErrors, RevokeAppPasswordResponses, RevokeDeviceData, RevokeDeviceErrors, RevokeDeviceResponses, RevokeGrantData, RevokeGrantErrors, RevokeGrantResponses, RevokeOwnSessionData, RevokeOwnSessionErrors, RevokeOwnSessionResponses, RevokeSessionData, RevokeSessionErrors, RevokeSessionResponses, SaveOidcSettingsData, SaveOidcSettingsErrors, SaveOidcSettingsResponses, SaveStorageSettingsData, SaveStorageSettingsErrors, SaveStorageSettingsResponses, SearchResourcesData, SearchResourcesErrors, SearchResourcesResponses, SelectThemeData, SelectThemeErrors, SelectThemeResponses, SendMagicLinkData, SendMagicLinkErrors, SendMagicLinkResponses, SendSmtpTestData, SendSmtpTestErrors, SendSmtpTestResponses, SendWebhookTestData, SendWebhookTestErrors, SendWebhookTestResponses, SetDrivePolicyDefaultsData, SetDrivePolicyDefaultsErrors, SetDrivePolicyDefaultsResponses, SetRegistrationSettingData, SetRegistrationSettingErrors, SetRegistrationSettingResponses, SetRoleData, SetRoleErrors, SetRoleResponses, SetupAdminData, SetupAdminErrors, SetupAdminResponses, SharePlaylistData, SharePlaylistErrors, SharePlaylistResponses, StartMigrationData, StartMigrationErrors, StartMigrationResponses, SubjectGroupAddMemberData, SubjectGroupAddMemberErrors, SubjectGroupAddMemberResponses, SubjectGroupCreateData, SubjectGroupCreateErrors, SubjectGroupCreateResponses, SubjectGroupDeleteData, SubjectGroupDeleteErrors, SubjectGroupDeleteResponses, SubjectGroupEffectiveMembersData, SubjectGroupEffectiveMembersErrors, SubjectGroupEffectiveMembersResponses, SubjectGroupGetData, SubjectGroupGetErrors, SubjectGroupGetResponses, SubjectGroupListData, SubjectGroupListErrors, SubjectGroupListMembersData, SubjectGroupListMembersErrors, SubjectGroupListMembersResponses, SubjectGroupListResponses, SubjectGroupRemoveGroupMemberData, SubjectGroupRemoveGroupMemberErrors, SubjectGroupRemoveGroupMemberResponses, SubjectGroupRemoveUserMemberData, SubjectGroupRemoveUserMemberErrors, SubjectGroupRemoveUserMemberResponses, SubjectGroupSearchData, SubjectGroupSearchErrors, SubjectGroupSearchResponses, SubjectGroupUpdateData, SubjectGroupUpdateErrors, SubjectGroupUpdateResponses, SuggestFilesData, SuggestFilesErrors, SuggestFilesResponses, TransferOwnershipData, TransferOwnershipErrors, TransferOwnershipResponses, TranslateData, TranslateErrors, TranslateResponses, TrashBatchData, TrashBatchErrors, TrashBatchResponses, TriggerBackendRotateData, TriggerBackendRotateErrors, TriggerBackendRotateResponses, TriggerJobData, TriggerJobErrors, TriggerJobResponses, UnreadCountData, UnreadCountResponses, UpdateAddressBookData, UpdateAddressBookErrors, UpdateAddressBookResponses, UpdateCalendarData, UpdateCalendarErrors, UpdateCalendarResponses, UpdateContactData, UpdateContactErrors, UpdateContactResponses, UpdateDriveMemberAdminData, UpdateDriveMemberAdminErrors, UpdateDriveMemberAdminResponses, UpdateDriveMemberData, UpdateDriveMemberErrors, UpdateDriveMemberResponses, UpdateDrivePoliciesData, UpdateDrivePoliciesErrors, UpdateDrivePoliciesResponses, UpdateDriveQuotaData, UpdateDriveQuotaErrors, UpdateDriveQuotaResponses, UpdateEventData, UpdateEventErrors, UpdateEventResponses, UpdateGroupData, UpdateGroupErrors, UpdateGroupResponses, UpdateOpsBannerData, UpdateOpsBannerErrors, UpdateOpsBannerResponses, UpdatePlaylistData, UpdatePlaylistErrors, UpdatePlaylistResponses, UpdateProfileData, UpdateProfileErrors, UpdateProfileResponses, UpdateSharedLinkData, UpdateSharedLinkErrors, UpdateSharedLinkResponses, UpdateUserActiveData, UpdateUserActiveErrors, UpdateUserActiveResponses, UpdateUserImageData, UpdateUserImageErrors, UpdateUserImageResponses, UpdateUserQuotaData, UpdateUserQuotaErrors, UpdateUserQuotaResponses, UpdateUserRoleData, UpdateUserRoleErrors, UpdateUserRoleResponses, UpgradeToInternalData, UpgradeToInternalErrors, UpgradeToInternalResponses, UploadChunkData, UploadChunkErrors, UploadChunkResponses, UploadFileWithThumbnailsData, UploadFileWithThumbnailsErrors, UploadFileWithThumbnailsResponses, UploadPreflightData, UploadPreflightErrors, UploadPreflightResponses, UploadThumbnailData, UploadThumbnailErrors, UploadThumbnailResponses, VerifySharedItemPasswordData, VerifySharedItemPasswordErrors, VerifySharedItemPasswordResponses } from './types.gen';
 
 export type Options<TData extends TDataShape = TDataShape, ThrowOnError extends boolean = boolean, TResponse = unknown> = Options2<TData, ThrowOnError, TResponse> & {
     /**
@@ -31,6 +31,8 @@ export const listAddressBooks = <ThrowOnError extends boolean = false>(options?:
 
 /**
  * Create a new personal address book.
+ *
+ * Requires an INTERNAL user. An external (grant-only) account is refused: it is a guest invited to specific resources, and this surface aggregates more than that invitation implied.
  */
 export const createAddressBook = <ThrowOnError extends boolean = false>(options: Options<CreateAddressBookData, ThrowOnError>): RequestResult<CreateAddressBookResponses, CreateAddressBookErrors, ThrowOnError, 'data'> => (options.client ?? client).post<CreateAddressBookResponses, CreateAddressBookErrors, ThrowOnError, 'data'>({
     responseStyle: 'data',
@@ -225,7 +227,7 @@ export const removeContactFromGroup = <ThrowOnError extends boolean = false>(opt
  * entries not yet visible to users. Admin inspects what they've
  * scheduled; the public endpoint filters.
  *
- * Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.
+ * Requires the deployment administrator role; enforced by the compiled policy declared on the `/api/admin` nest.
  */
 export const listOpsBanners = <ThrowOnError extends boolean = false>(options?: Options<ListOpsBannersData, ThrowOnError>): RequestResult<ListOpsBannersResponses, ListOpsBannersErrors, ThrowOnError, 'data'> => (options?.client ?? client).get<ListOpsBannersResponses, ListOpsBannersErrors, ThrowOnError, 'data'>({
     responseStyle: 'data',
@@ -237,7 +239,7 @@ export const listOpsBanners = <ThrowOnError extends boolean = false>(options?: O
 /**
  * POST /api/admin/banners — create a new banner.
  *
- * Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.
+ * Requires the deployment administrator role; enforced by the compiled policy declared on the `/api/admin` nest.
  */
 export const createOpsBanner = <ThrowOnError extends boolean = false>(options: Options<CreateOpsBannerData, ThrowOnError>): RequestResult<CreateOpsBannerResponses, CreateOpsBannerErrors, ThrowOnError, 'data'> => (options.client ?? client).post<CreateOpsBannerResponses, CreateOpsBannerErrors, ThrowOnError, 'data'>({
     responseStyle: 'data',
@@ -253,7 +255,7 @@ export const createOpsBanner = <ThrowOnError extends boolean = false>(options: O
 /**
  * DELETE /api/admin/banners/{id} — remove one banner.
  *
- * Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.
+ * Requires the deployment administrator role; enforced by the compiled policy declared on the `/api/admin` nest.
  */
 export const deleteOpsBanner = <ThrowOnError extends boolean = false>(options: Options<DeleteOpsBannerData, ThrowOnError>): RequestResult<DeleteOpsBannerResponses, DeleteOpsBannerErrors, ThrowOnError, 'data'> => (options.client ?? client).delete<DeleteOpsBannerResponses, DeleteOpsBannerErrors, ThrowOnError, 'data'>({
     responseStyle: 'data',
@@ -266,7 +268,7 @@ export const deleteOpsBanner = <ThrowOnError extends boolean = false>(options: O
  * PUT /api/admin/banners/{id} — full-replacement update of
  * severity/body/starts_at. `id` + `created_by` + `created_at` stay.
  *
- * Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.
+ * Requires the deployment administrator role; enforced by the compiled policy declared on the `/api/admin` nest.
  */
 export const updateOpsBanner = <ThrowOnError extends boolean = false>(options: Options<UpdateOpsBannerData, ThrowOnError>): RequestResult<UpdateOpsBannerResponses, UpdateOpsBannerErrors, ThrowOnError, 'data'> => (options.client ?? client).put<UpdateOpsBannerResponses, UpdateOpsBannerErrors, ThrowOnError, 'data'>({
     responseStyle: 'data',
@@ -282,7 +284,7 @@ export const updateOpsBanner = <ThrowOnError extends boolean = false>(options: O
 /**
  * GET /api/admin/dashboard — full dashboard statistics
  *
- * Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.
+ * Requires the deployment administrator role; enforced by the compiled policy declared on the `/api/admin` nest.
  */
 export const getDashboardStats = <ThrowOnError extends boolean = false>(options?: Options<GetDashboardStatsData, ThrowOnError>): RequestResult<GetDashboardStatsResponses, GetDashboardStatsErrors, ThrowOnError, 'data'> => (options?.client ?? client).get<GetDashboardStatsResponses, GetDashboardStatsErrors, ThrowOnError, 'data'>({
     responseStyle: 'data',
@@ -292,7 +294,7 @@ export const getDashboardStats = <ThrowOnError extends boolean = false>(options?
 });
 
 /**
- * Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.
+ * Requires the deployment administrator role; enforced by the compiled policy declared on the `/api/admin` nest.
  */
 export const adminCheckHash = <ThrowOnError extends boolean = false>(options: Options<AdminCheckHashData, ThrowOnError>): RequestResult<AdminCheckHashResponses, AdminCheckHashErrors, ThrowOnError, 'data'> => (options.client ?? client).get<AdminCheckHashResponses, AdminCheckHashErrors, ThrowOnError, 'data'>({
     responseStyle: 'data',
@@ -302,7 +304,7 @@ export const adminCheckHash = <ThrowOnError extends boolean = false>(options: Op
 });
 
 /**
- * Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.
+ * Requires the deployment administrator role; enforced by the compiled policy declared on the `/api/admin` nest.
  */
 export const recalculateStats = <ThrowOnError extends boolean = false>(options?: Options<RecalculateStatsData, ThrowOnError>): RequestResult<RecalculateStatsResponses, RecalculateStatsErrors, ThrowOnError, 'data'> => (options?.client ?? client).post<RecalculateStatsResponses, RecalculateStatsErrors, ThrowOnError, 'data'>({
     responseStyle: 'data',
@@ -312,7 +314,7 @@ export const recalculateStats = <ThrowOnError extends boolean = false>(options?:
 });
 
 /**
- * Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.
+ * Requires the deployment administrator role; enforced by the compiled policy declared on the `/api/admin` nest.
  */
 export const getStats = <ThrowOnError extends boolean = false>(options?: Options<GetStatsData, ThrowOnError>): RequestResult<GetStatsResponses, GetStatsErrors, ThrowOnError, 'data'> => (options?.client ?? client).get<GetStatsResponses, GetStatsErrors, ThrowOnError, 'data'>({
     responseStyle: 'data',
@@ -327,7 +329,7 @@ export const getStats = <ThrowOnError extends boolean = false>(options?: Options
  * The policy every new drive of this kind inherits, and that existing
  * drives resolve against for every knob they have not overridden.
  *
- * Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.
+ * Requires the deployment administrator role; enforced by the compiled policy declared on the `/api/admin` nest.
  */
 export const getDrivePolicyDefaults = <ThrowOnError extends boolean = false>(options: Options<GetDrivePolicyDefaultsData, ThrowOnError>): RequestResult<GetDrivePolicyDefaultsResponses, GetDrivePolicyDefaultsErrors, ThrowOnError, 'data'> => (options.client ?? client).get<GetDrivePolicyDefaultsResponses, GetDrivePolicyDefaultsErrors, ThrowOnError, 'data'>({
     responseStyle: 'data',
@@ -356,7 +358,7 @@ export const getDrivePolicyDefaults = <ThrowOnError extends boolean = false>(opt
  * apply to the kind. A setting stored where it does nothing is one the
  * admin believes they made.
  *
- * Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.
+ * Requires the deployment administrator role; enforced by the compiled policy declared on the `/api/admin` nest.
  */
 export const setDrivePolicyDefaults = <ThrowOnError extends boolean = false>(options: Options<SetDrivePolicyDefaultsData, ThrowOnError>): RequestResult<SetDrivePolicyDefaultsResponses, SetDrivePolicyDefaultsErrors, ThrowOnError, 'data'> => (options.client ?? client).put<SetDrivePolicyDefaultsResponses, SetDrivePolicyDefaultsErrors, ThrowOnError, 'data'>({
     responseStyle: 'data',
@@ -381,7 +383,7 @@ export const setDrivePolicyDefaults = <ThrowOnError extends boolean = false>(opt
  * on the list until someone re-scans. Here the row disappears as soon as
  * the override is corrected.
  *
- * Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.
+ * Requires the deployment administrator role; enforced by the compiled policy declared on the `/api/admin` nest.
  */
 export const getDrivePolicyDrift = <ThrowOnError extends boolean = false>(options?: Options<GetDrivePolicyDriftData, ThrowOnError>): RequestResult<GetDrivePolicyDriftResponses, GetDrivePolicyDriftErrors, ThrowOnError, 'data'> => (options?.client ?? client).get<GetDrivePolicyDriftResponses, GetDrivePolicyDriftErrors, ThrowOnError, 'data'>({
     responseStyle: 'data',
@@ -404,7 +406,7 @@ export const getDrivePolicyDrift = <ThrowOnError extends boolean = false>(option
  * the admin is not necessarily a drive member, so the field would be
  * misleading here.
  *
- * Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.
+ * Requires the deployment administrator role; enforced by the compiled policy declared on the `/api/admin` nest.
  */
 export const listAllDrives = <ThrowOnError extends boolean = false>(options?: Options<ListAllDrivesData, ThrowOnError>): RequestResult<ListAllDrivesResponses, ListAllDrivesErrors, ThrowOnError, 'data'> => (options?.client ?? client).get<ListAllDrivesResponses, ListAllDrivesErrors, ThrowOnError, 'data'>({
     responseStyle: 'data',
@@ -424,7 +426,7 @@ export const listAllDrives = <ThrowOnError extends boolean = false>(options?: Op
  * default home folder of any user. Audit emits
  * `drive.deleted_via_admin` on success.
  *
- * Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.
+ * Requires the deployment administrator role; enforced by the compiled policy declared on the `/api/admin` nest.
  */
 export const deleteDriveAdmin = <ThrowOnError extends boolean = false>(options: Options<DeleteDriveAdminData, ThrowOnError>): RequestResult<DeleteDriveAdminResponses, DeleteDriveAdminErrors, ThrowOnError, 'data'> => (options.client ?? client).delete<DeleteDriveAdminResponses, DeleteDriveAdminErrors, ThrowOnError, 'data'>({
     responseStyle: 'data',
@@ -447,7 +449,7 @@ export const deleteDriveAdmin = <ThrowOnError extends boolean = false>(options: 
  * of by `authz.require`. Returns the same `Vec<GrantDto>` so the
  * frontend renders it through the existing grant types.
  *
- * Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.
+ * Requires the deployment administrator role; enforced by the compiled policy declared on the `/api/admin` nest.
  */
 export const listDriveMembersAdmin = <ThrowOnError extends boolean = false>(options: Options<ListDriveMembersAdminData, ThrowOnError>): RequestResult<ListDriveMembersAdminResponses, ListDriveMembersAdminErrors, ThrowOnError, 'data'> => (options.client ?? client).get<ListDriveMembersAdminResponses, ListDriveMembersAdminErrors, ThrowOnError, 'data'>({
     responseStyle: 'data',
@@ -463,7 +465,7 @@ export const listDriveMembersAdmin = <ThrowOnError extends boolean = false>(opti
  * `DriveManagementService::set_member_role`. Personal-drive guard and
  * last-owner protection still apply.
  *
- * Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.
+ * Requires the deployment administrator role; enforced by the compiled policy declared on the `/api/admin` nest.
  */
 export const addDriveMemberAdmin = <ThrowOnError extends boolean = false>(options: Options<AddDriveMemberAdminData, ThrowOnError>): RequestResult<AddDriveMemberAdminResponses, AddDriveMemberAdminErrors, ThrowOnError, 'data'> => (options.client ?? client).post<AddDriveMemberAdminResponses, AddDriveMemberAdminErrors, ThrowOnError, 'data'>({
     responseStyle: 'data',
@@ -480,7 +482,7 @@ export const addDriveMemberAdmin = <ThrowOnError extends boolean = false>(option
  * DELETE /api/admin/drives/{id}/members/{kind}/{sid} — remove a
  * member as an admin. Bypasses `Manage`; keeps last-owner protection.
  *
- * Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.
+ * Requires the deployment administrator role; enforced by the compiled policy declared on the `/api/admin` nest.
  */
 export const removeDriveMemberAdmin = <ThrowOnError extends boolean = false>(options: Options<RemoveDriveMemberAdminData, ThrowOnError>): RequestResult<RemoveDriveMemberAdminResponses, RemoveDriveMemberAdminErrors, ThrowOnError, 'data'> => (options.client ?? client).delete<RemoveDriveMemberAdminResponses, RemoveDriveMemberAdminErrors, ThrowOnError, 'data'>({
     responseStyle: 'data',
@@ -494,7 +496,7 @@ export const removeDriveMemberAdmin = <ThrowOnError extends boolean = false>(opt
  * role / expiry as an admin. Same admin-bypass shape as
  * `add_drive_member_admin`.
  *
- * Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.
+ * Requires the deployment administrator role; enforced by the compiled policy declared on the `/api/admin` nest.
  */
 export const updateDriveMemberAdmin = <ThrowOnError extends boolean = false>(options: Options<UpdateDriveMemberAdminData, ThrowOnError>): RequestResult<UpdateDriveMemberAdminResponses, UpdateDriveMemberAdminErrors, ThrowOnError, 'data'> => (options.client ?? client).patch<UpdateDriveMemberAdminResponses, UpdateDriveMemberAdminErrors, ThrowOnError, 'data'>({
     responseStyle: 'data',
@@ -515,7 +517,7 @@ export const updateDriveMemberAdmin = <ThrowOnError extends boolean = false>(opt
  * ungoverned, exactly the drift `PhotoResourceItemDto` was registered to
  * stop.
  *
- * Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.
+ * Requires the deployment administrator role; enforced by the compiled policy declared on the `/api/admin` nest.
  */
 export const listJobs = <ThrowOnError extends boolean = false>(options?: Options<ListJobsData, ThrowOnError>): RequestResult<ListJobsResponses, ListJobsErrors, ThrowOnError, 'data'> => (options?.client ?? client).get<ListJobsResponses, ListJobsErrors, ThrowOnError, 'data'>({
     responseStyle: 'data',
@@ -539,7 +541,7 @@ export const listJobs = <ThrowOnError extends boolean = false>(options?: Options
  * Never 404 on "no active run" — the job name is registered and the
  * endpoint just reports the truth.
  *
- * Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.
+ * Requires the deployment administrator role; enforced by the compiled policy declared on the `/api/admin` nest.
  */
 export const cancelJob = <ThrowOnError extends boolean = false>(options: Options<CancelJobData, ThrowOnError>): RequestResult<CancelJobResponses, CancelJobErrors, ThrowOnError, 'data'> => (options.client ?? client).post<CancelJobResponses, CancelJobErrors, ThrowOnError, 'data'>({
     responseStyle: 'data',
@@ -560,7 +562,7 @@ export const cancelJob = <ThrowOnError extends boolean = false>(options: Options
  * Idempotent: if the row is already Paused, returns 200 with
  * `paused: false, reason: "already_paused"`.
  *
- * Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.
+ * Requires the deployment administrator role; enforced by the compiled policy declared on the `/api/admin` nest.
  */
 export const pauseJob = <ThrowOnError extends boolean = false>(options: Options<PauseJobData, ThrowOnError>): RequestResult<PauseJobResponses, PauseJobErrors, ThrowOnError, 'data'> => (options.client ?? client).post<PauseJobResponses, PauseJobErrors, ThrowOnError, 'data'>({
     responseStyle: 'data',
@@ -576,7 +578,7 @@ export const pauseJob = <ThrowOnError extends boolean = false>(options: Options<
  *
  * Read-only, no audit line — standard admin-middleware auth is enough.
  *
- * Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.
+ * Requires the deployment administrator role; enforced by the compiled policy declared on the `/api/admin` nest.
  */
 export const listJobRuns = <ThrowOnError extends boolean = false>(options: Options<ListJobRunsData, ThrowOnError>): RequestResult<ListJobRunsResponses, ListJobRunsErrors, ThrowOnError, 'data'> => (options.client ?? client).get<ListJobRunsResponses, ListJobRunsErrors, ThrowOnError, 'data'>({
     responseStyle: 'data',
@@ -593,7 +595,7 @@ export const listJobRuns = <ThrowOnError extends boolean = false>(options: Optio
  * keeping the name in the URL path lets operators build stable
  * per-job history links without knowing individual run ids upfront.
  *
- * Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.
+ * Requires the deployment administrator role; enforced by the compiled policy declared on the `/api/admin` nest.
  */
 export const getJobRun = <ThrowOnError extends boolean = false>(options: Options<GetJobRunData, ThrowOnError>): RequestResult<GetJobRunResponses, GetJobRunErrors, ThrowOnError, 'data'> => (options.client ?? client).get<GetJobRunResponses, GetJobRunErrors, ThrowOnError, 'data'>({
     responseStyle: 'data',
@@ -614,7 +616,7 @@ export const getJobRun = <ThrowOnError extends boolean = false>(options: Options
  * globally unique) but keeps the URL path consistent with the other
  * per-run endpoints for stable per-job history links.
  *
- * Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.
+ * Requires the deployment administrator role; enforced by the compiled policy declared on the `/api/admin` nest.
  */
 export const listJobRunFindings = <ThrowOnError extends boolean = false>(options: Options<ListJobRunFindingsData, ThrowOnError>): RequestResult<ListJobRunFindingsResponses, ListJobRunFindingsErrors, ThrowOnError, 'data'> => (options.client ?? client).get<ListJobRunFindingsResponses, ListJobRunFindingsErrors, ThrowOnError, 'data'>({
     responseStyle: 'data',
@@ -634,7 +636,7 @@ export const listJobRunFindings = <ThrowOnError extends boolean = false>(options
  * Emits an audit line before dispatch — bulk-mutation side effects on
  * operator command belong on the audit stream.
  *
- * Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.
+ * Requires the deployment administrator role; enforced by the compiled policy declared on the `/api/admin` nest.
  */
 export const triggerJob = <ThrowOnError extends boolean = false>(options: Options<TriggerJobData, ThrowOnError>): RequestResult<TriggerJobResponses, TriggerJobErrors, ThrowOnError, 'data'> => (options.client ?? client).post<TriggerJobResponses, TriggerJobErrors, ThrowOnError, 'data'>({
     responseStyle: 'data',
@@ -654,7 +656,7 @@ export const triggerJob = <ThrowOnError extends boolean = false>(options: Option
  * configured webhook, a healthy SMTP server, and still be told nothing,
  * because the default threshold only admits `data_loss`.
  *
- * Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.
+ * Requires the deployment administrator role; enforced by the compiled policy declared on the `/api/admin` nest.
  */
 export const getNotifyInfo = <ThrowOnError extends boolean = false>(options?: Options<GetNotifyInfoData, ThrowOnError>): RequestResult<GetNotifyInfoResponses, GetNotifyInfoErrors, ThrowOnError, 'data'> => (options?.client ?? client).get<GetNotifyInfoResponses, GetNotifyInfoErrors, ThrowOnError, 'data'>({
     responseStyle: 'data',
@@ -664,7 +666,7 @@ export const getNotifyInfo = <ThrowOnError extends boolean = false>(options?: Op
 });
 
 /**
- * Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.
+ * Requires the deployment administrator role; enforced by the compiled policy declared on the `/api/admin` nest.
  */
 export const clearSearchCache = <ThrowOnError extends boolean = false>(options?: Options<ClearSearchCacheData, ThrowOnError>): RequestResult<ClearSearchCacheResponses, ClearSearchCacheErrors, ThrowOnError, 'data'> => (options?.client ?? client).delete<ClearSearchCacheResponses, ClearSearchCacheErrors, ThrowOnError, 'data'>({
     responseStyle: 'data',
@@ -683,7 +685,7 @@ export const clearSearchCache = <ThrowOnError extends boolean = false>(options?:
  * require a second scan; the panel paginates on presence of
  * exactly `limit` rows returned).
  *
- * Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.
+ * Requires the deployment administrator role; enforced by the compiled policy declared on the `/api/admin` nest.
  */
 export const listSessions = <ThrowOnError extends boolean = false>(options?: Options<ListSessionsData, ThrowOnError>): RequestResult<ListSessionsResponses, ListSessionsErrors, ThrowOnError, 'data'> => (options?.client ?? client).get<ListSessionsResponses, ListSessionsErrors, ThrowOnError, 'data'>({
     responseStyle: 'data',
@@ -695,7 +697,7 @@ export const listSessions = <ThrowOnError extends boolean = false>(options?: Opt
 /**
  * DELETE /api/admin/sessions/:id — revoke a session
  *
- * Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.
+ * Requires the deployment administrator role; enforced by the compiled policy declared on the `/api/admin` nest.
  */
 export const revokeSession = <ThrowOnError extends boolean = false>(options: Options<RevokeSessionData, ThrowOnError>): RequestResult<RevokeSessionResponses, RevokeSessionErrors, ThrowOnError, 'data'> => (options.client ?? client).delete<RevokeSessionResponses, RevokeSessionErrors, ThrowOnError, 'data'>({
     responseStyle: 'data',
@@ -705,7 +707,7 @@ export const revokeSession = <ThrowOnError extends boolean = false>(options: Opt
 });
 
 /**
- * Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.
+ * Requires the deployment administrator role; enforced by the compiled policy declared on the `/api/admin` nest.
  */
 export const getAppearance = <ThrowOnError extends boolean = false>(options?: Options<GetAppearanceData, ThrowOnError>): RequestResult<GetAppearanceResponses, GetAppearanceErrors, ThrowOnError, 'data'> => (options?.client ?? client).get<GetAppearanceResponses, GetAppearanceErrors, ThrowOnError, 'data'>({
     responseStyle: 'data',
@@ -715,7 +717,7 @@ export const getAppearance = <ThrowOnError extends boolean = false>(options?: Op
 });
 
 /**
- * Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.
+ * Requires the deployment administrator role; enforced by the compiled policy declared on the `/api/admin` nest.
  */
 export const selectTheme = <ThrowOnError extends boolean = false>(options: Options<SelectThemeData, ThrowOnError>): RequestResult<SelectThemeResponses, SelectThemeErrors, ThrowOnError, 'data'> => (options.client ?? client).put<SelectThemeResponses, SelectThemeErrors, ThrowOnError, 'data'>({
     responseStyle: 'data',
@@ -729,7 +731,7 @@ export const selectTheme = <ThrowOnError extends boolean = false>(options: Optio
 });
 
 /**
- * Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.
+ * Requires the deployment administrator role; enforced by the compiled policy declared on the `/api/admin` nest.
  */
 export const reloadThemes = <ThrowOnError extends boolean = false>(options?: Options<ReloadThemesData, ThrowOnError>): RequestResult<ReloadThemesResponses, ReloadThemesErrors, ThrowOnError, 'data'> => (options?.client ?? client).post<ReloadThemesResponses, ReloadThemesErrors, ThrowOnError, 'data'>({
     responseStyle: 'data',
@@ -741,7 +743,7 @@ export const reloadThemes = <ThrowOnError extends boolean = false>(options?: Opt
 /**
  * GET /api/admin/settings/oidc — get OIDC settings for the admin panel
  *
- * Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.
+ * Requires the deployment administrator role; enforced by the compiled policy declared on the `/api/admin` nest.
  */
 export const getOidcSettings = <ThrowOnError extends boolean = false>(options?: Options<GetOidcSettingsData, ThrowOnError>): RequestResult<GetOidcSettingsResponses, GetOidcSettingsErrors, ThrowOnError, 'data'> => (options?.client ?? client).get<GetOidcSettingsResponses, GetOidcSettingsErrors, ThrowOnError, 'data'>({
     responseStyle: 'data',
@@ -753,7 +755,7 @@ export const getOidcSettings = <ThrowOnError extends boolean = false>(options?: 
 /**
  * PUT /api/admin/settings/oidc — save OIDC settings + hot-reload
  *
- * Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.
+ * Requires the deployment administrator role; enforced by the compiled policy declared on the `/api/admin` nest.
  */
 export const saveOidcSettings = <ThrowOnError extends boolean = false>(options: Options<SaveOidcSettingsData, ThrowOnError>): RequestResult<SaveOidcSettingsResponses, SaveOidcSettingsErrors, ThrowOnError, 'data'> => (options.client ?? client).put<SaveOidcSettingsResponses, SaveOidcSettingsErrors, ThrowOnError, 'data'>({
     responseStyle: 'data',
@@ -769,7 +771,7 @@ export const saveOidcSettings = <ThrowOnError extends boolean = false>(options: 
 /**
  * PUT /api/admin/settings/registration — enable/disable public registration
  *
- * Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.
+ * Requires the deployment administrator role; enforced by the compiled policy declared on the `/api/admin` nest.
  */
 export const setRegistrationSetting = <ThrowOnError extends boolean = false>(options: Options<SetRegistrationSettingData, ThrowOnError>): RequestResult<SetRegistrationSettingResponses, SetRegistrationSettingErrors, ThrowOnError, 'data'> => (options.client ?? client).put<SetRegistrationSettingResponses, SetRegistrationSettingErrors, ThrowOnError, 'data'>({
     responseStyle: 'data',
@@ -785,7 +787,7 @@ export const setRegistrationSetting = <ThrowOnError extends boolean = false>(opt
 /**
  * GET /api/admin/settings/storage — get storage backend settings
  *
- * Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.
+ * Requires the deployment administrator role; enforced by the compiled policy declared on the `/api/admin` nest.
  */
 export const getStorageSettings = <ThrowOnError extends boolean = false>(options?: Options<GetStorageSettingsData, ThrowOnError>): RequestResult<GetStorageSettingsResponses, GetStorageSettingsErrors, ThrowOnError, 'data'> => (options?.client ?? client).get<GetStorageSettingsResponses, GetStorageSettingsErrors, ThrowOnError, 'data'>({
     responseStyle: 'data',
@@ -797,7 +799,7 @@ export const getStorageSettings = <ThrowOnError extends boolean = false>(options
 /**
  * PUT /api/admin/settings/storage — save storage backend settings
  *
- * Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.
+ * Requires the deployment administrator role; enforced by the compiled policy declared on the `/api/admin` nest.
  */
 export const saveStorageSettings = <ThrowOnError extends boolean = false>(options: Options<SaveStorageSettingsData, ThrowOnError>): RequestResult<SaveStorageSettingsResponses, SaveStorageSettingsErrors, ThrowOnError, 'data'> => (options.client ?? client).put<SaveStorageSettingsResponses, SaveStorageSettingsErrors, ThrowOnError, 'data'>({
     responseStyle: 'data',
@@ -813,7 +815,7 @@ export const saveStorageSettings = <ThrowOnError extends boolean = false>(option
 /**
  * POST /api/admin/settings/storage/generate-key — generate a random AES-256 key.
  *
- * Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.
+ * Requires the deployment administrator role; enforced by the compiled policy declared on the `/api/admin` nest.
  */
 export const generateEncryptionKey = <ThrowOnError extends boolean = false>(options?: Options<GenerateEncryptionKeyData, ThrowOnError>): RequestResult<GenerateEncryptionKeyResponses, GenerateEncryptionKeyErrors, ThrowOnError, 'data'> => (options?.client ?? client).post<GenerateEncryptionKeyResponses, GenerateEncryptionKeyErrors, ThrowOnError, 'data'>({
     responseStyle: 'data',
@@ -825,7 +827,7 @@ export const generateEncryptionKey = <ThrowOnError extends boolean = false>(opti
 /**
  * GET /api/admin/smtp/info — read-only view of the running SMTP config.
  *
- * Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.
+ * Requires the deployment administrator role; enforced by the compiled policy declared on the `/api/admin` nest.
  */
 export const getSmtpInfo = <ThrowOnError extends boolean = false>(options?: Options<GetSmtpInfoData, ThrowOnError>): RequestResult<GetSmtpInfoResponses, GetSmtpInfoErrors, ThrowOnError, 'data'> => (options?.client ?? client).get<GetSmtpInfoResponses, GetSmtpInfoErrors, ThrowOnError, 'data'>({
     responseStyle: 'data',
@@ -842,7 +844,7 @@ export const getSmtpInfo = <ThrowOnError extends boolean = false>(options?: Opti
  * This keeps SMTP-level failures (4xx/5xx replies, connection
  * timeouts) as ordinary diagnostic data rather than HTTP errors.
  *
- * Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.
+ * Requires the deployment administrator role; enforced by the compiled policy declared on the `/api/admin` nest.
  */
 export const sendSmtpTest = <ThrowOnError extends boolean = false>(options: Options<SendSmtpTestData, ThrowOnError>): RequestResult<SendSmtpTestResponses, SendSmtpTestErrors, ThrowOnError, 'data'> => (options.client ?? client).post<SendSmtpTestResponses, SendSmtpTestErrors, ThrowOnError, 'data'>({
     responseStyle: 'data',
@@ -871,7 +873,7 @@ export const sendSmtpTest = <ThrowOnError extends boolean = false>(options: Opti
  * unknown entry); the actual walk detaches into a
  * `tokio::spawn` so the HTTP call returns immediately.
  *
- * Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.
+ * Requires the deployment administrator role; enforced by the compiled policy declared on the `/api/admin` nest.
  */
 export const triggerBackendRotate = <ThrowOnError extends boolean = false>(options: Options<TriggerBackendRotateData, ThrowOnError>): RequestResult<TriggerBackendRotateResponses, TriggerBackendRotateErrors, ThrowOnError, 'data'> => (options.client ?? client).post<TriggerBackendRotateResponses, TriggerBackendRotateErrors, ThrowOnError, 'data'>({
     responseStyle: 'data',
@@ -891,7 +893,7 @@ export const triggerBackendRotate = <ThrowOnError extends boolean = false>(optio
  * same behaviour the old in-memory `MigrationState::default()`
  * produced.
  *
- * Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.
+ * Requires the deployment administrator role; enforced by the compiled policy declared on the `/api/admin` nest.
  */
 export const getMigrationStatus = <ThrowOnError extends boolean = false>(options?: Options<GetMigrationStatusData, ThrowOnError>): RequestResult<GetMigrationStatusResponses, GetMigrationStatusErrors, ThrowOnError, 'data'> => (options?.client ?? client).get<GetMigrationStatusResponses, GetMigrationStatusErrors, ThrowOnError, 'data'>({
     responseStyle: 'data',
@@ -909,7 +911,7 @@ export const getMigrationStatus = <ThrowOnError extends boolean = false>(options
  * returns 200 with `paused: false` — matches the "no-op is fine"
  * contract of `/api/admin/jobs/{name}/cancel`.
  *
- * Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.
+ * Requires the deployment administrator role; enforced by the compiled policy declared on the `/api/admin` nest.
  */
 export const pauseMigration = <ThrowOnError extends boolean = false>(options?: Options<PauseMigrationData, ThrowOnError>): RequestResult<PauseMigrationResponses, PauseMigrationErrors, ThrowOnError, 'data'> => (options?.client ?? client).post<PauseMigrationResponses, PauseMigrationErrors, ThrowOnError, 'data'>({
     responseStyle: 'data',
@@ -925,7 +927,7 @@ export const pauseMigration = <ThrowOnError extends boolean = false>(options?: O
  * latest row and picks Fresh / Resume / AlreadyActive at dispatch
  * time. Kept as a distinct endpoint for wire-compat.
  *
- * Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.
+ * Requires the deployment administrator role; enforced by the compiled policy declared on the `/api/admin` nest.
  */
 export const resumeMigration = <ThrowOnError extends boolean = false>(options?: Options<ResumeMigrationData, ThrowOnError>): RequestResult<ResumeMigrationResponses, ResumeMigrationErrors, ThrowOnError, 'data'> => (options?.client ?? client).post<ResumeMigrationResponses, ResumeMigrationErrors, ThrowOnError, 'data'>({
     responseStyle: 'data',
@@ -949,7 +951,7 @@ export const resumeMigration = <ThrowOnError extends boolean = false>(options?: 
  * wire-compat with the admin UI; will be honoured if a concurrency
  * knob is added later.
  *
- * Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.
+ * Requires the deployment administrator role; enforced by the compiled policy declared on the `/api/admin` nest.
  */
 export const startMigration = <ThrowOnError extends boolean = false>(options: Options<StartMigrationData, ThrowOnError>): RequestResult<StartMigrationResponses, StartMigrationErrors, ThrowOnError, 'data'> => (options.client ?? client).post<StartMigrationResponses, StartMigrationErrors, ThrowOnError, 'data'>({
     responseStyle: 'data',
@@ -970,7 +972,7 @@ export const startMigration = <ThrowOnError extends boolean = false>(options: Op
  * resume AND backend-writer jobs stop deferring on the next tick.
  * Audit-logged with the previous holder's kind for the trail.
  *
- * Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.
+ * Requires the deployment administrator role; enforced by the compiled policy declared on the `/api/admin` nest.
  */
 export const releaseBackendWriteLock = <ThrowOnError extends boolean = false>(options?: Options<ReleaseBackendWriteLockData, ThrowOnError>): RequestResult<ReleaseBackendWriteLockResponses, ReleaseBackendWriteLockErrors, ThrowOnError, 'data'> => (options?.client ?? client).delete<ReleaseBackendWriteLockResponses, ReleaseBackendWriteLockErrors, ThrowOnError, 'data'>({
     responseStyle: 'data',
@@ -987,7 +989,7 @@ export const releaseBackendWriteLock = <ThrowOnError extends boolean = false>(op
  * `holder` (typed reason). Called by the admin UI on every
  * Storage-tab visit, and by hurl tests to assert pre/post state.
  *
- * Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.
+ * Requires the deployment administrator role; enforced by the compiled policy declared on the `/api/admin` nest.
  */
 export const getBackendWriteLock = <ThrowOnError extends boolean = false>(options?: Options<GetBackendWriteLockData, ThrowOnError>): RequestResult<GetBackendWriteLockResponses, GetBackendWriteLockErrors, ThrowOnError, 'data'> => (options?.client ?? client).get<GetBackendWriteLockResponses, GetBackendWriteLockErrors, ThrowOnError, 'data'>({
     responseStyle: 'data',
@@ -1004,7 +1006,7 @@ export const getBackendWriteLock = <ThrowOnError extends boolean = false>(option
  * holder is already engaged — operator must release the current
  * hold first via DELETE, which is audit-logged.
  *
- * Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.
+ * Requires the deployment administrator role; enforced by the compiled policy declared on the `/api/admin` nest.
  */
 export const acquireBackendWriteLock = <ThrowOnError extends boolean = false>(options: Options<AcquireBackendWriteLockData, ThrowOnError>): RequestResult<AcquireBackendWriteLockResponses, AcquireBackendWriteLockErrors, ThrowOnError, 'data'> => (options.client ?? client).post<AcquireBackendWriteLockResponses, AcquireBackendWriteLockErrors, ThrowOnError, 'data'>({
     responseStyle: 'data',
@@ -1025,7 +1027,7 @@ export const acquireBackendWriteLock = <ThrowOnError extends boolean = false>(op
  * one transaction, so the instance is never briefly ownerless or briefly
  * double-owned.
  *
- * Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.
+ * Requires the SERVER OWNER — stricter than admin. An administrator is refused.
  */
 export const transferOwnership = <ThrowOnError extends boolean = false>(options: Options<TransferOwnershipData, ThrowOnError>): RequestResult<TransferOwnershipResponses, TransferOwnershipErrors, ThrowOnError, 'data'> => (options.client ?? client).post<TransferOwnershipResponses, TransferOwnershipErrors, ThrowOnError, 'data'>({
     responseStyle: 'data',
@@ -1049,7 +1051,7 @@ export const transferOwnership = <ThrowOnError extends boolean = false>(options:
  * no caller and only invited jq-path bugs. See
  * `docs/plan/userdto-refactor.md`.
  *
- * Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.
+ * Requires the deployment administrator role; enforced by the compiled policy declared on the `/api/admin` nest.
  */
 export const listUsers = <ThrowOnError extends boolean = false>(options?: Options<ListUsersData, ThrowOnError>): RequestResult<ListUsersResponses, ListUsersErrors, ThrowOnError, 'data'> => (options?.client ?? client).get<ListUsersResponses, ListUsersErrors, ThrowOnError, 'data'>({
     responseStyle: 'data',
@@ -1061,7 +1063,7 @@ export const listUsers = <ThrowOnError extends boolean = false>(options?: Option
 /**
  * POST /api/admin/users — create a new user (admin only)
  *
- * Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.
+ * Requires the deployment administrator role; enforced by the compiled policy declared on the `/api/admin` nest.
  */
 export const createUser = <ThrowOnError extends boolean = false>(options: Options<CreateUserData, ThrowOnError>): RequestResult<CreateUserResponses, CreateUserErrors, ThrowOnError, 'data'> => (options.client ?? client).post<CreateUserResponses, CreateUserErrors, ThrowOnError, 'data'>({
     responseStyle: 'data',
@@ -1077,7 +1079,7 @@ export const createUser = <ThrowOnError extends boolean = false>(options: Option
 /**
  * DELETE /api/admin/users/:id — delete a user
  *
- * Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.
+ * Requires the deployment administrator role; enforced by the compiled policy declared on the `/api/admin` nest.
  */
 export const deleteUser = <ThrowOnError extends boolean = false>(options: Options<DeleteUserData, ThrowOnError>): RequestResult<DeleteUserResponses, DeleteUserErrors, ThrowOnError, 'data'> => (options.client ?? client).delete<DeleteUserResponses, DeleteUserErrors, ThrowOnError, 'data'>({
     responseStyle: 'data',
@@ -1089,7 +1091,7 @@ export const deleteUser = <ThrowOnError extends boolean = false>(options: Option
 /**
  * GET /api/admin/users/:id — get single user
  *
- * Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.
+ * Requires the deployment administrator role; enforced by the compiled policy declared on the `/api/admin` nest.
  */
 export const getUser = <ThrowOnError extends boolean = false>(options: Options<GetUserData, ThrowOnError>): RequestResult<GetUserResponses, GetUserErrors, ThrowOnError, 'data'> => (options.client ?? client).get<GetUserResponses, GetUserErrors, ThrowOnError, 'data'>({
     responseStyle: 'data',
@@ -1101,7 +1103,7 @@ export const getUser = <ThrowOnError extends boolean = false>(options: Options<G
 /**
  * PUT /api/admin/users/:id/active — activate/deactivate user
  *
- * Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.
+ * Requires the deployment administrator role; enforced by the compiled policy declared on the `/api/admin` nest.
  */
 export const updateUserActive = <ThrowOnError extends boolean = false>(options: Options<UpdateUserActiveData, ThrowOnError>): RequestResult<UpdateUserActiveResponses, UpdateUserActiveErrors, ThrowOnError, 'data'> => (options.client ?? client).put<UpdateUserActiveResponses, UpdateUserActiveErrors, ThrowOnError, 'data'>({
     responseStyle: 'data',
@@ -1117,7 +1119,7 @@ export const updateUserActive = <ThrowOnError extends boolean = false>(options: 
 /**
  * PUT /api/admin/users/:id/password — reset a user's password (admin only)
  *
- * Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.
+ * Requires the deployment administrator role; enforced by the compiled policy declared on the `/api/admin` nest.
  */
 export const resetUserPassword = <ThrowOnError extends boolean = false>(options: Options<ResetUserPasswordData, ThrowOnError>): RequestResult<ResetUserPasswordResponses, ResetUserPasswordErrors, ThrowOnError, 'data'> => (options.client ?? client).put<ResetUserPasswordResponses, ResetUserPasswordErrors, ThrowOnError, 'data'>({
     responseStyle: 'data',
@@ -1138,7 +1140,7 @@ export const resetUserPassword = <ThrowOnError extends boolean = false>(options:
  * behalf, so the promoted user needs some way to log in). Refuses
  * OIDC-linked users and users who are already internal.
  *
- * Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.
+ * Requires the deployment administrator role; enforced by the compiled policy declared on the `/api/admin` nest.
  */
 export const adminPromoteExternalToInternal = <ThrowOnError extends boolean = false>(options: Options<AdminPromoteExternalToInternalData, ThrowOnError>): RequestResult<AdminPromoteExternalToInternalResponses, AdminPromoteExternalToInternalErrors, ThrowOnError, 'data'> => (options.client ?? client).post<AdminPromoteExternalToInternalResponses, AdminPromoteExternalToInternalErrors, ThrowOnError, 'data'>({
     responseStyle: 'data',
@@ -1150,7 +1152,7 @@ export const adminPromoteExternalToInternal = <ThrowOnError extends boolean = fa
 /**
  * PUT /api/admin/users/:id/quota — update user storage quota
  *
- * Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.
+ * Requires the deployment administrator role; enforced by the compiled policy declared on the `/api/admin` nest.
  */
 export const updateUserQuota = <ThrowOnError extends boolean = false>(options: Options<UpdateUserQuotaData, ThrowOnError>): RequestResult<UpdateUserQuotaResponses, UpdateUserQuotaErrors, ThrowOnError, 'data'> => (options.client ?? client).put<UpdateUserQuotaResponses, UpdateUserQuotaErrors, ThrowOnError, 'data'>({
     responseStyle: 'data',
@@ -1166,7 +1168,7 @@ export const updateUserQuota = <ThrowOnError extends boolean = false>(options: O
 /**
  * PUT /api/admin/users/:id/role — change user role
  *
- * Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.
+ * Requires the deployment administrator role; enforced by the compiled policy declared on the `/api/admin` nest.
  */
 export const updateUserRole = <ThrowOnError extends boolean = false>(options: Options<UpdateUserRoleData, ThrowOnError>): RequestResult<UpdateUserRoleResponses, UpdateUserRoleErrors, ThrowOnError, 'data'> => (options.client ?? client).put<UpdateUserRoleResponses, UpdateUserRoleErrors, ThrowOnError, 'data'>({
     responseStyle: 'data',
@@ -1188,7 +1190,7 @@ export const updateUserRole = <ThrowOnError extends boolean = false>(options: Op
  * credential. The host answers "does this point where I think it does"
  * without putting a secret in a browser's network log.
  *
- * Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.
+ * Requires the deployment administrator role; enforced by the compiled policy declared on the `/api/admin` nest.
  */
 export const getWebhookInfo = <ThrowOnError extends boolean = false>(options?: Options<GetWebhookInfoData, ThrowOnError>): RequestResult<GetWebhookInfoResponses, GetWebhookInfoErrors, ThrowOnError, 'data'> => (options?.client ?? client).get<GetWebhookInfoResponses, GetWebhookInfoErrors, ThrowOnError, 'data'>({
     responseStyle: 'data',
@@ -1215,7 +1217,7 @@ export const getWebhookInfo = <ThrowOnError extends boolean = false>(options?: O
  * gates real findings — testing with the default `data_loss` threshold
  * would otherwise deliver nothing and read as a broken webhook.
  *
- * Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.
+ * Requires the deployment administrator role; enforced by the compiled policy declared on the `/api/admin` nest.
  */
 export const sendWebhookTest = <ThrowOnError extends boolean = false>(options?: Options<SendWebhookTestData, ThrowOnError>): RequestResult<SendWebhookTestResponses, SendWebhookTestErrors, ThrowOnError, 'data'> => (options?.client ?? client).post<SendWebhookTestResponses, SendWebhookTestErrors, ThrowOnError, 'data'>({
     responseStyle: 'data',
@@ -1289,6 +1291,8 @@ export const changePassword = <ThrowOnError extends boolean = false>(options: Op
 /**
  * Client sends: `{ "client_name": "rclone", "scope": "webdav" }`
  * Server returns: device_code, user_code, verification_uri, etc.
+ *
+ * Reachable with NO credential at all.
  */
 export const deviceAuthorize = <ThrowOnError extends boolean = false>(options: Options<DeviceAuthorizeData, ThrowOnError>): RequestResult<DeviceAuthorizeResponses, unknown, ThrowOnError, 'data'> => (options.client ?? client).post<DeviceAuthorizeResponses, unknown, ThrowOnError, 'data'>({
     responseStyle: 'data',
@@ -1317,6 +1321,8 @@ export const revokeDevice = <ThrowOnError extends boolean = false>(options: Opti
 /**
  * Client sends: `{ "device_code": "...", "grant_type": "urn:ietf:params:oauth:grant-type:device_code" }`
  * Returns tokens on success, or RFC 8628 error codes while pending.
+ *
+ * Reachable with NO credential at all.
  */
 export const deviceToken = <ThrowOnError extends boolean = false>(options: Options<DeviceTokenData, ThrowOnError>): RequestResult<DeviceTokenResponses, DeviceTokenErrors, ThrowOnError, 'data'> => (options.client ?? client).post<DeviceTokenResponses, DeviceTokenErrors, ThrowOnError, 'data'>({
     responseStyle: 'data',
@@ -1379,6 +1385,8 @@ export const dpopBind = <ThrowOnError extends boolean = false>(options: Options<
  *
  * On success, sets `oxicloud_access`, `oxicloud_refresh`, and `oxicloud_csrf`
  * HttpOnly cookies in addition to returning the tokens in the JSON body.
+ *
+ * Reachable with NO credential at all.
  */
 export const login = <ThrowOnError extends boolean = false>(options: Options<LoginData, ThrowOnError>): RequestResult<LoginResponses, LoginErrors, ThrowOnError, 'data'> => (options.client ?? client).post<LoginResponses, LoginErrors, ThrowOnError, 'data'>({
     responseStyle: 'data',
@@ -1434,6 +1442,8 @@ export const logout = <ThrowOnError extends boolean = false>(options: Options<Lo
  * real reason is recorded in the audit channel.
  * Authenticated callers (Authorization header or access cookie
  * present) bypass both limits.
+ *
+ * Reachable with NO credential at all.
  */
 export const sendMagicLink = <ThrowOnError extends boolean = false>(options: Options<SendMagicLinkData, ThrowOnError>): RequestResult<SendMagicLinkResponses, SendMagicLinkErrors, ThrowOnError, 'data'> => (options.client ?? client).post<SendMagicLinkResponses, SendMagicLinkErrors, ThrowOnError, 'data'>({
     responseStyle: 'data',
@@ -1506,6 +1516,8 @@ export const updateProfile = <ThrowOnError extends boolean = false>(options: Opt
  *
  * Generates PKCE, CSRF state, and nonce then issues a 302 redirect to the
  * provider's authorization endpoint.
+ *
+ * Reachable with NO credential at all.
  */
 export const oidcAuthorize = <ThrowOnError extends boolean = false>(options?: Options<OidcAuthorizeData, ThrowOnError>): RequestResult<unknown, OidcAuthorizeErrors, ThrowOnError, 'data'> => (options?.client ?? client).get<unknown, OidcAuthorizeErrors, ThrowOnError, 'data'>({
     responseStyle: 'data',
@@ -1530,6 +1542,8 @@ export const oidcAuthorize = <ThrowOnError extends boolean = false>(options?: Op
  * This endpoint is public: no auth middleware, no CSRF, no cookie.
  * The `logout_token` signature IS the authentication — an unsigned or
  * wrongly-signed token gets rejected by the OIDC service validator.
+ *
+ * Reachable with NO credential at all.
  */
 export const oidcBackchannelLogout = <ThrowOnError extends boolean = false>(options?: Options<OidcBackchannelLogoutData, ThrowOnError>): RequestResult<OidcBackchannelLogoutResponses, OidcBackchannelLogoutErrors, ThrowOnError, 'data'> => (options?.client ?? client).post<OidcBackchannelLogoutResponses, OidcBackchannelLogoutErrors, ThrowOnError, 'data'>({
     ...urlSearchParamsBodySerializer,
@@ -1548,6 +1562,8 @@ export const oidcBackchannelLogout = <ThrowOnError extends boolean = false>(opti
  * Validates the `state` / PKCE / nonce, exchanges the code for tokens, then
  * redirects the browser to the frontend login route with a short-lived
  * exchange code (`/login?oidc_code=…`), which the SPA swaps for a session.
+ *
+ * Reachable with NO credential at all.
  */
 export const oidcCallback = <ThrowOnError extends boolean = false>(options: Options<OidcCallbackData, ThrowOnError>): RequestResult<unknown, OidcCallbackErrors, ThrowOnError, 'data'> => (options.client ?? client).get<unknown, OidcCallbackErrors, ThrowOnError, 'data'>({
     responseStyle: 'data',
@@ -1560,6 +1576,8 @@ export const oidcCallback = <ThrowOnError extends boolean = false>(options: Opti
  *
  * The frontend calls this after being redirected back with `?oidc_code=…`.
  * The exchange code is valid for a single use and expires in 60 s.
+ *
+ * Reachable with NO credential at all.
  */
 export const oidcExchange = <ThrowOnError extends boolean = false>(options: Options<OidcExchangeData, ThrowOnError>): RequestResult<OidcExchangeResponses, OidcExchangeErrors, ThrowOnError, 'data'> => (options.client ?? client).post<OidcExchangeResponses, OidcExchangeErrors, ThrowOnError, 'data'>({
     responseStyle: 'data',
@@ -1615,6 +1633,8 @@ export const oidcUnlink = <ThrowOnError extends boolean = false>(options?: Optio
  * User is NOT looked up via `_with_perms` — this is the auth
  * bootstrap; there's no caller identity yet. We use the same
  * dispatch as legacy `/api/auth/login`.
+ *
+ * Reachable with NO credential at all.
  */
 export const loginKe1 = <ThrowOnError extends boolean = false>(options: Options<LoginKe1Data, ThrowOnError>): RequestResult<LoginKe1Responses, LoginKe1Errors, ThrowOnError, 'data'> => (options.client ?? client).post<LoginKe1Responses, LoginKe1Errors, ThrowOnError, 'data'>({
     responseStyle: 'data',
@@ -1645,6 +1665,8 @@ export const loginKe1 = <ThrowOnError extends boolean = false>(options: Options<
  * exchange_id): 401 `InvalidCredentials` — the SAME shape for every
  * failure branch so attackers can't distinguish "expired" from
  * "wrong password" from "id already consumed".
+ *
+ * Reachable with NO credential at all.
  */
 export const loginKe3 = <ThrowOnError extends boolean = false>(options: Options<LoginKe3Data, ThrowOnError>): RequestResult<LoginKe3Responses, LoginKe3Errors, ThrowOnError, 'data'> => (options.client ?? client).post<LoginKe3Responses, LoginKe3Errors, ThrowOnError, 'data'>({
     responseStyle: 'data',
@@ -1662,6 +1684,8 @@ export const loginKe3 = <ThrowOnError extends boolean = false>(options: Options<
  *
  * Rate-limited via the shared `login_limiter` (mount layer in
  * `main.rs`), so lookup can't be used as a cheap enumeration probe.
+ *
+ * Reachable with NO credential at all.
  */
 export const loginLookup = <ThrowOnError extends boolean = false>(options: Options<LoginLookupData, ThrowOnError>): RequestResult<LoginLookupResponses, LoginLookupErrors, ThrowOnError, 'data'> => (options.client ?? client).post<LoginLookupResponses, LoginLookupErrors, ThrowOnError, 'data'>({
     responseStyle: 'data',
@@ -1683,6 +1707,8 @@ export const loginLookup = <ThrowOnError extends boolean = false>(options: Optio
  * params mid-flight, we want the change to be picked up on the
  * next SPA reload rather than lingering behind an intermediary
  * cache.
+ *
+ * Reachable with NO credential at all.
  */
 export const opaqueParams = <ThrowOnError extends boolean = false>(options?: Options<OpaqueParamsData, ThrowOnError>): RequestResult<OpaqueParamsResponses, unknown, ThrowOnError, 'data'> => (options?.client ?? client).get<OpaqueParamsResponses, unknown, ThrowOnError, 'data'>({
     responseStyle: 'data',
@@ -1735,6 +1761,8 @@ export const registerStart = <ThrowOnError extends boolean = false>(options: Opt
  * 2. HttpOnly `oxicloud_refresh` cookie (browsers)
  *
  * Issues new access + refresh tokens and rotates all three auth cookies.
+ *
+ * Reachable with NO credential at all.
  */
 export const refreshToken = <ThrowOnError extends boolean = false>(options: Options<RefreshTokenData, ThrowOnError>): RequestResult<RefreshTokenResponses, RefreshTokenErrors, ThrowOnError, 'data'> => (options.client ?? client).post<RefreshTokenResponses, RefreshTokenErrors, ThrowOnError, 'data'>({
     responseStyle: 'data',
@@ -1770,6 +1798,8 @@ export const refreshToken = <ThrowOnError extends boolean = false>(options: Opti
  * disabled in OIDC-only mode, the endpoint returns **403** with a
  * clear message. These are instance-wide settings, not per-user
  * oracles — legitimate users deserve an actionable error.
+ *
+ * Reachable with NO credential at all.
  */
 export const register = <ThrowOnError extends boolean = false>(options: Options<RegisterData, ThrowOnError>): RequestResult<RegisterResponses, RegisterErrors, ThrowOnError, 'data'> => (options.client ?? client).post<RegisterResponses, RegisterErrors, ThrowOnError, 'data'>({
     responseStyle: 'data',
@@ -2125,6 +2155,8 @@ export const updateEvent = <ThrowOnError extends boolean = false>(options: Optio
  * server-restart / feature-toggle / status flip, and the endpoint
  * is called at most once per SPA boot per client. Adding a short
  * `Cache-Control` TTL later is safe if load ever becomes a concern.
+ *
+ * Reachable with NO credential at all.
  */
 export const getConfig = <ThrowOnError extends boolean = false>(options?: Options<GetConfigData, ThrowOnError>): RequestResult<GetConfigResponses, unknown, ThrowOnError, 'data'> => (options?.client ?? client).get<GetConfigResponses, unknown, ThrowOnError, 'data'>({
     responseStyle: 'data',
@@ -2415,6 +2447,8 @@ export const deltaNegotiate = <ThrowOnError extends boolean = false>(options: Op
  * Returns the standard `CursorListResponse` envelope. A file may appear more
  * than once in a page — once per lane that touched it — which is why
  * `changed_at` and `modifier` are per-row rather than per-file.
+ *
+ * Requires an INTERNAL user. An external (grant-only) account is refused: it is a guest invited to specific resources, and this surface aggregates more than that invitation implied.
  */
 export const listRecentChanges = <ThrowOnError extends boolean = false>(options?: Options<ListRecentChangesData, ThrowOnError>): RequestResult<ListRecentChangesResponses, ListRecentChangesErrors, ThrowOnError, 'data'> => (options?.client ?? client).get<ListRecentChangesResponses, ListRecentChangesErrors, ThrowOnError, 'data'>({
     responseStyle: 'data',
@@ -2443,7 +2477,7 @@ export const deleteFile = <ThrowOnError extends boolean = false>(options: Option
 });
 
 /**
- * Reachable with a public-share token (`share:read`): a visitor holding an unlocked share link may call this, scoped to what that share grants.
+ * Reachable by a public-share VISITOR: someone holding an unlocked share link may call this, scoped to what that share grants. No account is required, but a share ring is.
  */
 export const downloadFile = <ThrowOnError extends boolean = false>(options: Options<DownloadFileData, ThrowOnError>): RequestResult<DownloadFileResponses, DownloadFileErrors, ThrowOnError, 'data'> => (options.client ?? client).get<DownloadFileResponses, DownloadFileErrors, ThrowOnError, 'data'>({
     responseStyle: 'data',
@@ -2472,7 +2506,7 @@ export const deltaFileManifest = <ThrowOnError extends boolean = false>(options:
 });
 
 /**
- * Reachable with a public-share token (`share:read`): a visitor holding an unlocked share link may call this, scoped to what that share grants.
+ * Reachable by a public-share VISITOR: someone holding an unlocked share link may call this, scoped to what that share grants. No account is required, but a share ring is.
  */
 export const getFileMetadata = <ThrowOnError extends boolean = false>(options: Options<GetFileMetadataData, ThrowOnError>): RequestResult<GetFileMetadataResponses, GetFileMetadataErrors, ThrowOnError, 'data'> => (options.client ?? client).get<GetFileMetadataResponses, GetFileMetadataErrors, ThrowOnError, 'data'>({
     responseStyle: 'data',
@@ -2504,7 +2538,7 @@ export const renameFile = <ThrowOnError extends boolean = false>(options: Option
 });
 
 /**
- * Reachable with a public-share token (`share:read`): a visitor holding an unlocked share link may call this, scoped to what that share grants.
+ * Reachable by a public-share VISITOR: someone holding an unlocked share link may call this, scoped to what that share grants. No account is required, but a share ring is.
  */
 export const getThumbnail = <ThrowOnError extends boolean = false>(options: Options<GetThumbnailData, ThrowOnError>): RequestResult<GetThumbnailResponses, GetThumbnailErrors, ThrowOnError, 'data'> => (options.client ?? client).get<GetThumbnailResponses, GetThumbnailErrors, ThrowOnError, 'data'>({
     responseStyle: 'data',
@@ -2551,7 +2585,7 @@ export const deleteFolderWithTrash = <ThrowOnError extends boolean = false>(opti
 });
 
 /**
- * Reachable with a public-share token (`share:read`): a visitor holding an unlocked share link may call this, scoped to what that share grants.
+ * Reachable by a public-share VISITOR: someone holding an unlocked share link may call this, scoped to what that share grants. No account is required, but a share ring is.
  */
 export const getFolder = <ThrowOnError extends boolean = false>(options: Options<GetFolderData, ThrowOnError>): RequestResult<GetFolderResponses, GetFolderErrors, ThrowOnError, 'data'> => (options.client ?? client).get<GetFolderResponses, GetFolderErrors, ThrowOnError, 'data'>({
     responseStyle: 'data',
@@ -2561,7 +2595,7 @@ export const getFolder = <ThrowOnError extends boolean = false>(options: Options
 });
 
 /**
- * Reachable with a public-share token (`share:read`): a visitor holding an unlocked share link may call this, scoped to what that share grants.
+ * Reachable by a public-share VISITOR: someone holding an unlocked share link may call this, scoped to what that share grants. No account is required, but a share ring is.
  */
 export const getFolderAncestors = <ThrowOnError extends boolean = false>(options: Options<GetFolderAncestorsData, ThrowOnError>): RequestResult<GetFolderAncestorsResponses, GetFolderAncestorsErrors, ThrowOnError, 'data'> => (options.client ?? client).get<GetFolderAncestorsResponses, GetFolderAncestorsErrors, ThrowOnError, 'data'>({
     responseStyle: 'data',
@@ -2571,7 +2605,7 @@ export const getFolderAncestors = <ThrowOnError extends boolean = false>(options
 });
 
 /**
- * Reachable with a public-share token (`share:read`): a visitor holding an unlocked share link may call this, scoped to what that share grants.
+ * Reachable by a public-share VISITOR: someone holding an unlocked share link may call this, scoped to what that share grants. No account is required, but a share ring is.
  */
 export const downloadFolderZip = <ThrowOnError extends boolean = false>(options: Options<DownloadFolderZipData, ThrowOnError>): RequestResult<DownloadFolderZipResponses, DownloadFolderZipErrors, ThrowOnError, 'data'> => (options.client ?? client).get<DownloadFolderZipResponses, DownloadFolderZipErrors, ThrowOnError, 'data'>({
     responseStyle: 'data',
@@ -2603,7 +2637,7 @@ export const renameFolder = <ThrowOnError extends boolean = false>(options: Opti
 });
 
 /**
- * Reachable with a public-share token (`share:read`): a visitor holding an unlocked share link may call this, scoped to what that share grants.
+ * Reachable by a public-share VISITOR: someone holding an unlocked share link may call this, scoped to what that share grants. No account is required, but a share ring is.
  */
 export const listFolderResources = <ThrowOnError extends boolean = false>(options: Options<ListFolderResourcesData, ThrowOnError>): RequestResult<ListFolderResourcesResponses, ListFolderResourcesErrors, ThrowOnError, 'data'> => (options.client ?? client).get<ListFolderResourcesResponses, ListFolderResourcesErrors, ThrowOnError, 'data'>({
     responseStyle: 'data',
@@ -2871,18 +2905,27 @@ export const subjectGroupRemoveUserMember = <ThrowOnError extends boolean = fals
     ...options
 });
 
+/**
+ * Reachable with NO credential at all.
+ */
 export const getLocales = <ThrowOnError extends boolean = false>(options?: Options<GetLocalesData, ThrowOnError>): RequestResult<GetLocalesResponses, unknown, ThrowOnError, 'data'> => (options?.client ?? client).get<GetLocalesResponses, unknown, ThrowOnError, 'data'>({
     responseStyle: 'data',
     url: '/api/i18n/locales',
     ...options
 });
 
+/**
+ * Reachable with NO credential at all.
+ */
 export const getTranslationsByLocale = <ThrowOnError extends boolean = false>(options: Options<GetTranslationsByLocaleData, ThrowOnError>): RequestResult<GetTranslationsByLocaleResponses, GetTranslationsByLocaleErrors, ThrowOnError, 'data'> => (options.client ?? client).get<GetTranslationsByLocaleResponses, GetTranslationsByLocaleErrors, ThrowOnError, 'data'>({
     responseStyle: 'data',
     url: '/api/i18n/locales/{locale_code}',
     ...options
 });
 
+/**
+ * Reachable with NO credential at all.
+ */
 export const translate = <ThrowOnError extends boolean = false>(options: Options<TranslateData, ThrowOnError>): RequestResult<TranslateResponses, TranslateErrors, ThrowOnError, 'data'> => (options.client ?? client).get<TranslateResponses, TranslateErrors, ThrowOnError, 'data'>({
     responseStyle: 'data',
     url: '/api/i18n/translate',
@@ -3066,6 +3109,9 @@ export const listPlaylists = <ThrowOnError extends boolean = false>(options?: Op
     ...options
 });
 
+/**
+ * Requires an INTERNAL user. An external (grant-only) account is refused: it is a guest invited to specific resources, and this surface aggregates more than that invitation implied.
+ */
 export const createPlaylist = <ThrowOnError extends boolean = false>(options: Options<CreatePlaylistData, ThrowOnError>): RequestResult<CreatePlaylistResponses, CreatePlaylistErrors, ThrowOnError, 'data'> => (options.client ?? client).post<CreatePlaylistResponses, CreatePlaylistErrors, ThrowOnError, 'data'>({
     responseStyle: 'data',
     security: [{ scheme: 'bearer', type: 'http' }],
@@ -3215,6 +3261,8 @@ export const recordItemAccess = <ThrowOnError extends boolean = false>(options: 
 
 /**
  * Access a shared item via its token
+ *
+ * Reachable with NO credential at all.
  */
 export const accessSharedItem = <ThrowOnError extends boolean = false>(options: Options<AccessSharedItemData, ThrowOnError>): RequestResult<AccessSharedItemResponses, AccessSharedItemErrors, ThrowOnError, 'data'> => (options.client ?? client).get<AccessSharedItemResponses, AccessSharedItemErrors, ThrowOnError, 'data'>({
     responseStyle: 'data',
@@ -3224,6 +3272,8 @@ export const accessSharedItem = <ThrowOnError extends boolean = false>(options: 
 
 /**
  * Verify password for a password-protected shared item
+ *
+ * Reachable with NO credential at all.
  */
 export const verifySharedItemPassword = <ThrowOnError extends boolean = false>(options: Options<VerifySharedItemPasswordData, ThrowOnError>): RequestResult<VerifySharedItemPasswordResponses, VerifySharedItemPasswordErrors, ThrowOnError, 'data'> => (options.client ?? client).post<VerifySharedItemPasswordResponses, VerifySharedItemPasswordErrors, ThrowOnError, 'data'>({
     responseStyle: 'data',
@@ -3256,6 +3306,8 @@ export const suggestFiles = <ThrowOnError extends boolean = false>(options: Opti
  * and password login is allowed.
  * Once the admin is created the endpoint permanently returns 403.
  * Uses an atomic "claim" operation so concurrent requests cannot both succeed.
+ *
+ * Reachable with NO credential at all.
  */
 export const setupAdmin = <ThrowOnError extends boolean = false>(options: Options<SetupAdminData, ThrowOnError>): RequestResult<SetupAdminResponses, SetupAdminErrors, ThrowOnError, 'data'> => (options.client ?? client).post<SetupAdminResponses, SetupAdminErrors, ThrowOnError, 'data'>({
     responseStyle: 'data',
@@ -3513,5 +3565,18 @@ export const getUserProfile = <ThrowOnError extends boolean = false>(options: Op
     responseStyle: 'data',
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/users/{id}',
+    ...options
+});
+
+/**
+ * GET /api/wopi/editor-url — Returns the editor iframe URL + WOPI token.
+ *
+ * This endpoint is behind normal auth middleware. The authenticated user
+ * requests a WOPI session for a specific file.
+ */
+export const getEditorUrl = <ThrowOnError extends boolean = false>(options: Options<GetEditorUrlData, ThrowOnError>): RequestResult<GetEditorUrlResponses, GetEditorUrlErrors, ThrowOnError, 'data'> => (options.client ?? client).get<GetEditorUrlResponses, GetEditorUrlErrors, ThrowOnError, 'data'>({
+    responseStyle: 'data',
+    security: [{ scheme: 'bearer', type: 'http' }],
+    url: '/api/wopi/editor-url',
     ...options
 });

@@ -65,7 +65,7 @@ opposite reason (hot path, `docs/plan/dpop.md` Gate 9) — the asymmetry
 is deliberate, not an inconsistency.
 
 `JwtClaims.sid` already carries `auth.sessions.id`, so the lookup key is
-in hand; it needs surfacing onto `CurrentUser` (see `scope-gates.md`).
+in hand; it needs surfacing onto `CurrentCaller` (see `scope-gates.md`).
 
 ### What it gates — by HTTP method, not by enumeration
 

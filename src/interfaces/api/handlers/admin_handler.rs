@@ -1,12 +1,10 @@
 use axum::{
-    Router,
     extract::{DefaultBodyLimit, Json, Multipart, Path, Query, State},
     http::StatusCode,
     response::{
         IntoResponse,
         sse::{Event, KeepAlive, Sse},
     },
-    routing::{delete, get, post, put},
 };
 
 use crate::application::dtos::drive_dto::DriveDto;
@@ -29,6 +27,7 @@ use crate::application::ports::plugin_ports::{LogQuery, PluginManagementPort, Pl
 // JobStoreProvider is used only by the storage-migration shims below,
 // but the compiler needs the trait in scope for method resolution on
 // the concrete `PgJobStoreProvider` that lives on `AppState`.
+use crate::application::ports::scope_ports::{Condition, MinRole};
 use crate::common::di::AppState;
 use crate::domain::repositories::drive_repository::DriveRepository;
 use crate::domain::services::authorization::{Resource, Subject};
@@ -37,6 +36,7 @@ use crate::interfaces::api::handlers::dedup_handler::{
     admin_check_hash, get_stats, recalculate_stats,
 };
 use crate::interfaces::api::handlers::search_handler::clear_search_cache;
+use crate::interfaces::api::policy_router::{GatedRouter, delete, get, patch, post, put};
 use crate::interfaces::errors::AppError;
 use crate::interfaces::middleware::auth::AuthUser;
 use std::sync::Arc;
@@ -62,9 +62,9 @@ struct AdminUsersPageResponse {
 /// mirrors the `OXICLOUD_ENABLE_EXTERNAL_MOUNTS` flag; when the flag
 /// is off the runtime `MountRegistry` isn't loaded, so exposing the
 /// CRUD would let admins configure mounts that silently don't work).
-pub fn admin_routes(app_state: &Arc<AppState>) -> Router<Arc<AppState>> {
+pub fn admin_routes(app_state: &Arc<AppState>) -> GatedRouter<Arc<AppState>> {
     use super::admin_external_mounts as ext_mounts;
-    let mut router = Router::new().merge(super::admin_appearance_handler::routes());
+    let mut router = GatedRouter::new().merge(super::admin_appearance_handler::routes());
 
     // External file mounts — CRUD registered only when the feature
     // is enabled server-side. Matches the pattern used for the
@@ -77,10 +77,8 @@ pub fn admin_routes(app_state: &Arc<AppState>) -> Router<Arc<AppState>> {
     // FE mirrors via `serverConfig.features.external_mounts`.
     if app_state.core.config.features.enable_external_mounts {
         router = router
-            .route(
-                "/external-mounts",
-                get(ext_mounts::list_external_mounts).post(ext_mounts::create_external_mount),
-            )
+            .route("/external-mounts", get(ext_mounts::list_external_mounts))
+            .route("/external-mounts", post(ext_mounts::create_external_mount))
             .route(
                 "/external-mounts/{id}",
                 delete(ext_mounts::delete_external_mount),
@@ -111,20 +109,16 @@ pub fn admin_routes(app_state: &Arc<AppState>) -> Router<Arc<AppState>> {
         // see the handler docs. GET inspects, POST acquires, DELETE
         // releases any variant (admin escape hatch for stuck
         // migrations).
-        .route(
-            "/storage/write-lock",
-            get(get_backend_write_lock)
-                .post(acquire_backend_write_lock)
-                .delete(release_backend_write_lock),
-        )
+        .route("/storage/write-lock", get(get_backend_write_lock))
+        .route("/storage/write-lock", post(acquire_backend_write_lock))
+        .route("/storage/write-lock", delete(release_backend_write_lock))
         // Operator-driven banner messages — CRUD on the list +
         // per-id update/delete. See the handler docs on each
         // function.
-        .route("/banners", get(list_ops_banners).post(create_ops_banner))
-        .route(
-            "/banners/{id}",
-            axum::routing::put(update_ops_banner).delete(delete_ops_banner),
-        )
+        .route("/banners", get(list_ops_banners))
+        .route("/banners", post(create_ops_banner))
+        .route("/banners/{id}", put(update_ops_banner))
+        .route("/banners/{id}", delete(delete_ops_banner))
         // K3 (storage-key-rotation): per-entry rotate trigger.
         // Normalises every blob on the named entry to its head-pair
         // format (legacy → v1, plaintext ↔ encrypted, old-key →
@@ -164,7 +158,19 @@ pub fn admin_routes(app_state: &Arc<AppState>) -> Router<Arc<AppState>> {
         // Ownership transfer. Not under /users/{id} because it mutates TWO
         // rows — the caller is demoted as the target is promoted — so it
         // reads as an instance-level operation, not a user edit.
-        .route("/transfer-ownership", post(transfer_ownership))
+        // The only OWNER-gated operation. Declared per VERB, tightening
+        // the `[role(Admin)]` on the `/api/admin` nest — the chain folds
+        // to Owner by `max`, and declaring something weaker here would be
+        // a boot error rather than a silent discard.
+        //
+        // This replaced a hand-rolled `caller.role != UserRole::Owner` in
+        // `auth_application_service`: a GATE sitting in the grant layer,
+        // with exactly one door (AGENTS.md § Grant vs scope on counting
+        // them), so one declaration leaves nothing uncovered.
+        .route(
+            "/transfer-ownership",
+            post(transfer_ownership).policy([Condition::role(MinRole::Owner)]),
+        )
         // Registration control
         .route("/settings/registration", put(set_registration_setting))
         // Plugin management
@@ -261,20 +267,26 @@ pub fn admin_routes(app_state: &Arc<AppState>) -> Router<Arc<AppState>> {
         // per-drive endpoint keeps its documented handler-layer deviation.
         .route(
             "/drive-policies/defaults/{kind}",
-            get(get_drive_policy_defaults).put(set_drive_policy_defaults),
+            get(get_drive_policy_defaults),
+        )
+        .route(
+            "/drive-policies/defaults/{kind}",
+            put(set_drive_policy_defaults),
         )
         .route("/drive-policies/drift", get(get_drive_policy_drift))
         // Drives — admin-wide view (distinct from `/api/drives` which
         // is filtered to the caller's role grants).
         .route("/drives", get(list_all_drives))
         .route("/drives/{id}", delete(delete_drive_admin))
+        .route("/drives/{id}/members", get(list_drive_members_admin))
+        .route("/drives/{id}/members", post(add_drive_member_admin))
         .route(
-            "/drives/{id}/members",
-            get(list_drive_members_admin).post(add_drive_member_admin),
+            "/drives/{id}/members/{kind}/{sid}",
+            patch(update_drive_member_admin),
         )
         .route(
             "/drives/{id}/members/{kind}/{sid}",
-            axum::routing::patch(update_drive_member_admin).delete(remove_drive_member_admin),
+            delete(remove_drive_member_admin),
         );
 
     router
@@ -297,7 +309,6 @@ pub fn admin_routes(app_state: &Arc<AppState>) -> Router<Arc<AppState>> {
         (status = 401, description = "Unauthorized", body = crate::interfaces::errors::ApiErrorBody),
         (status = 403, description = "Admin required", body = crate::interfaces::errors::ApiErrorBody)
     ),
-    security(("bearerAuth" = [])),
     tag = "admin"
 )]
 pub async fn get_oidc_settings(
@@ -327,7 +338,6 @@ pub async fn get_oidc_settings(
         (status = 409, description = "A changed field is pinned by an OXICLOUD_OIDC_* env var", body = crate::interfaces::errors::ApiErrorBody),
         (status = 500, description = "Saving failed", body = crate::interfaces::errors::ApiErrorBody)
     ),
-    security(("bearerAuth" = [])),
     tag = "admin"
 )]
 pub async fn save_oidc_settings(
@@ -383,7 +393,6 @@ async fn test_oidc_connection(
         (status = 401, description = "Unauthorized", body = crate::interfaces::errors::ApiErrorBody),
         (status = 403, description = "Admin required", body = crate::interfaces::errors::ApiErrorBody)
     ),
-    security(("bearerAuth" = [])),
     tag = "admin"
 )]
 pub async fn get_storage_settings(
@@ -411,7 +420,6 @@ pub async fn get_storage_settings(
         (status = 401, description = "Unauthorized", body = crate::interfaces::errors::ApiErrorBody),
         (status = 403, description = "Admin required", body = crate::interfaces::errors::ApiErrorBody)
     ),
-    security(("bearerAuth" = [])),
     tag = "admin"
 )]
 pub async fn save_storage_settings(
@@ -477,7 +485,6 @@ async fn test_storage_connection(
         (status = 401, description = "Unauthorized", body = crate::interfaces::errors::ApiErrorBody),
         (status = 403, description = "Admin required", body = crate::interfaces::errors::ApiErrorBody)
     ),
-    security(("bearerAuth" = [])),
     tag = "admin"
 )]
 pub async fn get_migration_status(
@@ -539,7 +546,6 @@ pub async fn get_migration_status(
         (status = 401, description = "Unauthorized", body = crate::interfaces::errors::ApiErrorBody),
         (status = 403, description = "Admin required", body = crate::interfaces::errors::ApiErrorBody)
     ),
-    security(("bearerAuth" = [])),
     tag = "admin"
 )]
 pub async fn start_migration(
@@ -598,7 +604,6 @@ pub async fn start_migration(
         (status = 401, description = "Unauthorized", body = crate::interfaces::errors::ApiErrorBody),
         (status = 403, description = "Admin required", body = crate::interfaces::errors::ApiErrorBody)
     ),
-    security(("bearerAuth" = [])),
     tag = "admin"
 )]
 pub async fn pause_migration(
@@ -646,7 +651,6 @@ pub async fn pause_migration(
         (status = 401, description = "Unauthorized", body = crate::interfaces::errors::ApiErrorBody),
         (status = 403, description = "Admin required", body = crate::interfaces::errors::ApiErrorBody)
     ),
-    security(("bearerAuth" = [])),
     tag = "admin"
 )]
 pub async fn resume_migration(
@@ -691,7 +695,6 @@ pub async fn resume_migration(
         (status = 401, description = "Unauthorized", body = crate::interfaces::errors::ApiErrorBody),
         (status = 403, description = "Admin required", body = crate::interfaces::errors::ApiErrorBody)
     ),
-    security(("bearerAuth" = [])),
     tag = "admin"
 )]
 pub async fn get_backend_write_lock(
@@ -725,7 +728,6 @@ pub async fn get_backend_write_lock(
         (status = 403, description = "Admin required", body = crate::interfaces::errors::ApiErrorBody),
         (status = 409, description = "Backend write-lock already held by another operation (migration/backup/rotation/external)", body = crate::interfaces::errors::ApiErrorBody)
     ),
-    security(("bearerAuth" = [])),
     tag = "admin"
 )]
 pub async fn acquire_backend_write_lock(
@@ -851,7 +853,6 @@ pub async fn acquire_backend_write_lock(
         (status = 401, description = "Unauthorized", body = crate::interfaces::errors::ApiErrorBody),
         (status = 403, description = "Admin required", body = crate::interfaces::errors::ApiErrorBody)
     ),
-    security(("bearerAuth" = [])),
     tag = "admin"
 )]
 pub async fn release_backend_write_lock(
@@ -946,7 +947,6 @@ pub async fn release_backend_write_lock(
         (status = 401, description = "Unauthorized", body = crate::interfaces::errors::ApiErrorBody),
         (status = 403, description = "Admin required", body = crate::interfaces::errors::ApiErrorBody)
     ),
-    security(("bearerAuth" = [])),
     tag = "admin"
 )]
 pub async fn list_ops_banners(
@@ -967,7 +967,6 @@ pub async fn list_ops_banners(
         (status = 401, description = "Unauthorized", body = crate::interfaces::errors::ApiErrorBody),
         (status = 403, description = "Admin required", body = crate::interfaces::errors::ApiErrorBody)
     ),
-    security(("bearerAuth" = [])),
     tag = "admin"
 )]
 pub async fn create_ops_banner(
@@ -1007,7 +1006,6 @@ pub async fn create_ops_banner(
         (status = 401, description = "Unauthorized", body = crate::interfaces::errors::ApiErrorBody),
         (status = 403, description = "Admin required", body = crate::interfaces::errors::ApiErrorBody)
     ),
-    security(("bearerAuth" = [])),
     tag = "admin"
 )]
 pub async fn update_ops_banner(
@@ -1052,7 +1050,6 @@ pub async fn update_ops_banner(
         (status = 401, description = "Unauthorized", body = crate::interfaces::errors::ApiErrorBody),
         (status = 403, description = "Admin required", body = crate::interfaces::errors::ApiErrorBody)
     ),
-    security(("bearerAuth" = [])),
     tag = "admin"
 )]
 pub async fn delete_ops_banner(
@@ -1209,7 +1206,6 @@ async fn trigger_backend_migration(
     params(
         ("name" = String, Path, description = "Storage entry name to rotate")
     ),
-    security(("bearerAuth" = [])),
     tag = "admin"
 )]
 pub async fn trigger_backend_rotate(
@@ -1387,7 +1383,6 @@ fn run_to_migration_dto(
         (status = 401, description = "Unauthorized", body = crate::interfaces::errors::ApiErrorBody),
         (status = 403, description = "Admin required", body = crate::interfaces::errors::ApiErrorBody)
     ),
-    security(("bearerAuth" = [])),
     tag = "admin"
 )]
 pub async fn generate_encryption_key() -> Result<impl IntoResponse, AppError> {
@@ -1428,7 +1423,6 @@ pub async fn generate_encryption_key() -> Result<impl IntoResponse, AppError> {
         (status = 401, description = "Unauthorized", body = crate::interfaces::errors::ApiErrorBody),
         (status = 403, description = "Admin required", body = crate::interfaces::errors::ApiErrorBody)
     ),
-    security(("bearerAuth" = [])),
     tag = "admin"
 )]
 pub async fn get_dashboard_stats(
@@ -1753,7 +1747,6 @@ pub async fn get_dashboard_stats(
         (status = 401, description = "Unauthorized", body = crate::interfaces::errors::ApiErrorBody),
         (status = 403, description = "Admin required", body = crate::interfaces::errors::ApiErrorBody)
     ),
-    security(("bearerAuth" = [])),
     tag = "admin"
 )]
 pub async fn list_users(
@@ -1810,7 +1803,6 @@ pub async fn list_users(
         (status = 403, description = "Admin required", body = crate::interfaces::errors::ApiErrorBody),
         (status = 404, description = "User not found", body = crate::interfaces::errors::ApiErrorBody)
     ),
-    security(("bearerAuth" = [])),
     tag = "admin"
 )]
 pub async fn get_user(
@@ -1845,7 +1837,6 @@ pub async fn get_user(
         (status = 401, description = "Unauthorized", body = crate::interfaces::errors::ApiErrorBody),
         (status = 403, description = "Admin required", body = crate::interfaces::errors::ApiErrorBody)
     ),
-    security(("bearerAuth" = [])),
     tag = "admin"
 )]
 pub async fn delete_user(
@@ -1901,7 +1892,6 @@ pub async fn delete_user(
         (status = 401, description = "Unauthorized", body = crate::interfaces::errors::ApiErrorBody),
         (status = 403, description = "Admin required", body = crate::interfaces::errors::ApiErrorBody)
     ),
-    security(("bearerAuth" = [])),
     tag = "admin"
 )]
 pub async fn list_sessions(
@@ -1982,7 +1972,6 @@ pub async fn list_sessions(
         (status = 403, description = "Admin required", body = crate::interfaces::errors::ApiErrorBody),
         (status = 404, description = "Session not found", body = crate::interfaces::errors::ApiErrorBody)
     ),
-    security(("bearerAuth" = [])),
     tag = "admin"
 )]
 pub async fn revoke_session(
@@ -2024,7 +2013,6 @@ pub async fn revoke_session(
         (status = 401, description = "Unauthorized", body = crate::interfaces::errors::ApiErrorBody),
         (status = 403, description = "Admin required", body = crate::interfaces::errors::ApiErrorBody)
     ),
-    security(("bearerAuth" = [])),
     tag = "admin"
 )]
 pub async fn update_user_role(
@@ -2070,7 +2058,6 @@ pub async fn update_user_role(
         (status = 401, description = "Unauthorized", body = crate::interfaces::errors::ApiErrorBody),
         (status = 403, description = "Admin required", body = crate::interfaces::errors::ApiErrorBody)
     ),
-    security(("bearerAuth" = [])),
     tag = "admin"
 )]
 pub async fn update_user_active(
@@ -2120,7 +2107,6 @@ pub async fn update_user_active(
         (status = 401, description = "Unauthorized", body = crate::interfaces::errors::ApiErrorBody),
         (status = 403, description = "Admin required, and must outrank the target", body = crate::interfaces::errors::ApiErrorBody)
     ),
-    security(("bearerAuth" = [])),
     tag = "admin"
 )]
 pub async fn update_user_quota(
@@ -2168,7 +2154,6 @@ pub async fn update_user_quota(
         (status = 401, description = "Unauthorized", body = crate::interfaces::errors::ApiErrorBody),
         (status = 403, description = "Admin required, and cannot create a role the caller does not outrank", body = crate::interfaces::errors::ApiErrorBody)
     ),
-    security(("bearerAuth" = [])),
     tag = "admin"
 )]
 pub async fn create_user(
@@ -2203,7 +2188,6 @@ pub async fn create_user(
         (status = 401, description = "Unauthorized", body = crate::interfaces::errors::ApiErrorBody),
         (status = 403, description = "Admin required, and must outrank the target", body = crate::interfaces::errors::ApiErrorBody)
     ),
-    security(("bearerAuth" = [])),
     tag = "admin"
 )]
 pub async fn reset_user_password(
@@ -2252,7 +2236,6 @@ pub async fn reset_user_password(
         (status = 403, description = "Only the current owner may transfer ownership", body = crate::interfaces::errors::ApiErrorBody),
         (status = 404, description = "Target user not found", body = crate::interfaces::errors::ApiErrorBody),
     ),
-    security(("bearerAuth" = [])),
     tag = "admin"
 )]
 pub async fn transfer_ownership(
@@ -2300,7 +2283,6 @@ pub async fn transfer_ownership(
         (status = 404, description = "User not found", body = crate::interfaces::errors::ApiErrorBody),
         (status = 409, description = "User is already internal", body = crate::interfaces::errors::ApiErrorBody),
     ),
-    security(("bearerAuth" = [])),
     tag = "admin"
 )]
 pub async fn admin_promote_external_to_internal(
@@ -2338,7 +2320,6 @@ pub async fn admin_promote_external_to_internal(
         (status = 401, description = "Unauthorized", body = crate::interfaces::errors::ApiErrorBody),
         (status = 403, description = "Admin required", body = crate::interfaces::errors::ApiErrorBody)
     ),
-    security(("bearerAuth" = [])),
     tag = "admin"
 )]
 pub async fn set_registration_setting(
@@ -2422,7 +2403,6 @@ pub async fn set_registration_setting(
         (status = 401, description = "Unauthorized", body = crate::interfaces::errors::ApiErrorBody),
         (status = 403, description = "Admin required", body = crate::interfaces::errors::ApiErrorBody),
     ),
-    security(("bearerAuth" = [])),
     tag = "admin"
 )]
 pub async fn get_webhook_info(
@@ -2470,7 +2450,6 @@ pub async fn get_webhook_info(
         (status = 401, description = "Unauthorized", body = crate::interfaces::errors::ApiErrorBody),
         (status = 403, description = "Admin required", body = crate::interfaces::errors::ApiErrorBody),
     ),
-    security(("bearerAuth" = [])),
     tag = "admin"
 )]
 pub async fn get_smtp_info(
@@ -2553,7 +2532,6 @@ struct CapturedEmailQuery {
         (status = 403, description = "Admin required", body = crate::interfaces::errors::ApiErrorBody),
         (status = 503, description = "SMTP not configured", body = crate::interfaces::errors::ApiErrorBody),
     ),
-    security(("bearerAuth" = [])),
     tag = "admin"
 )]
 pub async fn send_smtp_test(
@@ -2960,7 +2938,6 @@ fn parse_drive_kind(raw: &str) -> Result<crate::domain::entities::drive::DriveKi
         (status = 401, description = "Unauthorized", body = crate::interfaces::errors::ApiErrorBody),
         (status = 403, description = "Admin required", body = crate::interfaces::errors::ApiErrorBody),
     ),
-    security(("bearerAuth" = [])),
     tag = "admin"
 )]
 pub async fn get_drive_policy_defaults(
@@ -2990,7 +2967,6 @@ pub async fn get_drive_policy_defaults(
         (status = 401, description = "Unauthorized", body = crate::interfaces::errors::ApiErrorBody),
         (status = 403, description = "Admin required", body = crate::interfaces::errors::ApiErrorBody),
     ),
-    security(("bearerAuth" = [])),
     tag = "admin"
 )]
 pub async fn get_drive_policy_drift(
@@ -3045,7 +3021,6 @@ pub struct SetPolicyDefaultsQuery {
         (status = 401, description = "Unauthorized", body = crate::interfaces::errors::ApiErrorBody),
         (status = 403, description = "Admin required", body = crate::interfaces::errors::ApiErrorBody),
     ),
-    security(("bearerAuth" = [])),
     tag = "admin"
 )]
 pub async fn set_drive_policy_defaults(
@@ -3092,7 +3067,6 @@ pub async fn set_drive_policy_defaults(
         (status = 401, description = "Unauthorized", body = crate::interfaces::errors::ApiErrorBody),
         (status = 403, description = "Admin required", body = crate::interfaces::errors::ApiErrorBody),
     ),
-    security(("bearerAuth" = [])),
     tag = "admin"
 )]
 pub async fn list_all_drives(
@@ -3128,7 +3102,6 @@ pub async fn list_all_drives(
         (status = 401, description = "Unauthorized", body = crate::interfaces::errors::ApiErrorBody),
         (status = 403, description = "Admin required", body = crate::interfaces::errors::ApiErrorBody),
     ),
-    security(("bearerAuth" = [])),
     tag = "admin"
 )]
 pub async fn list_drive_members_admin(
@@ -3197,7 +3170,6 @@ fn admin_parse_subject(kind: SubjectTypeDto, id: Uuid) -> Subject {
         (status = 403, description = "Admin required", body = crate::interfaces::errors::ApiErrorBody),
         (status = 405, description = "Personal drive — membership is immutable", body = crate::interfaces::errors::ApiErrorBody),
     ),
-    security(("bearerAuth" = [])),
     tag = "admin"
 )]
 pub async fn add_drive_member_admin(
@@ -3242,7 +3214,6 @@ pub async fn add_drive_member_admin(
         (status = 403, description = "Admin required", body = crate::interfaces::errors::ApiErrorBody),
         (status = 405, description = "Personal drive — membership is immutable", body = crate::interfaces::errors::ApiErrorBody),
     ),
-    security(("bearerAuth" = [])),
     tag = "admin"
 )]
 pub async fn update_drive_member_admin(
@@ -3289,7 +3260,6 @@ pub async fn update_drive_member_admin(
         (status = 403, description = "Admin required", body = crate::interfaces::errors::ApiErrorBody),
         (status = 405, description = "Personal drive — membership is immutable", body = crate::interfaces::errors::ApiErrorBody),
     ),
-    security(("bearerAuth" = [])),
     tag = "admin"
 )]
 pub async fn remove_drive_member_admin(
@@ -3331,7 +3301,6 @@ pub async fn remove_drive_member_admin(
         (status = 405, description = "Default Personal drive — undeletable", body = crate::interfaces::errors::ApiErrorBody),
         (status = 409, description = "Drive is not empty", body = crate::interfaces::errors::ApiErrorBody),
     ),
-    security(("bearerAuth" = [])),
     tag = "admin"
 )]
 pub async fn delete_drive_admin(
@@ -3380,7 +3349,6 @@ pub async fn delete_drive_admin(
         (status = 401, description = "Unauthorized", body = crate::interfaces::errors::ApiErrorBody),
         (status = 403, description = "Admin required", body = crate::interfaces::errors::ApiErrorBody),
     ),
-    security(("bearerAuth" = [])),
     tag = "admin"
 )]
 pub async fn get_transcode_stats(State(state): State<Arc<AppState>>) -> impl IntoResponse {
@@ -3421,7 +3389,6 @@ pub async fn get_transcode_stats(State(state): State<Arc<AppState>>) -> impl Int
         (status = 401, description = "Unauthorized", body = crate::interfaces::errors::ApiErrorBody),
         (status = 403, description = "Admin required", body = crate::interfaces::errors::ApiErrorBody),
     ),
-    security(("bearerAuth" = [])),
     tag = "admin"
 )]
 pub async fn list_jobs(State(state): State<Arc<AppState>>) -> impl IntoResponse {
@@ -3724,7 +3691,6 @@ pub type TriggerJobQuery = std::collections::HashMap<String, String>;
         (status = 403, description = "Admin required", body = crate::interfaces::errors::ApiErrorBody),
         (status = 404, description = "Job not registered", body = crate::interfaces::errors::ApiErrorBody),
     ),
-    security(("bearerAuth" = [])),
     tag = "admin"
 )]
 pub async fn trigger_job(
@@ -3872,7 +3838,6 @@ fn is_detached_job(name: &str) -> bool {
         (status = 403, description = "Admin required", body = crate::interfaces::errors::ApiErrorBody),
         (status = 500, description = "DB error", body = crate::interfaces::errors::ApiErrorBody),
     ),
-    security(("bearerAuth" = [])),
     tag = "admin"
 )]
 pub async fn cancel_job(
@@ -4005,7 +3970,6 @@ pub async fn cancel_job(
         (status = 403, description = "Admin required", body = crate::interfaces::errors::ApiErrorBody),
         (status = 500, description = "DB error", body = crate::interfaces::errors::ApiErrorBody),
     ),
-    security(("bearerAuth" = [])),
     tag = "admin"
 )]
 pub async fn pause_job(
@@ -4072,7 +4036,6 @@ fn default_runs_limit() -> u32 {
         (status = 403, description = "Admin required", body = crate::interfaces::errors::ApiErrorBody),
         (status = 500, description = "DB error", body = crate::interfaces::errors::ApiErrorBody),
     ),
-    security(("bearerAuth" = [])),
     tag = "admin"
 )]
 pub async fn list_job_runs(
@@ -4108,7 +4071,6 @@ pub async fn list_job_runs(
         (status = 404, description = "Run not found", body = crate::interfaces::errors::ApiErrorBody),
         (status = 500, description = "DB error", body = crate::interfaces::errors::ApiErrorBody),
     ),
-    security(("bearerAuth" = [])),
     tag = "admin"
 )]
 pub async fn get_job_run(
@@ -4163,7 +4125,6 @@ fn default_findings_limit() -> u32 {
         (status = 404, description = "Run not found", body = crate::interfaces::errors::ApiErrorBody),
         (status = 500, description = "DB error", body = crate::interfaces::errors::ApiErrorBody),
     ),
-    security(("bearerAuth" = [])),
     tag = "admin"
 )]
 pub async fn list_job_run_findings(
@@ -4250,7 +4211,6 @@ pub struct WebhookTestResultDto {
         (status = 403, description = "Admin required", body = crate::interfaces::errors::ApiErrorBody),
         (status = 503, description = "No webhook configured", body = crate::interfaces::errors::ApiErrorBody),
     ),
-    security(("bearerAuth" = [])),
     tag = "admin"
 )]
 pub async fn send_webhook_test(
@@ -4321,7 +4281,6 @@ pub async fn send_webhook_test(
         (status = 401, description = "Unauthorized", body = crate::interfaces::errors::ApiErrorBody),
         (status = 403, description = "Admin required", body = crate::interfaces::errors::ApiErrorBody),
     ),
-    security(("bearerAuth" = [])),
     tag = "admin"
 )]
 pub async fn get_notify_info(

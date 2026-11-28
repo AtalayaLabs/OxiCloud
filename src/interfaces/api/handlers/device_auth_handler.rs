@@ -9,19 +9,23 @@
 //!   DELETE /api/auth/device/devices/{id} — Revoke a device (authenticated)
 
 use axum::{
-    Router,
     extract::{ConnectInfo, Json, Path, Query, State},
     http::{HeaderMap, StatusCode},
     response::IntoResponse,
-    routing::{delete, get, post},
 };
 use std::net::SocketAddr;
 use std::sync::Arc;
 use uuid::Uuid;
 
 use crate::application::dtos::device_auth_dto::*;
+use crate::application::ports::scope_ports::Condition;
 use crate::application::services::device_auth_service::{DeviceAuthService, DeviceInfoDto};
+
 use crate::common::di::AppState;
+use crate::interfaces::api::policy_router::{GatedRouter, delete, get, post};
+
+/// No credential at all.
+const PUBLIC: [Condition; 1] = [Condition::public()];
 use crate::interfaces::errors::AppError;
 use crate::interfaces::middleware::auth::AuthUser;
 use crate::interfaces::middleware::trusted_proxy::client_ip_from_parts;
@@ -30,15 +34,16 @@ use crate::interfaces::middleware::trusted_proxy::client_ip_from_parts;
 ///
 /// Public endpoints (no auth middleware): authorize, token
 /// Protected endpoints (behind auth middleware): verify (GET+POST), devices
-pub fn device_auth_public_routes() -> Router<Arc<AppState>> {
-    Router::new()
-        // Client-facing endpoints (no auth needed — the client doesn't have tokens yet)
-        .route("/authorize", post(device_authorize))
-        .route("/token", post(device_token))
+pub fn device_auth_public_routes() -> GatedRouter<Arc<AppState>> {
+    GatedRouter::new()
+        // Client-facing endpoints: no credential exists yet — acquiring
+        // one is what they are for.
+        .route("/authorize", post(device_authorize).policy(PUBLIC))
+        .route("/token", post(device_token).policy(PUBLIC))
 }
 
-pub fn device_auth_protected_routes() -> Router<Arc<AppState>> {
-    Router::new()
+pub fn device_auth_protected_routes() -> GatedRouter<Arc<AppState>> {
+    GatedRouter::new()
         // User-facing endpoints (require valid session)
         .route("/verify", get(device_verify_info))
         .route("/verify", post(device_verify_action))
@@ -65,7 +70,6 @@ pub fn device_auth_protected_routes() -> Router<Arc<AppState>> {
     // instead of leaving it unspecified: the `security-defined` rule in
     // `checks/openapi/redocly.yaml` requires every operation to state one
     // way or the other, so a new endpoint can't silently omit auth.
-    security(),
     tag = "device-auth"
 )]
 pub async fn device_authorize(
@@ -98,7 +102,6 @@ pub async fn device_authorize(
     ),
     // Public by design — RFC 8628 step 2, the poll loop. Authenticating
     // this would defeat the flow: the token it returns IS the credential.
-    security(),
     tag = "device-auth"
 )]
 pub async fn device_token(
@@ -155,7 +158,6 @@ pub struct VerifyQuery {
         (status = 200, description = "Info about the pending authorization — `valid: false` means the code is unknown or expired", body = DeviceVerifyInfoDto),
         (status = 401, description = "Caller is not signed in — the user must authenticate before approving a device", body = crate::interfaces::errors::ApiErrorBody),
     ),
-    security(("bearerAuth" = [])),
     tag = "device-auth"
 )]
 pub async fn device_verify_info(
@@ -189,7 +191,6 @@ pub async fn device_verify_info(
         (status = 400, description = "`action` was not one of `approve`/`deny`", body = crate::interfaces::errors::ApiErrorBody),
         (status = 401, description = "Caller is not signed in", body = crate::interfaces::errors::ApiErrorBody),
     ),
-    security(("bearerAuth" = [])),
     tag = "device-auth"
 )]
 pub async fn device_verify_action(
@@ -250,7 +251,6 @@ pub async fn device_verify_action(
         (status = 200, description = "The caller's authorized devices", body = Vec<DeviceInfoDto>),
         (status = 401, description = "Not authenticated", body = crate::interfaces::errors::ApiErrorBody),
     ),
-    security(("bearerAuth" = [])),
     tag = "device-auth"
 )]
 pub async fn list_devices(
@@ -285,7 +285,6 @@ pub async fn list_devices(
         (status = 400, description = "Invalid device id", body = crate::interfaces::errors::ApiErrorBody),
         (status = 401, description = "Not authenticated", body = crate::interfaces::errors::ApiErrorBody),
     ),
-    security(("bearerAuth" = [])),
     tag = "device-auth"
 )]
 pub async fn revoke_device(

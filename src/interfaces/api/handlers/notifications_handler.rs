@@ -114,7 +114,6 @@ pub struct MarkAllReadResponseDto {
     responses(
         (status = 200, description = "List of notifications", body = NotificationListResponseDto),
     ),
-    security(("bearerAuth" = [])),
     tag = "notifications"
 )]
 pub async fn list_notifications(
@@ -143,7 +142,6 @@ pub async fn list_notifications(
     responses(
         (status = 200, description = "Unread count", body = UnreadCountDto),
     ),
-    security(("bearerAuth" = [])),
     tag = "notifications"
 )]
 pub async fn unread_count(
@@ -165,7 +163,6 @@ pub async fn unread_count(
     path = "/api/notifications/{id}/read",
     params(("id" = Uuid, Path, description = "Notification id")),
     responses((status = 204, description = "Marked read (idempotent, anti-enum)")),
-    security(("bearerAuth" = [])),
     tag = "notifications"
 )]
 pub async fn mark_read(
@@ -190,7 +187,6 @@ pub async fn mark_read(
     post,
     path = "/api/notifications/read-all",
     responses((status = 200, description = "Rows marked", body = MarkAllReadResponseDto)),
-    security(("bearerAuth" = [])),
     tag = "notifications"
 )]
 pub async fn mark_all_read(
@@ -209,7 +205,6 @@ pub async fn mark_all_read(
     path = "/api/notifications/{id}",
     params(("id" = Uuid, Path, description = "Notification id")),
     responses((status = 204, description = "Deleted (idempotent, anti-enum)")),
-    security(("bearerAuth" = [])),
     tag = "notifications"
 )]
 pub async fn delete_notification(

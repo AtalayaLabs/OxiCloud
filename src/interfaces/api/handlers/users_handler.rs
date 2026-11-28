@@ -15,7 +15,7 @@
 //! the authenticated caller_id (not the client IP).
 
 use axum::{
-    Json, Router,
+    Json,
     extract::{Path, State},
     http::StatusCode,
     response::IntoResponse,
@@ -25,13 +25,16 @@ use std::sync::Arc;
 use uuid::Uuid;
 
 use crate::common::di::AppState;
+use crate::interfaces::api::policy_router::GatedRouter;
 use crate::interfaces::errors::AppError;
 use crate::interfaces::middleware::auth::AuthUser;
 
 /// Build the `/users` router — mounted at the `/api/users` prefix by
 /// `main.rs`. Auth + CSRF middlewares are applied by the caller.
-pub fn user_routes() -> Router<Arc<AppState>> {
-    Router::new().route("/{id}", get(get_user_profile))
+/// Returns the `GatedRouter`; see `subject_group_routes` on why a bare
+/// `Router` would not compose.
+pub fn user_routes() -> GatedRouter<Arc<AppState>> {
+    GatedRouter::new().route("/{id}", get(get_user_profile))
 }
 
 #[utoipa::path(
@@ -43,7 +46,6 @@ pub fn user_routes() -> Router<Arc<AppState>> {
         (status = 404, description = "User does not exist OR caller has no visibility (anti-enumeration: indistinguishable)", body = crate::interfaces::errors::ApiErrorBody),
         (status = 429, description = "Per-caller rate limit exceeded", body = crate::interfaces::errors::ApiErrorBody),
     ),
-    security(("bearerAuth" = [])),
     tag = "users",
 )]
 pub async fn get_user_profile(

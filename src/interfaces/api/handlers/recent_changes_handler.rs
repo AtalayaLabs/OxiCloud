@@ -59,7 +59,6 @@ use crate::interfaces::middleware::auth::AuthUser;
         (status = 403, description = "External users cannot reach this surface", body = crate::interfaces::errors::ApiErrorBody),
         (status = 500, description = "Internal server error", body = crate::interfaces::errors::ApiErrorBody)
     ),
-    security(("bearerAuth" = [])),
     tag = "files"
 )]
 pub async fn list_recent_changes(

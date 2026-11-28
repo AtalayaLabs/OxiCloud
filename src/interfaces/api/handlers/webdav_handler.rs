@@ -154,7 +154,7 @@ pub(crate) const PROPFIND_BATCH_SIZE: i64 = 500;
 // Security helpers (Sol.1 — handler-level user extraction & ownership guard)
 // ────────────────────────────────────────────────────────────────────────
 
-/// Extract the authenticated [`CurrentUser`] from the request extensions.
+/// Extract the authenticated [`CurrentCaller`] from the request extensions.
 ///
 /// Every mutating or data-returning WebDAV handler **must** call this so
 /// that the real `user.id` is available for ownership checks and for the

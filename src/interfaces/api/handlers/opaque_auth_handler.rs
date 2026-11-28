@@ -62,11 +62,9 @@
 
 use std::sync::Arc;
 
-use axum::Router;
 use axum::extract::{Json, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
-use axum::routing::{get, post};
 use base64::Engine as _;
 use base64::engine::general_purpose::{
     STANDARD as B64_STANDARD, URL_SAFE_NO_PAD as B64_URL_NO_PAD,
@@ -104,7 +102,13 @@ use utoipa::ToSchema;
 use uuid::Uuid;
 
 use crate::application::dtos::user_dto::AuthResponseDto;
+use crate::application::ports::scope_ports::Condition;
+
 use crate::common::di::AppState;
+use crate::interfaces::api::policy_router::{GatedRouter, get, post};
+
+/// No credential at all — these ARE the login handshake.
+const PUBLIC: [Condition; 1] = [Condition::public()];
 use crate::infrastructure::services::opaque_login_exchange::{ExchangeId, OpaqueLoginExchange};
 use crate::infrastructure::services::opaque_service::{OpaqueService, OxiCloudSuite};
 use crate::interfaces::api::cookie_auth;
@@ -123,8 +127,8 @@ use crate::interfaces::middleware::auth::CurrentUserId;
 /// shared prefixes — the login endpoints would then inherit
 /// register's auth+CSRF middleware and 403 every unauthenticated
 /// KE1. Separate prefixes side-step the composition rule cleanly.
-pub fn opaque_register_routes() -> Router<Arc<AppState>> {
-    Router::new()
+pub fn opaque_register_routes() -> GatedRouter<Arc<AppState>> {
+    GatedRouter::new()
         .route("/start", post(register_start))
         .route("/finish", post(register_finish))
 }
@@ -140,11 +144,11 @@ pub fn opaque_register_routes() -> Router<Arc<AppState>> {
 /// cheaper user-existence probe than legacy login. Anti-enum on the
 /// response shape closes the primary information leak; the rate
 /// limit closes the secondary "how fast can I ask" leak.
-pub fn opaque_login_routes() -> Router<Arc<AppState>> {
-    Router::new()
-        .route("/lookup", post(login_lookup))
-        .route("/ke1", post(login_ke1))
-        .route("/ke3", post(login_ke3))
+pub fn opaque_login_routes() -> GatedRouter<Arc<AppState>> {
+    GatedRouter::new()
+        .route("/lookup", post(login_lookup).policy(PUBLIC))
+        .route("/ke1", post(login_ke1).policy(PUBLIC))
+        .route("/ke3", post(login_ke3).policy(PUBLIC))
 }
 
 /// Public config-publish endpoint. Mount under `/api/auth/opaque`
@@ -152,8 +156,8 @@ pub fn opaque_login_routes() -> Router<Arc<AppState>> {
 /// once at page load (cache-friendly). Kept distinct from the
 /// login mount to avoid layering the login rate limiter on a read
 /// that isn't a login attempt.
-pub fn opaque_params_routes() -> Router<Arc<AppState>> {
-    Router::new().route("/params", get(opaque_params))
+pub fn opaque_params_routes() -> GatedRouter<Arc<AppState>> {
+    GatedRouter::new().route("/params", get(opaque_params).policy(PUBLIC))
 }
 
 /// Client → server on register KE1. `registrationRequest` is the
@@ -219,7 +223,6 @@ pub struct OpaqueRegisterFinishDto {
         (status = 401, description = "Not authenticated", body = crate::interfaces::errors::ApiErrorBody),
         (status = 503, description = "OPAQUE service not configured", body = crate::interfaces::errors::ApiErrorBody),
     ),
-    security(("bearerAuth" = [])),
     tag = "auth"
 )]
 pub async fn register_start(
@@ -293,7 +296,6 @@ pub async fn register_start(
         (status = 401, description = "Not authenticated", body = crate::interfaces::errors::ApiErrorBody),
         (status = 503, description = "OPAQUE service not configured", body = crate::interfaces::errors::ApiErrorBody),
     ),
-    security(("bearerAuth" = [])),
     tag = "auth"
 )]
 pub async fn register_finish(
@@ -454,7 +456,6 @@ pub struct OpaqueLookupResponse {
         (status = 503, description = "OPAQUE service not configured", body = crate::interfaces::errors::ApiErrorBody),
     ),
     // Public — step 0 of the OPAQUE login handshake, before any credential.
-    security(),
     tag = "auth"
 )]
 pub async fn login_lookup(
@@ -575,7 +576,6 @@ pub struct OpaqueLoginKe3Dto {
     ),
     // Public — KE1 of the OPAQUE handshake; the session it leads to does
     // not exist yet.
-    security(),
     tag = "auth"
 )]
 pub async fn login_ke1(
@@ -685,7 +685,6 @@ pub async fn login_ke1(
     ),
     // Public — KE3 is what issues the session; requiring one would be
     // circular.
-    security(),
     tag = "auth"
 )]
 pub async fn login_ke3(
@@ -923,7 +922,6 @@ pub struct OpaqueParamsResponse {
     ),
     // Public — the client needs these parameters to build its very first
     // handshake message.
-    security(),
     tag = "auth"
 )]
 pub async fn opaque_params(State(state): State<Arc<AppState>>) -> impl IntoResponse {

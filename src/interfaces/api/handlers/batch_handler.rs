@@ -190,7 +190,6 @@ where
         (status = 507, description = "Every item exceeded the destination drive's quota", body = crate::interfaces::errors::ApiErrorBody),
         (status = 401, description = "Unauthorized", body = crate::interfaces::errors::ApiErrorBody)
     ),
-    security(("bearerAuth" = [])),
     tag = "batch"
 )]
 pub async fn move_files_batch(
@@ -246,7 +245,6 @@ pub async fn move_files_batch(
         (status = 507, description = "Every item exceeded the destination drive's quota", body = crate::interfaces::errors::ApiErrorBody),
         (status = 401, description = "Unauthorized", body = crate::interfaces::errors::ApiErrorBody)
     ),
-    security(("bearerAuth" = [])),
     tag = "batch"
 )]
 pub async fn copy_files_batch(
@@ -302,7 +300,6 @@ pub async fn copy_files_batch(
         (status = 507, description = "Every item exceeded the destination drive's quota", body = crate::interfaces::errors::ApiErrorBody),
         (status = 401, description = "Unauthorized", body = crate::interfaces::errors::ApiErrorBody)
     ),
-    security(("bearerAuth" = [])),
     tag = "batch"
 )]
 pub async fn delete_files_batch(
@@ -370,7 +367,6 @@ pub async fn delete_files_batch(
         (status = 507, description = "Every item exceeded the destination drive's quota", body = crate::interfaces::errors::ApiErrorBody),
         (status = 401, description = "Unauthorized", body = crate::interfaces::errors::ApiErrorBody)
     ),
-    security(("bearerAuth" = [])),
     tag = "batch"
 )]
 pub async fn delete_folders_batch(
@@ -438,7 +434,6 @@ pub async fn delete_folders_batch(
         (status = 507, description = "Every item exceeded the destination drive's quota", body = crate::interfaces::errors::ApiErrorBody),
         (status = 401, description = "Unauthorized", body = crate::interfaces::errors::ApiErrorBody)
     ),
-    security(("bearerAuth" = [])),
     tag = "batch"
 )]
 pub async fn create_folders_batch(
@@ -501,7 +496,6 @@ pub async fn create_folders_batch(
         (status = 507, description = "Every item exceeded the destination drive's quota", body = crate::interfaces::errors::ApiErrorBody),
         (status = 401, description = "Unauthorized", body = crate::interfaces::errors::ApiErrorBody)
     ),
-    security(("bearerAuth" = [])),
     tag = "batch"
 )]
 pub async fn get_files_batch(
@@ -557,7 +551,6 @@ pub async fn get_files_batch(
         (status = 507, description = "Every item exceeded the destination drive's quota", body = crate::interfaces::errors::ApiErrorBody),
         (status = 401, description = "Unauthorized", body = crate::interfaces::errors::ApiErrorBody)
     ),
-    security(("bearerAuth" = [])),
     tag = "batch"
 )]
 pub async fn get_folders_batch(
@@ -653,7 +646,6 @@ impl From<BatchDownloadQuery> for BatchDownloadRequest {
         (status = 507, description = "Every item exceeded the destination drive's quota", body = crate::interfaces::errors::ApiErrorBody),
         (status = 401, description = "Unauthorized", body = crate::interfaces::errors::ApiErrorBody)
     ),
-    security(("bearerAuth" = [])),
     tag = "batch"
 )]
 pub async fn trash_batch(
@@ -760,7 +752,6 @@ pub async fn trash_batch(
         (status = 507, description = "Every item exceeded the destination drive's quota", body = crate::interfaces::errors::ApiErrorBody),
         (status = 401, description = "Unauthorized", body = crate::interfaces::errors::ApiErrorBody)
     ),
-    security(("bearerAuth" = [])),
     tag = "batch"
 )]
 pub async fn move_folders_batch(
@@ -834,7 +825,6 @@ impl From<CopyFolderTreeResult> for CopiedFolderDto {
         (status = 507, description = "Every item exceeded the destination drive's quota", body = crate::interfaces::errors::ApiErrorBody),
         (status = 401, description = "Unauthorized", body = crate::interfaces::errors::ApiErrorBody)
     ),
-    security(("bearerAuth" = [])),
     tag = "batch"
 )]
 pub async fn copy_folders_batch(
@@ -891,7 +881,6 @@ pub async fn copy_folders_batch(
         (status = 401, description = "Unauthorized", body = crate::interfaces::errors::ApiErrorBody),
         (status = 500, description = "ZIP creation failed", body = crate::interfaces::errors::ApiErrorBody)
     ),
-    security(("bearerAuth" = [])),
     tag = "batch"
 )]
 pub async fn download_batch_querystring(
@@ -917,7 +906,6 @@ pub async fn download_batch_querystring(
         (status = 401, description = "Unauthorized", body = crate::interfaces::errors::ApiErrorBody),
         (status = 500, description = "ZIP creation failed", body = crate::interfaces::errors::ApiErrorBody)
     ),
-    security(("bearerAuth" = [])),
     tag = "batch"
 )]
 pub async fn download_batch_post(

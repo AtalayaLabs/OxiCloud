@@ -2541,7 +2541,7 @@ impl AuthApplicationService {
         &self,
         username: &str,
         password: &str,
-    ) -> Result<crate::application::dtos::user_dto::CurrentUser, DomainError> {
+    ) -> Result<crate::application::dtos::user_dto::CurrentCaller, DomainError> {
         let user = self
             .user_storage
             .get_user_by_username(username)
@@ -2579,18 +2579,23 @@ impl AuthApplicationService {
         // credential, so it owes the same checks as a session mint.
         check_account_admission(&user, self.require_verified_email, "nextcloud_login_v2")?;
 
-        Ok(crate::application::dtos::user_dto::CurrentUser {
+        Ok(crate::application::dtos::user_dto::CurrentCaller {
             id: user.id(),
+            // Straight off the entity this door already loaded and admitted.
+            kind: if user.is_external() {
+                crate::domain::entities::user::CallerKind::External
+            } else {
+                crate::domain::entities::user::CallerKind::Internal(user.role())
+            },
             // This door mints an app password, not a JWT — no claims to
             // record.
             token: crate::domain::entities::presented_token::PresentedToken::default(),
             username: std::sync::Arc::from(user.username().unwrap_or("")),
             email: std::sync::Arc::from(user.email()),
-            role: smol_str::SmolStr::new_static(user.role().as_str()),
             // The one caller is the NextCloud Login Flow v2
             // (`nextcloud/login_v2_handler.rs`), whose clients hold an
             // app password and are exempt from DPoP; the middleware
-            // never reads a `CurrentUser` populated here. Leaving None
+            // never reads a `CurrentCaller` populated here. Leaving None
             // is safe.
             dpop_jkt: None,
         })
@@ -4516,29 +4521,18 @@ impl AuthApplicationService {
     /// Deliberately NOT gated by `require_can_modify`: that asks "do you
     /// outrank them?", and the answer here is yes for every valid target,
     /// which is not the question. The question is "are you the owner?".
+    ///
+    /// And that question is answered by the POLICY, declared per verb on
+    /// the route in `admin_handler` as `[role(MinRole::Owner)]`. It used
+    /// to be a hand-rolled `caller.role != UserRole::Owner` here — a GATE
+    /// in the grant layer, where a role check names no resource. One door
+    /// reaches this method (AGENTS.md § Grant vs scope on counting them),
+    /// so one declaration leaves nothing uncovered.
     pub async fn transfer_ownership(
         &self,
         caller_id: Uuid,
         new_owner_id: Uuid,
     ) -> Result<(), DomainError> {
-        let caller = self.get_user_flags(caller_id).await?;
-        if caller.role != UserRole::Owner {
-            tracing::info!(
-                target: "audit",
-                event = "server_owner.transfer_rejected",
-                reason = "caller_not_owner",
-                caller_id = %caller_id,
-                caller_role = %caller.role,
-                target_id = %new_owner_id,
-                "👮🏻‍♂️ ownership transfer refused: caller is not the owner",
-            );
-            return Err(DomainError::new(
-                ErrorKind::AccessDenied,
-                "User",
-                "Only the server owner can transfer ownership.",
-            ));
-        }
-
         if caller_id == new_owner_id {
             return Err(DomainError::new(
                 ErrorKind::InvalidInput,

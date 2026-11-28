@@ -553,10 +553,13 @@ GET {{base_url}}/api/folders
 HTTP 403
 
 
-# A write on an allowlisted PATH. `GET /api/files/{id}` is on the
-# list; `DELETE` on the same path is not, because the allowlist is
-# GET-only — without that rule, mounting a new method on an
-# already listed path would silently inherit anonymous access.
+# A write on a visitor-allowed PATH. `GET /api/files/{id}` is
+# declared `visitor_allowed()`; `DELETE` on the same path is not,
+# because the declaration is per VERB — without that, mounting a new
+# method on an already-allowed path would silently inherit anonymous
+# access. That is not hypothetical: a path-level declaration during
+# PR 1 granted exactly this DELETE, and the old layer still being in
+# place is the only reason it was never reachable.
 # CSRF would also refuse this, which is the point of having both.
 # The file must survive for the teardown, and it does — step 7
 # re-reads its thumbnail.
@@ -568,8 +571,10 @@ HTTP 403
 # ─────────────────────────────────────────────────────────────
 # 5b — The surfaces the allowlist does NOT guard.
 #
-#      Everything above is refused by `anonymous_allowlist_layer`,
-#      which only wraps the protected `/api/*` router. These four
+#      Everything above is refused by the compiled policy on the
+#      protected `/api/*` router — `anonymous_allowlist_layer` until
+#      PR 1 of `docs/plan/scope-gates.md` folded it into a
+#      declaration per operation. These four
 #      groups sit outside it and each refuses for its own reason —
 #      which is exactly why they need asserting: a change to the
 #      allowlist would not affect any of them, so nothing else in
@@ -577,7 +582,7 @@ HTTP 403
 # ─────────────────────────────────────────────────────────────
 
 # Other authenticated `/api/*` reads. These ARE inside the router,
-# so the allowlist refuses them — listed because they are the
+# so the compiled policy refuses them — listed because they are the
 # directory-style queries an audit asks about first.
 GET {{base_url}}/api/groups/search?q=a
 
@@ -585,6 +590,47 @@ HTTP 403
 
 
 GET {{base_url}}/api/address-books
+
+HTTP 403
+
+
+# DOWNWARD: a non-visitor subpath of a visitor-allowed path.
+# `GET /api/files/{id}` is declared `visitor_allowed()`;
+# `GET /api/files/{id}/manifest` is NOT, and shares its whole
+# prefix. This pins that the declaration is matched per OPERATION
+# and not by prefix — the direction the collection pin above
+# (`/api/folders`) covers upward. A GET on purpose: CSRF would
+# refuse a write regardless, so only a read proves the GATE is what
+# refused.
+GET {{base_url}}/api/files/{{inside_file_id}}/manifest
+
+HTTP 403
+
+
+# WOPI: a visitor may DOWNLOAD a shared file but may not open an
+# editor session on it. `AuthUser` requires role >= User and
+# `CallerKind::Visitor` reports `Anonymous`, so the handler always
+# refused — but until `/api/wopi` became a `GatedRouter` that
+# refusal lived only in the extractor, while the spec published
+# `security: bearerAuth`. The policy gate now answers first, so
+# this pins the ROUTER's refusal and not just the handler's.
+GET {{base_url}}/api/wopi/editor-url?file_id={{inside_file_id}}&action=edit
+
+HTTP 403
+
+
+# The ROLE axis against a visitor. Every other refusal here is the
+# principal axis (`user_session_required`); this one would also be
+# refused for a plain user, and asserting it from a ring pins that
+# holding a share token does not place a caller anywhere on the role
+# ladder.
+#
+# This covers the OWNER axis too, and the nesting is why:
+# `POST /api/admin/transfer-ownership` is the only Owner-gated
+# operation and it sits under `/api/admin`, whose nest declares
+# `role(Admin)`. A visitor is refused by that before Owner is ever
+# evaluated, so there is no separate owner-vs-visitor path to reach.
+GET {{base_url}}/api/admin/users
 
 HTTP 403
 
